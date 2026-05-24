@@ -8,7 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
-from fernkam.api.schemas import PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate
+from fernkam.api.schemas import PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate, TagOut
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
 
 router = APIRouter()
@@ -105,6 +105,34 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
     detail.tags = [pt.tag for pt in row.photo_tags if pt.tag]
     detail.faces = list(row.faces)
     return detail
+
+
+@router.get("/{photo_id}/tags", response_model=list[TagOut])
+async def get_photo_tags(photo_id: int, db: DB) -> list[TagOut]:
+    rows = (await db.execute(
+        select(Tag).join(PhotoTag, PhotoTag.tag_id == Tag.id).where(PhotoTag.photo_id == photo_id)
+    )).scalars().all()
+    return rows
+
+
+@router.post("/{photo_id}/tags/{tag_id}", status_code=204)
+async def add_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
+    existing = (await db.execute(
+        select(PhotoTag).where(PhotoTag.photo_id == photo_id, PhotoTag.tag_id == tag_id)
+    )).scalar_one_or_none()
+    if not existing:
+        db.add(PhotoTag(photo_id=photo_id, tag_id=tag_id))
+        await db.commit()
+
+
+@router.delete("/{photo_id}/tags/{tag_id}", status_code=204)
+async def remove_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
+    pt = (await db.execute(
+        select(PhotoTag).where(PhotoTag.photo_id == photo_id, PhotoTag.tag_id == tag_id)
+    )).scalar_one_or_none()
+    if pt:
+        await db.delete(pt)
+        await db.commit()
 
 
 @router.get("/map/points")

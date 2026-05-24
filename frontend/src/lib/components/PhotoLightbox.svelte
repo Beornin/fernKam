@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { api, type PhotoDetail } from '$lib/api';
-	import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera, Tag } from '@lucide/svelte';
+	import { api, type PhotoDetail, type TagOut } from '$lib/api';
+	import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera } from '@lucide/svelte';
+	import TagPicker from './TagPicker.svelte';
 
 	let {
 		photoId,
@@ -16,12 +17,13 @@
 
 	let detail = $state<PhotoDetail | null>(null);
 	let loading = $state(true);
+	let liveTags = $state<TagOut[]>([]);
 
 	$effect(() => {
 		if (photoId) {
 			loading = true;
 			detail = null;
-			api.photos.get(photoId).then(d => { detail = d; loading = false; });
+			api.photos.get(photoId).then(d => { detail = d; liveTags = d.tags; loading = false; });
 		}
 	});
 
@@ -46,7 +48,7 @@
 
 <!-- Backdrop -->
 <div
-	class="fixed inset-0 z-50 bg-black/90 flex"
+	class="fixed inset-0 z-[9999] bg-black/90 flex"
 	role="dialog"
 	aria-modal="true"
 >
@@ -149,17 +151,11 @@
 				{/if}
 			</dl>
 
-			<!-- Tags -->
-			{#if detail.tags.length > 0}
-				<div class="px-4 py-3 border-b border-zinc-800">
-					<p class="text-xs text-zinc-500 flex items-center gap-1 mb-2"><Tag size={11} /> Tags</p>
-					<div class="flex flex-wrap gap-1">
-						{#each detail.tags as tag}
-							<span class="px-2 py-0.5 text-xs rounded-full bg-zinc-800 text-zinc-300">{tag.name}</span>
-						{/each}
-					</div>
-				</div>
-			{/if}
+			<!-- Tags (editable) -->
+			<div class="px-4 py-3 border-b border-zinc-800">
+				<p class="text-xs text-zinc-500 mb-2">Tags</p>
+				<TagPicker photoId={detail.id} bind:currentTags={liveTags} />
+			</div>
 
 			<!-- Caption -->
 			{#if detail.caption}

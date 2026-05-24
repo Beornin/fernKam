@@ -99,6 +99,15 @@ export const api = {
   },
   tags: {
     list: (params?: { flat?: boolean; search?: string }) => get<TagOut[]>('/api/tags', params),
+    create: (body: { name: string; parent_id?: number | null; is_person?: boolean }) =>
+      fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
+    delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }),
+  },
+  photoTags: {
+    add: (photoId: number, tagId: number) =>
+      fetch(`/api/photos/${photoId}/tags/${tagId}`, { method: 'POST' }),
+    remove: (photoId: number, tagId: number) =>
+      fetch(`/api/photos/${photoId}/tags/${tagId}`, { method: 'DELETE' }),
   },
   faces: {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string }) =>
