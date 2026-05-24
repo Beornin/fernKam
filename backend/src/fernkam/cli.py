@@ -189,6 +189,31 @@ def cmd_verify(
         raise typer.Exit(1)
 
 
+@app.command("serve")
+def cmd_serve(
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    workers: int = typer.Option(1, "--workers"),
+    reload: bool = typer.Option(False, "--reload"),
+) -> None:
+    """Start the fernKam API server (Granian)."""
+    import granian
+    from granian.constants import Interfaces
+
+    console.rule("[bold cyan]fernKam API[/bold cyan]")
+    console.print(f"  [green]→[/green] http://{host}:{port}")
+    console.print(f"  [green]→[/green] Docs: http://{host}:{port}/docs")
+
+    granian.Granian(
+        "fernkam.api.app:app",
+        address=host,
+        port=port,
+        workers=workers,
+        interface=Interfaces.ASGI,
+        reload=reload,
+    ).serve()
+
+
 def main() -> None:
     app()
 

@@ -56,3 +56,8 @@ def get_async_session_factory() -> async_sessionmaker[AsyncSession]:
 
 def get_sync_session_factory() -> sessionmaker:
     return sessionmaker(bind=get_sync_engine(), autocommit=False, autoflush=False)
+
+
+def async_session_factory() -> AsyncSession:
+    """Convenience callable used by FastAPI deps: `async with async_session_factory() as session`."""
+    return get_async_session_factory()()

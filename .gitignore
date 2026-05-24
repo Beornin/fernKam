@@ -1,3 +1,9 @@
+# Generated assets
+backend/data/
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+
 # Python
 __pycache__/
 *.py[cod]
