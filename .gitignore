@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.uv/
+
+# Environment / secrets
+.env
+*.env.local
+
+# Alembic
+alembic/versions/*.py
+!alembic/versions/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / SvelteKit (Phase 2)
+node_modules/
+.svelte-kit/
+.next/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Thumbnails / cache
+data/thumbnails/
+data/cache/
+*.db-journal
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
