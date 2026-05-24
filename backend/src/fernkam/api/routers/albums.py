@@ -26,9 +26,9 @@ def _build_tree(rows: list[tuple[str, int]]) -> list[AlbumNode]:
                 )
         nodes[path].photo_count += count
 
-    # Propagate counts up + wire children
+    # Propagate counts up + wire children (deepest path first so child totals are ready)
     roots: list[AlbumNode] = []
-    for path, node in sorted(nodes.items()):
+    for path, node in sorted(nodes.items(), reverse=True):
         parts = [p for p in path.split("/") if p]
         if len(parts) == 1:
             roots.append(node)

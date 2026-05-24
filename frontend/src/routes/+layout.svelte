@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/stores';
-	import { Images, Tag, Users, FolderOpen, Search, Activity } from '@lucide/svelte';
+	import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin } from '@lucide/svelte';
 
 	let { children } = $props();
 
@@ -11,6 +11,7 @@
 		{ href: '/tags', label: 'Tags', icon: Tag },
 		{ href: '/people', label: 'People', icon: Users },
 		{ href: '/search', label: 'Search', icon: Search },
+		{ href: '/map', label: 'Map', icon: MapPin },
 	];
 </script>
 

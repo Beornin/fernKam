@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # Thumbnails
     thumb_cache_dir: str = "data/thumbnails"
+    ffmpeg_path: str = r"C:\Program Files\digiKam\ffmpeg.exe"
 
     # Extensions
     has_pgvector: bool = False

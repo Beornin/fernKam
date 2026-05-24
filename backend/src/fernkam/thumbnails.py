@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import hashlib
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -51,10 +52,10 @@ def get_or_create_thumbnail(
         return None
 
     ext = src.suffix.lower()
-    if ext in VIDEO_EXTENSIONS:
-        return None
-
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if ext in VIDEO_EXTENSIONS:
+        return _video_thumbnail(src, dest, size)
 
     try:
         with Image.open(src) as img:
@@ -66,3 +67,42 @@ def get_or_create_thumbnail(
         return dest
     except Exception:
         return None
+
+
+def _video_thumbnail(src: Path, dest: Path, size: str) -> Path | None:
+    """Extract a frame at 10% into the video and save as WebP thumbnail."""
+    settings = get_settings()
+    ffmpeg = Path(settings.ffmpeg_path)
+    if not ffmpeg.exists():
+        return None
+
+    max_dim = SIZES[size][0]
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = subprocess.run(
+            [
+                str(ffmpeg),
+                "-ss", "00:00:01",
+                "-i", str(src),
+                "-vframes", "1",
+                "-vf", f"scale={max_dim}:{max_dim}:force_original_aspect_ratio=decrease",
+                "-q:v", "3",
+                "-y",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0 or not tmp_path.exists():
+            return None
+
+        with Image.open(tmp_path) as img:
+            img = img.convert("RGB")
+            img.save(dest, "WEBP", quality=82, method=4)
+        return dest
+    except Exception:
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)

@@ -107,6 +107,33 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
     return detail
 
 
+@router.get("/map/points")
+async def map_points(
+    db: DB,
+    album_path: Optional[str] = Query(None),
+    tag_id: Optional[int] = Query(None),
+    limit: int = Query(5000, le=20000),
+) -> list[dict]:
+    """Return lat/lon + id for photos with GPS — used by the map view."""
+    q = (
+        select(Photo.id, Photo.latitude, Photo.longitude, Photo.filename, Photo.taken_at)
+        .where(Photo.status == 1)
+        .where(Photo.latitude.is_not(None))
+        .where(Photo.longitude.is_not(None))
+    )
+    if album_path:
+        q = q.where(Photo.album_path.like(f"{album_path}%"))
+    if tag_id is not None:
+        q = q.where(Photo.id.in_(select(PhotoTag.photo_id).where(PhotoTag.tag_id == tag_id)))
+    q = q.limit(limit)
+    rows = (await db.execute(q)).fetchall()
+    return [
+        {"id": r.id, "lat": float(r.latitude), "lon": float(r.longitude),
+         "filename": r.filename, "taken_at": r.taken_at.isoformat() if r.taken_at else None}
+        for r in rows
+    ]
+
+
 @router.patch("/{photo_id}", response_model=PhotoSummary)
 async def update_photo(photo_id: int, payload: PhotoUpdate, db: DB) -> PhotoSummary:
     updates = payload.model_dump(exclude_none=True)

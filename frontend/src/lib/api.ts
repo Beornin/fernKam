@@ -78,6 +78,10 @@ export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
   },
+  map: {
+    points: (params?: { album_path?: string; tag_id?: number; limit?: number }) =>
+      get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params),
+  },
   photos: {
     list: (params: {
       album_path?: string;
