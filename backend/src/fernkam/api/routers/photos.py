@@ -3,13 +3,16 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
-from fernkam.api.schemas import PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate, TagOut
+from fernkam.api.schemas import FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate, TagOut
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
+from fernkam.metadata import write_photo_metadata
 
 router = APIRouter()
 
@@ -93,7 +96,7 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
                 selectinload(Photo.camera),
                 selectinload(Photo.lens),
                 selectinload(Photo.photo_tags).selectinload(PhotoTag.tag),
-                selectinload(Photo.faces),
+                selectinload(Photo.faces).selectinload(Face.person_tag),
             )
         )
     ).scalar_one_or_none()
@@ -103,8 +106,55 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
 
     detail = PhotoDetail.model_validate(row)
     detail.tags = [pt.tag for pt in row.photo_tags if pt.tag]
-    detail.faces = list(row.faces)
+    detail.faces = _enrich_faces(list(row.faces))
     return detail
+
+
+def _enrich_faces(faces: list[Face]) -> list[FaceOut]:
+    """Convert Face ORM objects to FaceOut, resolving person name."""
+    out = []
+    for f in faces:
+        name: Optional[str] = None
+        if f.person_tag:
+            name = f.person_tag.name
+        elif hasattr(f, "person") and f.person:
+            name = f.person.name
+        out.append(FaceOut(
+            id=f.id,
+            person_tag_id=f.person_tag_id,
+            person_name=name,
+            x=f.x,
+            y=f.y,
+            w=f.w,
+            h=f.h,
+            status=f.status,
+            region_name=f.region_name,
+        ))
+    return out
+
+
+async def _get_photo_for_write(db: DB, photo_id: int) -> Optional[Photo]:
+    return (
+        await db.execute(
+            select(Photo)
+            .where(Photo.id == photo_id)
+            .options(selectinload(Photo.photo_tags).selectinload(PhotoTag.tag))
+        )
+    ).scalar_one_or_none()
+
+
+async def _write_tags_metadata(db: DB, photo_id: int) -> None:
+    photo = await _get_photo_for_write(db, photo_id)
+    if not photo:
+        return
+    tag_names = [pt.tag.name for pt in photo.photo_tags if pt.tag]
+    tag_paths = [str(pt.tag.path).replace(".", "/") for pt in photo.photo_tags if pt.tag]
+    asyncio.create_task(
+        write_photo_metadata(
+            photo_id, photo.album_path, photo.filename,
+            tags=tag_names, tag_paths=tag_paths,
+        )
+    )
 
 
 @router.get("/{photo_id}/tags", response_model=list[TagOut])
@@ -123,6 +173,7 @@ async def add_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
     if not existing:
         db.add(PhotoTag(photo_id=photo_id, tag_id=tag_id))
         await db.commit()
+    await _write_tags_metadata(db, photo_id)
 
 
 @router.delete("/{photo_id}/tags/{tag_id}", status_code=204)
@@ -133,6 +184,7 @@ async def remove_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
     if pt:
         await db.delete(pt)
         await db.commit()
+    await _write_tags_metadata(db, photo_id)
 
 
 @router.get("/map/points")
@@ -174,4 +226,14 @@ async def update_photo(photo_id: int, payload: PhotoUpdate, db: DB) -> PhotoSumm
     row = (await db.execute(select(Photo).where(Photo.id == photo_id))).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Photo not found")
+
+    asyncio.create_task(
+        write_photo_metadata(
+            photo_id, row.album_path, row.filename,
+            rating=payload.rating,
+            caption=payload.caption,
+            title=payload.title,
+            color_label=payload.color_label,
+        )
+    )
     return PhotoSummary.model_validate(row)

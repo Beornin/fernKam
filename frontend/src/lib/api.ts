@@ -41,11 +41,13 @@ export interface TagOut {
 export interface FaceOut {
   id: string;
   person_tag_id: number | null;
+  person_name: string | null;
   x: number | null;
   y: number | null;
   w: number | null;
   h: number | null;
   status: string;
+  region_name: string | null;
 }
 
 export interface AlbumNode {
@@ -112,6 +114,8 @@ export const api = {
   faces: {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string }) =>
       get<FaceOut[]>('/api/faces', params),
+    update: (faceId: string, body: { person_tag_id?: number | null; status?: string; region_name?: string }) =>
+      fetch(`/api/faces/${faceId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<FaceOut>),
   },
   media: {
     thumbnail: (id: number, size: 'sm' | 'md' | 'lg' = 'md') => `/media/thumbnail/${id}?size=${size}`,

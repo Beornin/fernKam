@@ -39,12 +39,19 @@ class FaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     person_tag_id: Optional[int]
+    person_name: Optional[str] = None
     x: Optional[int]
     y: Optional[int]
     w: Optional[int]
     h: Optional[int]
     status: str
     region_name: Optional[str]
+
+
+class FaceUpdate(BaseModel):
+    person_tag_id: Optional[int] = None
+    status: Optional[str] = None
+    region_name: Optional[str] = None
 
 
 class PhotoSummary(BaseModel):
