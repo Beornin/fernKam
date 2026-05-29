@@ -99,12 +99,31 @@ def read_file_metadata(file_path: Path) -> dict:
       file_mtime: datetime
     """
     meta = _run_et([
-        "-Subject", "-HierarchicalSubject", "-Rating", "-Label",
-        "-Title", "-Description", "-RegionInfo",
-        "-ImageWidth", "-ImageHeight", "-FileSize#",
+        "-n",  # numeric output (no unit strings)
+        # Image info
+        "-ImageWidth", "-ImageHeight", "-Orientation", "-ColorComponents",
+        # Dates
         "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
-        "-GPSLatitude#", "-GPSLongitude#", "-GPSAltitude#",
-        "-Orientation#",
+        # GPS
+        "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
+        # File info
+        "-FileSize", "-MIMEType",
+        # Camera/lens
+        "-Make", "-Model", "-SerialNumber",
+        "-LensMake", "-LensModel", "-LensInfo",
+        # Exposure
+        "-ExposureTime", "-FNumber", "-ISO", "-FocalLength", "-FocalLengthIn35mmFormat",
+        "-ShutterSpeedValue", "-ApertureValue", "-ExposureBiasValue",
+        "-Flash", "-WhiteBalance", "-ExposureMode", "-ExposureProgram",
+        "-MeteringMode", "-SceneCaptureType",
+        # Color / quality
+        "-ColorSpace", "-BitsPerSample",
+        # XMP/IPTC tags, rating, caption
+        "-Subject", "-HierarchicalSubject", "-Rating", "-Label",
+        "-Title", "-Description", "-Caption-Abstract",
+        "-XPTitle", "-ImageDescription",
+        # Face regions (MWG)
+        "-struct", "-RegionInfo",
         str(file_path),
     ])
     if meta is None:
@@ -145,7 +164,7 @@ def read_file_metadata(file_path: Path) -> dict:
 
     # Parse taken_at from EXIF date fields
     taken_at = None
-    for date_field in ["DateTimeOriginal", "CreateDate", "MediaCreateDate"]:
+    for date_field in ["DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate"]:
         raw = meta.get(date_field)
         if raw:
             try:
@@ -154,7 +173,7 @@ def read_file_metadata(file_path: Path) -> dict:
             except (ValueError, TypeError):
                 pass
 
-    # Parse file size (exiftool returns bytes when using #)
+    # File size: try exiftool first, then stat
     file_size_raw = meta.get("FileSize")
     file_size = int(file_size_raw) if file_size_raw is not None else None
     if file_size is None:
@@ -163,22 +182,43 @@ def read_file_metadata(file_path: Path) -> dict:
         except OSError:
             pass
 
+    # Camera make/model
+    camera_make = meta.get("Make") or meta.get("DeviceManufacturer")
+    camera_model = meta.get("Model") or meta.get("DeviceModelName")
+    camera_serial = meta.get("SerialNumber") or meta.get("CameraSerialNumber")
+    camera_info = {"make": camera_make, "model": camera_model, "serial": str(camera_serial) if camera_serial is not None else None} if (camera_make or camera_model) else None
+
+    # Lens make/model
+    lens_make = meta.get("LensMake")
+    lens_model = meta.get("LensModel") or meta.get("Lens") or meta.get("LensInfo")
+    lens_info = {"make": lens_make, "model": str(lens_model) if lens_model else None} if (lens_make or lens_model) else None
+
+    # Build structured exif snapshot (omit large/binary fields)
+    _SKIP = {"SourceFile", "ExifToolVersion", "FilePermissions", "ThumbnailImage",
+             "PreviewImage", "JpgFromRaw", "OtherImage", "ICC_Profile"}
+    exif_dump = {k: v for k, v in meta.items() if k not in _SKIP and not isinstance(v, (bytes, bytearray))}
+
     return {
         "tags": list(subj),
         "tag_paths": [h.replace("|", "/") for h in hier],
         "rating": rating,
         "color_label": color_label,
-        "title": meta.get("Title"),
-        "caption": meta.get("Description"),
+        "title": meta.get("Title") or meta.get("XPTitle"),
+        "caption": meta.get("Description") or meta.get("ImageDescription") or meta.get("Caption-Abstract"),
         "faces": faces,
-        "img_w": meta.get("ImageWidth"),
-        "img_h": meta.get("ImageHeight"),
-        "width": meta.get("ImageWidth"),
-        "height": meta.get("ImageHeight"),
+        "img_w": meta.get("ImageWidth") or meta.get("ExifImageWidth"),
+        "img_h": meta.get("ImageHeight") or meta.get("ExifImageHeight"),
+        "width": meta.get("ImageWidth") or meta.get("ExifImageWidth"),
+        "height": meta.get("ImageHeight") or meta.get("ExifImageHeight"),
         "file_size": file_size,
         "taken_at": taken_at,
         "latitude": meta.get("GPSLatitude"),
         "longitude": meta.get("GPSLongitude"),
+        "altitude": meta.get("GPSAltitude"),
+        "orientation": meta.get("Orientation"),
+        "camera": camera_info,
+        "lens": lens_info,
+        "exif": exif_dump,
         "file_mtime": file_mtime,
     }
 

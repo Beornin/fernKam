@@ -25,9 +25,14 @@ async def scan_library(
     progress_callback: Optional[callable] = None,
 ) -> dict:
     """Scan library_root (or custom_path) for new/updated photos and import them.
+
+    - New file on disk  → import with full metadata
+    - Existing file     → skip (do nothing)
+    - File removed      → delete from DB
     
-    Returns dict with stats: added, updated, skipped, errors, total
+    Returns dict with stats: added, skipped, deleted, errors, total
     """
+    from sqlalchemy import delete as sa_delete
     settings = get_settings()
     main_library = Path(settings.library_root)
     library_root = Path(custom_path) if custom_path else main_library
@@ -35,76 +40,121 @@ async def scan_library(
     if not library_root.exists():
         return {"error": f"Library root does not exist: {library_root}"}
     
-    stats = {"added": 0, "updated": 0, "skipped": 0, "errors": 0, "total": 0}
+    stats = {"added": 0, "skipped": 0, "deleted": 0, "errors": 0, "total": 0}
     
-    # Get all existing photos from DB for comparison
-    existing_photos = {}
-    result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename, Photo.modified_at))
+    # Load all existing DB photos
+    existing_photos: dict[tuple[str, str], int] = {}
+    result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename))
     for row in result:
         key = (row.album_path, row.filename)
-        existing_photos[key] = {"id": row.id, "mtime": row.modified_at}
-    
-    # Walk the library directory
-    for root, dirs, files in os.walk(library_root):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        
-        for filename in files:
-            ext = Path(filename).suffix.lower()
-            if ext not in ALL_EXTENSIONS:
-                continue
+        existing_photos[key] = row.id
+
+    # Determine which directories to scan.
+    # If custom_path given → walk that directory fully (discovery mode).
+    # Otherwise → only walk albums already known in DB (fast resync mode).
+    if custom_path:
+        scan_dirs = [library_root]
+    else:
+        known_albums = {ap for (ap, _) in existing_photos}
+        scan_dirs = [library_root / ap for ap in known_albums if (library_root / ap).exists()]
+        # Always include library root itself (for root-level photos, album_path == "/")
+        if library_root.exists() and any(ap in ("/", "") for (ap, _) in existing_photos):
+            scan_dirs.append(library_root)
+
+    disk_keys: set[tuple[str, str]] = set()
+
+    for scan_dir in scan_dirs:
+        for root, dirs, files in os.walk(scan_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             
-            stats["total"] += 1
-            
-            # Calculate relative path from main library root (so photo_disk_path resolves correctly)
-            full_path = Path(root) / filename
-            try:
-                rel_path = full_path.relative_to(main_library)
-            except ValueError:
-                # custom_path is outside main library - use custom_path as base
-                rel_path = full_path.relative_to(library_root)
-            album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
-            
-            # Get file mtime
-            try:
-                file_mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-            except OSError as e:
-                stats["errors"] += 1
-                continue
-            
-            # Check if photo exists in DB
-            key = (album_path, filename)
-            existing = existing_photos.get(key)
-            
-            if existing:
-                # Check if file has been modified
-                if existing["mtime"] and file_mtime > existing["mtime"]:
-                    # Update existing photo
-                    try:
-                        await update_photo_metadata(db, existing["id"], full_path, file_mtime)
-                        stats["updated"] += 1
-                    except Exception as e:
-                        stats["errors"] += 1
-                else:
-                    stats["skipped"] += 1
-            else:
-                # New photo - import it
+            for filename in files:
+                ext = Path(filename).suffix.lower()
+                if ext not in ALL_EXTENSIONS:
+                    continue
+                
+                stats["total"] += 1
+                full_path = Path(root) / filename
+                
                 try:
-                    await import_new_photo(db, full_path, album_path, filename, file_mtime)
-                    stats["added"] += 1
-                except Exception as e:
-                    stats["errors"] += 1
-            
-            # Report progress periodically
-            if progress_callback and stats["total"] % 100 == 0:
-                await progress_callback(stats)
+                    rel_path = full_path.relative_to(main_library)
+                except ValueError:
+                    rel_path = full_path.relative_to(library_root)
+                album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
+                
+                key = (album_path, filename)
+                disk_keys.add(key)
+                
+                if key in existing_photos:
+                    stats["skipped"] += 1
+                else:
+                    try:
+                        file_mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+                        await import_new_photo(db, full_path, album_path, filename, file_mtime)
+                        await db.commit()  # atomic per photo: success → commit
+                        stats["added"] += 1
+                    except Exception as e:
+                        await db.rollback()  # failure → rollback just this photo
+                        stats["errors"] += 1
+                        import logging
+                        logging.getLogger(__name__).warning(f"Failed to import {full_path}: {e}")
+                
+                if progress_callback and stats["total"] % 100 == 0:
+                    await progress_callback(stats)
     
-    await db.commit()
+    # Delete DB photos whose files are gone from disk
+    for key, photo_id in existing_photos.items():
+        if key not in disk_keys:
+            await db.execute(sa_delete(Photo).where(Photo.id == photo_id))
+            stats["deleted"] += 1
+    
+    await db.commit()  # commit deletions
     
     if progress_callback:
         await progress_callback(stats)
     
     return stats
+
+
+async def _get_or_create_camera(db: AsyncSession, camera_info: dict):
+    """Find or create a Camera record using a savepoint to isolate failures."""
+    from fernkam.db.models.photos import Camera
+    make = camera_info.get("make")
+    model = camera_info.get("model")
+    serial = camera_info.get("serial")
+    # Try read first (no savepoint needed)
+    existing = (await db.execute(
+        select(Camera).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
+    )).scalar_one_or_none()
+    if existing:
+        return existing
+    # Use savepoint so a constraint violation doesn't kill the parent transaction
+    async with db.begin_nested():
+        cam = Camera(make=make, model=model, serial=serial)
+        db.add(cam)
+        await db.flush()
+    # Re-fetch in case of concurrent insert
+    return (await db.execute(
+        select(Camera).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
+    )).scalar_one()
+
+
+async def _get_or_create_lens(db: AsyncSession, lens_info: dict):
+    """Find or create a Lens record using a savepoint to isolate failures."""
+    from fernkam.db.models.photos import Lens
+    make = lens_info.get("make")
+    model = lens_info.get("model")
+    existing = (await db.execute(
+        select(Lens).where(Lens.make == make, Lens.model == model)
+    )).scalar_one_or_none()
+    if existing:
+        return existing
+    async with db.begin_nested():
+        lens = Lens(make=make, model=model)
+        db.add(lens)
+        await db.flush()
+    return (await db.execute(
+        select(Lens).where(Lens.make == make, Lens.model == model)
+    )).scalar_one()
 
 
 async def import_new_photo(
@@ -121,7 +171,22 @@ async def import_new_photo(
     # Determine media type
     ext = file_path.suffix.lower()
     media_type = "video" if ext in VIDEO_EXTENSIONS else "image"
-    
+
+    # Resolve camera/lens records
+    camera_obj = None
+    if metadata.get("camera"):
+        try:
+            camera_obj = await _get_or_create_camera(db, metadata["camera"])
+        except Exception:
+            pass
+
+    lens_obj = None
+    if metadata.get("lens"):
+        try:
+            lens_obj = await _get_or_create_lens(db, metadata["lens"])
+        except Exception:
+            pass
+
     # Create photo record
     photo = Photo(
         album_path=album_path,
@@ -134,14 +199,17 @@ async def import_new_photo(
         file_size=metadata.get("file_size"),
         taken_at=metadata.get("taken_at"),
         imported_at=datetime.now(timezone.utc),
-        camera=metadata.get("camera"),
-        lens=metadata.get("lens"),
+        camera_id=camera_obj.id if camera_obj else None,
+        lens_id=lens_obj.id if lens_obj else None,
         rating=metadata.get("rating", 0),
         color_label=metadata.get("color_label"),
         title=metadata.get("title"),
         caption=metadata.get("caption"),
         latitude=metadata.get("latitude"),
         longitude=metadata.get("longitude"),
+        altitude=metadata.get("altitude"),
+        orientation=metadata.get("orientation"),
+        exif=metadata.get("exif"),
         status=1,
     )
     
@@ -169,7 +237,8 @@ async def update_photo_metadata(
     file_mtime: datetime,
 ) -> None:
     """Update photo metadata from file."""
-    metadata = read_file_metadata(file_path)
+    from fernkam.metadata_sync import read_file_metadata_async
+    metadata = await read_file_metadata_async(file_path)
     
     updates = {
         "modified_at": file_mtime,
@@ -177,9 +246,24 @@ async def update_photo_metadata(
     }
     
     # Only update fields that exist in metadata
-    for field in ["width", "height", "file_size", "taken_at", "camera", "lens", "rating", "color_label", "title", "caption", "latitude", "longitude"]:
+    for field in ["width", "height", "file_size", "taken_at", "camera", "lens", "rating", "color_label", "title", "caption", "latitude", "longitude", "altitude", "orientation", "exif"]:
         if field in metadata:
             updates[field] = metadata[field]
+    
+    # Handle camera/lens record creation
+    if metadata.get("camera"):
+        try:
+            cam = await _get_or_create_camera(db, metadata["camera"])
+            updates["camera_id"] = cam.id
+        except Exception:
+            pass
+
+    if metadata.get("lens"):
+        try:
+            lens = await _get_or_create_lens(db, metadata["lens"])
+            updates["lens_id"] = lens.id
+        except Exception:
+            pass
     
     await db.execute(
         update(Photo).where(Photo.id == photo_id).values(**updates)

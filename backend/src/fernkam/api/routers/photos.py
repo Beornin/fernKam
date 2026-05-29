@@ -33,18 +33,19 @@ async def _photo_query(
         # Get the tag and its path to include all children
         tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
         if tag:
-            # Use ltree operator to find all tags under this path (including itself)
-            from sqlalchemy import text
+            from sqlalchemy import text, union
             child_tags = await db.execute(
                 select(Tag.id).where(text(f"path <@ '{tag.path}'"))
             )
             child_tag_ids = [row[0] for row in child_tags]
             if child_tag_ids:
-                q = q.where(
-                    Photo.id.in_(
-                        select(PhotoTag.photo_id).where(PhotoTag.tag_id.in_(child_tag_ids))
-                    )
+                # Match via photo_tags OR via confirmed/suggested faces (for person tags)
+                via_tags = select(PhotoTag.photo_id).where(PhotoTag.tag_id.in_(child_tag_ids))
+                via_faces = select(Face.photo_id).where(
+                    Face.person_tag_id.in_(child_tag_ids),
+                    Face.status.in_(["confirmed", "suggested"]),
                 )
+                q = q.where(Photo.id.in_(union(via_tags, via_faces)))
     if rating_min is not None:
         q = q.where(Photo.rating >= rating_min)
     if media_type:

@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 
 export async function POST({ request }) {
-	const body = await request.json();
+	const text = await request.text();
+	const body = text ? JSON.parse(text) : {};
 	console.log('[PROXY] Received body:', body);
 	
 	try {

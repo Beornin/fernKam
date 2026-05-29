@@ -205,11 +205,10 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                 added = stats.get('added', 0)
                 updated = stats.get('updated', 0)
                 errors = stats.get('errors', 0)
-                print(f"[SCAN-LIBRARY] Scan completed: {stats}", flush=True)
+                deleted = stats.get('deleted', 0)
+                print(f"[SCAN-LIBRARY] Scan completed: added={added}, skipped={stats.get('skipped',0)}, deleted={deleted}, errors={errors}", flush=True)
                 logger.info(f"Scan completed: {stats}")
-                task_manager.update_task(task_id, message=f"Import done: +{added} new, {updated} updated, {errors} errors. Starting face scan...", progress=stats)
-
-                # Auto face-scan newly imported photos
+                
                 if added > 0:
                     print(f"[SCAN-LIBRARY] Auto face-scan for {added} new photos...", flush=True)
                     task_manager.update_task(task_id, message=f"Face scanning {added} new photos...")
@@ -224,20 +223,24 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     )
                     result = await bg_db.execute(unscanned_q)
                     photo_ids = [r[0] for r in result.fetchall()]
+                    print(f"[SCAN-LIBRARY] Found {len(photo_ids)} unscanned photos", flush=True)
                     face_count = 0
-                    for pid in photo_ids:
+                    for i, pid in enumerate(photo_ids, 1):
                         try:
+                            print(f"[SCAN-LIBRARY] Detecting faces for photo {pid} ({i}/{len(photo_ids)})...", flush=True)
                             faces, _ = await _detect_and_suggest(pid, bg_db)
                             face_count += len(faces)
-                            print(f"[SCAN-LIBRARY] Photo {pid}: {len(faces)} faces", flush=True)
+                            print(f"[SCAN-LIBRARY] Photo {pid}: {len(faces)} faces detected", flush=True)
                         except Exception as fe:
                             print(f"[SCAN-LIBRARY] Face scan error for {pid}: {fe}", flush=True)
                     task_manager.update_task(task_id, status="completed",
                         message=f"Done: +{added} imported, {face_count} faces detected",
                         progress={**stats, "faces_detected": face_count})
+                    print(f"[SCAN-LIBRARY] Face scan complete: {face_count} total faces", flush=True)
                 else:
+                    print(f"[SCAN-LIBRARY] No new photos added, skipping face scan", flush=True)
                     task_manager.update_task(task_id, status="completed",
-                        message=f"Done: {added} new, {updated} updated, {errors} errors",
+                        message=f"Done: {added} new, {deleted} deleted, {errors} errors",
                         progress=stats)
             except Exception as e:
                 print(f"[SCAN-LIBRARY] ERROR: {e}", flush=True)

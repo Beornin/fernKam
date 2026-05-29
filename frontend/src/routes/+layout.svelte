@@ -16,8 +16,10 @@ const res = await fetch('/api/sync/scan-library', { method: 'POST' });
 const data = await res.json();
 if (data.error) {
 scanResult = `Error: ${data.error}`;
+} else if (data.status === "running") {
+scanResult = `Scan started in background. Task ID: ${data.task_id}`;
 } else {
-scanResult = `Added: ${data.added}, Updated: ${data.updated}, Skipped: ${data.skipped}, Errors: ${data.errors}`;
+scanResult = `Added: ${data.added ?? 0}, Deleted: ${data.deleted ?? 0}, Skipped: ${data.skipped ?? 0}, Errors: ${data.errors ?? 0}`;
 }
 } catch (e) {
 scanResult = `Scan failed: ${e}`;
