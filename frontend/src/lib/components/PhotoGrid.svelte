@@ -4,15 +4,30 @@
 
 	let { photos, onSelect, thumbSize = 180, selectedIds = $bindable(new Set<number>()) }: { photos: PhotoSummary[]; onSelect?: (p: PhotoSummary) => void; thumbSize?: number; selectedIds?: Set<number> } = $props();
 
-	function toggleSelect(photo: PhotoSummary, e: MouseEvent) {
+	const clickTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+	function handlePhotoClick(photo: PhotoSummary, e: MouseEvent) {
 		e.stopPropagation();
-		const newSet = new Set(selectedIds);
-		if (newSet.has(photo.id)) {
-			newSet.delete(photo.id);
-		} else {
-			newSet.add(photo.id);
+		if (e.detail === 2) {
+			// Double-click: open photo
+			clearTimeout(clickTimers.get(photo.id));
+			clickTimers.delete(photo.id);
+			onSelect?.(photo);
+		} else if (e.detail === 1) {
+			// Single-click: debounce to avoid toggling on double-click
+			clearTimeout(clickTimers.get(photo.id));
+			const timer = setTimeout(() => {
+				const newSet = new Set(selectedIds);
+				if (newSet.has(photo.id)) {
+					newSet.delete(photo.id);
+				} else {
+					newSet.add(photo.id);
+				}
+				selectedIds = newSet;
+				clickTimers.delete(photo.id);
+			}, 250);
+			clickTimers.set(photo.id, timer);
 		}
-		selectedIds = newSet;
 	}
 
 	// Select thumbnail size based on display size for better quality
@@ -38,22 +53,14 @@
 	{#each photos as photo (photo.id)}
 		<button
 			class="relative aspect-square bg-zinc-900 overflow-hidden rounded group focus:outline-none focus:ring-2 focus:ring-emerald-500 {selectedIds.has(photo.id) ? 'ring-2 ring-emerald-500' : ''}"
-			onclick={(e) => {
-				if (e.detail === 2) {
-					// Double click - open photo
-					onSelect?.(photo);
-				} else {
-					// Single click - toggle selection
-					toggleSelect(photo, e);
-				}
-			}}
+			onclick={(e) => handlePhotoClick(photo, e)}
 		>
 			<img
 				src="/media/thumbnail/{photo.id}?size={getThumbSize(thumbSize)}"
 				alt={photo.filename}
 				class="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
 				loading="lazy"
-				onerror={(e) => { e.currentTarget.style.display='none'; }}
+				onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display='none'; }}
 			/>
 
 			<!-- Selection checkbox -->
