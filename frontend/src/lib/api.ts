@@ -1,4 +1,4 @@
-const BASE = '';  // proxied through Vite dev server
+const BASE = 'http://localhost:8000';  // direct to backend
 
 export interface PhotoSummary {
   id: number;
@@ -16,6 +16,8 @@ export interface PhotoSummary {
 export interface PhotoDetail extends PhotoSummary {
   sha256: string | null;
   file_size: number | null;
+  imported_at: string | null;
+  modified_at: string | null;
   title: string | null;
   caption: string | null;
   latitude: number | null;
@@ -40,6 +42,7 @@ export interface TagOut {
 
 export interface FaceOut {
   id: string;
+  photo_id: number;
   person_tag_id: number | null;
   person_name: string | null;
   x: number | null;
@@ -48,6 +51,41 @@ export interface FaceOut {
   h: number | null;
   status: string;
   region_name: string | null;
+  score: number | null;
+}
+
+export interface BatchDetectResult {
+  processed: number;
+  faces_found: number;
+  suggested: number;
+  errors: number;
+  details: Array<{ photo_id: number; faces?: number; suggested?: number; error?: string }>;
+}
+
+export interface PersonOut {
+  id: number;
+  tag_id: number;
+  name: string;
+  face_count: number;
+  avatar_face_id: string | null;
+}
+
+export interface FaceSuggestion {
+  person_id: number;
+  person_name: string | null;
+  score: number;
+}
+
+export interface FaceWithSuggestions {
+  face: FaceOut;
+  suggestions: FaceSuggestion[];
+}
+
+export interface SimilarFace {
+  face_id: string;
+  person_tag_id: number | null;
+  person_name: string | null;
+  score: number;
 }
 
 export interface AlbumNode {
@@ -98,6 +136,13 @@ export const api = {
     get: (id: number) => get<PhotoDetail>(`/api/photos/${id}`),
     patch: (id: number, body: Partial<{ rating: number; color_label: number; title: string; caption: string }>) =>
       fetch(`/api/photos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()),
+    detectFaces: (id: number) =>
+      fetch(`/api/photos/${id}/detect-faces`, { method: 'POST' }).then(r => r.json() as Promise<FaceOut[]>),
+    batchDetect: (photoIds: number[]) =>
+      fetch('/api/photos/batch-detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(photoIds) }).then(r => r.json() as Promise<BatchDetectResult>),
+    batchDetectAll: () =>
+      fetch('/api/photos/batch-detect-all', { method: 'POST' }).then(r => r.json() as Promise<BatchDetectResult>),
+    unscannedCount: () => get<{ count: number }>('/api/photos/unscanned-count'),
   },
   tags: {
     list: (params?: { flat?: boolean; search?: string }) => get<TagOut[]>('/api/tags', params),
@@ -114,11 +159,48 @@ export const api = {
   faces: {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string }) =>
       get<FaceOut[]>('/api/faces', params),
+    unassigned: (params?: { photo_id?: number; limit?: number; offset?: number; has_embedding?: boolean }) =>
+      get<FaceOut[]>('/api/faces/unassigned', params),
+    unassignedCount: () => get<{ count: number }>('/api/faces/unassigned/count'),
+    suggestions: (params?: { limit?: number; offset?: number }) =>
+      get<FaceWithSuggestions[]>('/api/faces/suggestions', params),
+    similar: (faceId: string, params?: { k?: number; confirmed_only?: boolean }) =>
+      get<SimilarFace[]>(`/api/faces/${faceId}/similar`, params),
     update: (faceId: string, body: { person_tag_id?: number | null; status?: string; region_name?: string }) =>
       fetch(`/api/faces/${faceId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<FaceOut>),
+    batchAssign: (body: { face_ids: string[]; person_tag_id: number | null; status?: string }) =>
+      fetch('/api/faces/batch-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }),
+  },
+  people: {
+    list: (params?: { search?: string; limit?: number }) =>
+      get<PersonOut[]>('/api/people', params),
+    create: (name: string, parent_id?: number | null) =>
+      fetch('/api/people', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, parent_id }) }).then(r => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.json() as Promise<PersonOut>;
+      }),
+    rename: (id: number, name: string) =>
+      fetch(`/api/people/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(r => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.json() as Promise<PersonOut>;
+      }),
+    delete: (id: number) => fetch(`/api/people/${id}`, { method: 'DELETE' }).then(r => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    }),
+    faces: (id: number, params?: { limit?: number; offset?: number }) =>
+      get<FaceOut[]>(`/api/people/${id}/faces`, params),
+  },
+  sync: {
+    dbToFile: (body?: { photo_ids?: number[]; album_path?: string; limit?: number }) =>
+      fetch('/api/sync/db-to-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ synced: number; errors: number; total: number }>),
+    fileToDB: (body?: { photo_ids?: number[]; album_path?: string; limit?: number }) =>
+      fetch('/api/sync/file-to-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ synced: number; tags_created: number; errors: number; total: number }>),
+    status: () => get<{ file_newer_than_db: number[]; db_never_synced_to_file: number[] }>('/api/sync/status'),
   },
   media: {
     thumbnail: (id: number, size: 'sm' | 'md' | 'lg' = 'md') => `/media/thumbnail/${id}?size=${size}`,
     original: (id: number) => `/media/original/${id}`,
+    video: (id: number) => `/media/video/${id}`,
   },
 };

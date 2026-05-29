@@ -14,8 +14,8 @@ def get_async_engine():
         settings = get_settings()
         _async_engine = create_async_engine(
             settings.pg_url,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=50,
+            max_overflow=100,
             pool_pre_ping=True,
             echo=settings.debug,
         )
@@ -28,8 +28,8 @@ def get_sync_engine():
         settings = get_settings()
         _sync_engine = create_engine(
             settings.pg_url_sync,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=25,
+            max_overflow=50,
             pool_pre_ping=True,
             echo=settings.debug,
         )

@@ -1,27 +1,40 @@
 <script lang="ts">
-	import { api, type PhotoSummary } from '$lib/api';
+	import { api, type PhotoSummary, type TagOut } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 	import { Search } from '@lucide/svelte';
+	import { onMount } from 'svelte';
 
 	let query = $state('');
 	let ratingMin = $state<number | undefined>(undefined);
 	let mediaType = $state('');
+	let tagId = $state<number | undefined>(undefined);
+	let personTagId = $state<number | undefined>(undefined);
 	let results = $state<PhotoSummary[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
 	let selectedId = $state<number | null>(null);
 	let selectedIdx = $state(-1);
 	let searched = $state(false);
+	let selectedIds = $state<Set<number>>(new Set());
+	let tags = $state<TagOut[]>([]);
+	let personTags = $state<TagOut[]>([]);
+
+	onMount(async () => {
+		tags = await api.tags.list({ flat: true });
+		personTags = tags.filter(t => t.is_person);
+		tags = tags.filter(t => !t.is_person);
+	});
 
 	async function doSearch() {
-		if (!query.trim() && !ratingMin && !mediaType) return;
+		if (!query.trim() && !ratingMin && !mediaType && !tagId && !personTagId) return;
 		loading = true;
 		searched = true;
 		const data = await api.photos.list({
 			search: query.trim() || undefined,
 			rating_min: ratingMin,
 			media_type: mediaType || undefined,
+			tag_id: tagId || personTagId || undefined,
 			page_size: 200,
 		});
 		results = data.items;
@@ -67,6 +80,26 @@
 
 		<select
 			class="text-sm bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300"
+			bind:value={tagId}
+		>
+			<option value={undefined}>All tags</option>
+			{#each tags as tag}
+				<option value={tag.id}>{tag.path.replace(/\./g, ' > ')}</option>
+			{/each}
+		</select>
+
+		<select
+			class="text-sm bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300"
+			bind:value={personTagId}
+		>
+			<option value={undefined}>All people</option>
+			{#each personTags as tag}
+				<option value={tag.id}>{tag.path.replace(/\./g, ' > ')}</option>
+			{/each}
+		</select>
+
+		<select
+			class="text-sm bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-300"
 			bind:value={ratingMin}
 		>
 			<option value={undefined}>Any rating</option>
@@ -96,7 +129,7 @@
 		<p class="text-xs text-zinc-500 mb-3">
 			{total > 200 ? `Showing first 200 of ${total.toLocaleString()}` : `${total.toLocaleString()} results`}
 		</p>
-		<PhotoGrid photos={results} onSelect={openPhoto} />
+		<PhotoGrid photos={results} onSelect={openPhoto} bind:selectedIds={selectedIds} />
 	{/if}
 </div>
 

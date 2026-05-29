@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import func, select, delete
+from sqlalchemy import func, select, delete, text
 
 from fernkam.api.deps import DB
 from fernkam.api.schemas import TagOut
@@ -82,12 +82,17 @@ async def create_tag(
     # Build ltree-safe label: replace spaces/special chars with underscore
     import re
     label = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    if not label or label[0].isdigit():
+        label = "_" + label
     path = parent_path + label
 
-    tag = Tag(name=name, path=path, parent_id=parent_id, is_person=is_person)
-    db.add(tag)
+    result = await db.execute(
+        text("INSERT INTO tags (name, path, parent_id, is_person) VALUES (:name, CAST(:path AS ltree), :parent_id, :is_person) RETURNING id"),
+        {"name": name, "path": path, "parent_id": parent_id, "is_person": is_person},
+    )
+    tag_id = result.scalar_one()
     await db.commit()
-    await db.refresh(tag)
+    tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
         id=tag.id, digikam_id=tag.digikam_id, name=tag.name, path=str(tag.path),
         parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,

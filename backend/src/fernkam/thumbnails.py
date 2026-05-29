@@ -13,6 +13,8 @@ SIZES: dict[str, tuple[int, int]] = {
     "sm": (240, 240),
     "md": (480, 480),
     "lg": (960, 960),
+    "xl": (1440, 1440),
+    "xxl": (1920, 1920),
 }
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".mts", ".mpg", ".mpeg", ".wmv"}
@@ -22,9 +24,11 @@ def photo_disk_path(album_path: str, filename: str) -> Path:
     """Resolve full path from DB album_path + filename."""
     settings = get_settings()
     library = Path(settings.library_root)
-    # album_path starts with /Pictures and Videos/... strip leading slash
-    rel = album_path.lstrip("/")
-    return library.parent / rel / filename
+    # album_path is relative to library root (e.g. "/" or "Anniversaries/1st")
+    rel = album_path.strip("/")
+    if rel:
+        return library / rel / filename
+    return library / filename
 
 
 def thumb_cache_path(photo_id: int, size: str) -> Path:
@@ -32,6 +36,62 @@ def thumb_cache_path(photo_id: int, size: str) -> Path:
     cache = Path(settings.thumb_cache_dir)
     bucket = f"{photo_id % 1000:03d}"
     return cache / bucket / f"{photo_id}_{size}.webp"
+
+
+def generate_thumbnail_bytes(
+    src: Path,
+    size: Literal["sm", "md", "lg", "xl", "xxl"] = "md",
+) -> bytes | None:
+    """Generate a WebP thumbnail for the given source path and return raw bytes.
+
+    Returns None if the file cannot be read (video without ffmpeg, missing file, etc.).
+    """
+    ext = src.suffix.lower()
+    if ext in VIDEO_EXTENSIONS:
+        dest_path = thumb_cache_path(0, size)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _video_thumbnail(src, dest_path, size)
+        if tmp and tmp.exists():
+            data = tmp.read_bytes()
+            tmp.unlink(missing_ok=True)
+            return data
+        return None
+
+    try:
+        with Image.open(src) as img:
+            img = ImageOps.exif_transpose(img)
+            img.thumbnail(SIZES[size], Image.LANCZOS)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            from io import BytesIO
+            buf = BytesIO()
+            img.save(buf, "WEBP", quality=82, method=4)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
+async def get_thumbnail_from_db(photo_id: int, size: str, db) -> bytes | None:
+    """Fetch thumbnail bytes from photo_thumbnails table. Returns None if not found."""
+    from sqlalchemy import text
+    row = (await db.execute(
+        text("SELECT data FROM photo_thumbnails WHERE photo_id = :pid AND size = :sz"),
+        {"pid": photo_id, "sz": size},
+    )).fetchone()
+    return bytes(row[0]) if row else None
+
+
+async def store_thumbnail_to_db(photo_id: int, size: str, data: bytes, db) -> None:
+    """Insert or replace thumbnail bytes in photo_thumbnails table."""
+    from sqlalchemy import text
+    await db.execute(
+        text("""
+            INSERT INTO photo_thumbnails (photo_id, size, data)
+            VALUES (:pid, :sz, :data)
+            ON CONFLICT (photo_id, size) DO UPDATE SET data = EXCLUDED.data, created_at = now()
+        """),
+        {"pid": photo_id, "sz": size, "data": data},
+    )
 
 
 def get_or_create_thumbnail(
@@ -43,29 +103,39 @@ def get_or_create_thumbnail(
     """Return path to cached thumbnail, generating it if needed.
     Returns None if source file not found or is a video (no thumbnail yet).
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     dest = thumb_cache_path(photo_id, size)
     if dest.exists():
+        logger.debug(f"Cache hit: {dest}")
         return dest
 
+    logger.debug(f"Cache miss, generating thumbnail: photo_id={photo_id}, size={size}")
     src = photo_disk_path(album_path, filename)
     if not src.exists():
+        logger.error(f"Source file not found: {src}")
         return None
 
     ext = src.suffix.lower()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if ext in VIDEO_EXTENSIONS:
+        logger.debug(f"Video thumbnail: {src}")
         return _video_thumbnail(src, dest, size)
 
     try:
+        logger.debug(f"Opening image: {src}")
         with Image.open(src) as img:
             img = ImageOps.exif_transpose(img)
             img.thumbnail(SIZES[size], Image.LANCZOS)
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
             img.save(dest, "WEBP", quality=82, method=4)
+        logger.debug(f"Thumbnail saved: {dest}")
         return dest
-    except Exception:
+    except Exception as e:
+        logger.error(f"Thumbnail generation failed for {src}: {e}", exc_info=True)
         return None
 
 

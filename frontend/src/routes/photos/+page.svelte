@@ -4,11 +4,12 @@
 	import { api, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
-	import { ChevronLeft, ChevronRight, SlidersHorizontal } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, SlidersHorizontal, ZoomIn } from '@lucide/svelte';
 
 	// Query params
 	let albumPath = $derived($page.url.searchParams.get('album_path') ?? '');
 	let tagId = $derived(Number($page.url.searchParams.get('tag_id')) || undefined);
+	let photoIdParam = $derived(Number($page.url.searchParams.get('photo_id')) || null);
 	let sort = $derived($page.url.searchParams.get('sort') ?? 'taken_at_desc');
 	let currentPage = $derived(Number($page.url.searchParams.get('page') ?? 1));
 	const PAGE_SIZE = 100;
@@ -18,9 +19,14 @@
 	let loading = $state(false);
 	let selectedId = $state<number | null>(null);
 	let selectedIdx = $state<number>(-1);
+	let selectedIds = $state<Set<number>>(new Set());
+	let batchDetecting = $state(false);
+	let batchResult = $state<string | null>(null);
+	let standalonePhoto = $state<any>(null);
 
 	$effect(() => {
 		loading = true;
+		standalonePhoto = null;
 		api.photos.list({
 			album_path: albumPath || undefined,
 			tag_id: tagId,
@@ -31,6 +37,30 @@
 			photos = data.items;
 			total = data.total;
 			loading = false;
+
+			// Open photo if photo_id param is set
+			if (photoIdParam) {
+				const idx = photos.findIndex(p => p.id === photoIdParam);
+				if (idx >= 0) {
+					selectedId = photoIdParam;
+					selectedIdx = idx;
+					// Clear the param after opening
+					const u = new URL($page.url);
+					u.searchParams.delete('photo_id');
+					goto(u.toString(), { replaceState: true });
+				} else {
+					// Photo not in current grid, fetch it directly
+					api.photos.get(photoIdParam).then(photo => {
+						standalonePhoto = photo;
+						selectedId = photoIdParam;
+						selectedIdx = -1;
+						// Clear the param after opening
+						const u = new URL($page.url);
+						u.searchParams.delete('photo_id');
+						goto(u.toString(), { replaceState: true });
+					});
+				}
+			}
 		});
 	});
 
@@ -64,11 +94,27 @@
 	}
 
 	const totalPages = $derived(Math.ceil(total / PAGE_SIZE));
+	let thumbSize = $state(180);
 
 	function setPage(p: number) {
 		const u = new URL($page.url);
 		u.searchParams.set('page', String(p));
 		goto(u.toString());
+	}
+
+	async function runBatchDetect() {
+		if (selectedIds.size === 0) return;
+		batchDetecting = true;
+		batchResult = null;
+		try {
+			const result = await api.photos.batchDetect(Array.from(selectedIds));
+			batchResult = `Processed ${result.processed}, found ${result.faces_found} faces, ${result.suggested} identified${result.errors > 0 ? `, ${result.errors} errors` : ''}`;
+			selectedIds = new Set();
+		} catch {
+			batchResult = 'Batch detect failed';
+		} finally {
+			batchDetecting = false;
+		}
 	}
 </script>
 
@@ -84,11 +130,46 @@
 		<span class="text-xs text-zinc-600 ml-1">({total.toLocaleString()})</span>
 
 		<div class="ml-auto flex items-center gap-2">
+			<!-- Batch detect (only when has selections) -->
+			{#if selectedIds.size > 0}
+				<button
+					onclick={runBatchDetect}
+					disabled={batchDetecting}
+					class="text-xs px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50 transition-colors"
+					title="Detect faces on selected photos"
+				>
+					{batchDetecting ? 'Detecting...' : `Detect (${selectedIds.size})`}
+				</button>
+			{/if}
+
+			<!-- Clear selection -->
+			{#if selectedIds.size > 0}
+				<button
+					onclick={() => selectedIds = new Set()}
+					class="text-xs px-2 py-1 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
+					title="Clear selection"
+				>
+					Clear ({selectedIds.size})
+				</button>
+			{/if}
+
+			<!-- Batch result toast -->
+			{#if batchResult}
+				<span class="text-xs text-zinc-300">{batchResult}</span>
+			{/if}
+
+			<ZoomIn size={14} class="text-zinc-500" />
+			<input
+				type="range" min="80" max="400" step="20"
+				bind:value={thumbSize}
+				class="w-24 accent-emerald-500 cursor-pointer"
+				title="Thumbnail size"
+			/>
 			<SlidersHorizontal size={14} class="text-zinc-500" />
 			<select
 				class="text-xs bg-zinc-800 text-zinc-300 border border-zinc-700 rounded px-2 py-1"
 				value={sort}
-				onchange={(e) => setParam('sort', (e.target as HTMLSelectElement).value)}
+				onchange={(e) => setParam('sort', e.currentTarget.value)}
 			>
 				<option value="taken_at_desc">Newest first</option>
 				<option value="taken_at_asc">Oldest first</option>
@@ -109,7 +190,7 @@
 		{:else if photos.length === 0}
 			<div class="flex items-center justify-center h-40 text-zinc-500 text-sm">No photos found</div>
 		{:else}
-			<PhotoGrid {photos} onSelect={openPhoto} />
+			<PhotoGrid {photos} onSelect={openPhoto} {thumbSize} bind:selectedIds={selectedIds} />
 		{/if}
 	</div>
 
@@ -138,6 +219,7 @@
 {#if selectedId !== null}
 	<PhotoLightbox
 		photoId={selectedId}
+		photo={standalonePhoto}
 		onClose={closeLightbox}
 		onPrev={selectedIdx > 0 ? prevPhoto : undefined}
 		onNext={selectedIdx < photos.length - 1 ? nextPhoto : undefined}

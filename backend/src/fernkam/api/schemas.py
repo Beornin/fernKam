@@ -38,6 +38,7 @@ class LensOut(BaseModel):
 class FaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    photo_id: int
     person_tag_id: Optional[int]
     person_name: Optional[str] = None
     x: Optional[int]
@@ -46,12 +47,29 @@ class FaceOut(BaseModel):
     h: Optional[int]
     status: str
     region_name: Optional[str]
+    score: Optional[float] = None  # similarity score (suggested) or det score (new)
 
 
 class FaceUpdate(BaseModel):
     person_tag_id: Optional[int] = None
     status: Optional[str] = None
     region_name: Optional[str] = None
+
+
+class BatchDetectResult(BaseModel):
+    processed: int
+    faces_found: int
+    suggested: int
+    errors: int
+    details: list[dict] = []
+
+
+class PersonOut(BaseModel):
+    id: int
+    tag_id: int
+    name: str
+    face_count: int = 0
+    avatar_face_id: Optional[str] = None
 
 
 class PhotoSummary(BaseModel):

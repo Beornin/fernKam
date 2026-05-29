@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -84,6 +86,11 @@ class Photo(Base):
 
     # EXIF dump (everything from DigiKam's ImageMetadata + raw)
     exif: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+    # Sync tracking
+    meta_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    file_modified_at_sync: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    file_sync_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Status flags (mirrors DigiKam ImageInformation.status)
     status: Mapped[int] = mapped_column(SmallInteger, default=1)
@@ -179,8 +186,13 @@ class Face(Base):
     # Recognition status: unconfirmed|confirmed|ignored|unknown
     status: Mapped[str] = mapped_column(String(32), default="unconfirmed")
 
-    # Embedding stored as float array (pgvector VECTOR column added by migration if available)
-    # embedding column added by migration script if pgvector is installed
+    # 512-dim float32 embedding stored as raw bytes
+    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+
+    # Cached face crop (webp bytes)
+    crop_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+
+    file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     digikam_image_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     digikam_tag_id: Mapped[Optional[int]] = mapped_column(Integer)
