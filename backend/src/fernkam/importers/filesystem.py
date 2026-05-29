@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -10,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.config import get_settings
-from fernkam.db.models.photos import Photo
+from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
 from fernkam.metadata_sync import read_file_metadata_async
 
 # Supported image/video extensions
@@ -157,6 +158,46 @@ async def _get_or_create_lens(db: AsyncSession, lens_info: dict):
     )).scalar_one()
 
 
+def _ltree_label(name: str) -> str:
+    """Sanitize a string to a valid ltree label (letters, digits, underscores only)."""
+    return re.sub(r"[^A-Za-z0-9]", "_", name.strip()) or "_"
+
+
+async def _get_or_create_person_tag(db: AsyncSession, name: str) -> int:
+    """Return the id of a person Tag with the given name, creating it (under People) if needed."""
+    # Try exact name match with is_person=True first
+    tag = (await db.execute(
+        select(Tag).where(Tag.name == name, Tag.is_person == True)
+    )).scalar_one_or_none()
+    if tag:
+        return tag.id
+
+    # Fallback: any tag with this name
+    tag = (await db.execute(
+        select(Tag).where(Tag.name == name)
+    )).scalar_one_or_none()
+    if tag:
+        if not tag.is_person:
+            tag.is_person = True
+        return tag.id
+
+    # Create "People" root tag if missing
+    people = (await db.execute(
+        select(Tag).where(Tag.name == "People", Tag.parent_id == None)
+    )).scalar_one_or_none()
+    if people is None:
+        people = Tag(name="People", path="People", is_person=False)
+        db.add(people)
+        await db.flush()
+
+    # Create person tag under People
+    ltree_path = f"People.{_ltree_label(name)}"
+    tag = Tag(name=name, path=ltree_path, parent_id=people.id, is_person=True)
+    db.add(tag)
+    await db.flush()
+    return tag.id
+
+
 async def import_new_photo(
     db: AsyncSession,
     file_path: Path,
@@ -226,6 +267,71 @@ async def import_new_photo(
                     await store_thumbnail_to_db(photo.id, size, data, db)
         except Exception:
             pass  # Thumbnail generation failure is non-fatal
+
+    # Restore tags from HierarchicalSubject paths (DigiKam style: "People|Ava", "Locations|Paris")
+    tag_paths = metadata.get("tag_paths") or []  # already converted from | to /
+    tag_cache: dict[str, Tag] = {}
+    for path_str in tag_paths:
+        parts = [p.strip() for p in path_str.split("/") if p.strip()]
+        if not parts:
+            continue
+        parent_tag: Optional[Tag] = None
+        for i, part in enumerate(parts):
+            ltree_path = ".".join(_ltree_label(p) for p in parts[: i + 1])
+            if ltree_path in tag_cache:
+                parent_tag = tag_cache[ltree_path]
+                continue
+            tag_row = (await db.execute(
+                select(Tag).where(Tag.path == ltree_path)
+            )).scalar_one_or_none()
+            if tag_row is None:
+                is_person = (parts[0].lower() == "people" and i == len(parts) - 1)
+                tag_row = Tag(
+                    name=part,
+                    path=ltree_path,
+                    parent_id=parent_tag.id if parent_tag else None,
+                    is_person=is_person,
+                )
+                db.add(tag_row)
+                await db.flush()
+            tag_cache[ltree_path] = tag_row
+            parent_tag = tag_row
+        # Associate leaf tag with photo
+        leaf = parent_tag
+        if leaf:
+            exists = (await db.execute(
+                select(PhotoTag).where(PhotoTag.photo_id == photo.id, PhotoTag.tag_id == leaf.id)
+            )).scalar_one_or_none()
+            if not exists:
+                db.add(PhotoTag(photo_id=photo.id, tag_id=leaf.id))
+
+    # Restore face regions from XMP if present
+    xmp_faces = metadata.get("faces") or []
+    img_w = metadata.get("width") or metadata.get("img_w")
+    img_h = metadata.get("height") or metadata.get("img_h")
+    if xmp_faces and img_w and img_h:
+        for f in xmp_faces:
+            cx, cy = f.get("cx", 0), f.get("cy", 0)
+            nw, nh = f.get("nw", 0), f.get("nh", 0)
+            if not (nw and nh):
+                continue
+            px = int((cx - nw / 2) * img_w)
+            py = int((cy - nh / 2) * img_h)
+            pw = int(nw * img_w)
+            ph = int(nh * img_h)
+            name = (f.get("name") or "").strip()
+            person_tag_id = None
+            if name:
+                person_tag_id = await _get_or_create_person_tag(db, name)
+            face = Face(
+                photo_id=photo.id,
+                x=px, y=py, w=pw, h=ph,
+                region_name=name or None,
+                region_type=f.get("type", "Face"),
+                status="confirmed" if name else "unknown",
+                person_tag_id=person_tag_id,
+            )
+            db.add(face)
 
     return photo
 

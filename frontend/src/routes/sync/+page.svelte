@@ -38,7 +38,7 @@
 		dbToFileSyncing = true;
 		dbToFileResult = null;
 		try {
-			const res = await fetch('http://localhost:8000/api/sync/db-to-file', {
+			const res = await fetch('/api/sync/db-to-file', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ limit: 100 })
@@ -57,7 +57,7 @@
 		fileToDbSyncing = true;
 		fileToDbResult = null;
 		try {
-			const res = await fetch('http://localhost:8000/api/sync/file-to-db', {
+			const res = await fetch('/api/sync/file-to-db', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ limit: 100 })
@@ -76,10 +76,8 @@
 		backfillThumbs = true;
 		backfillThumbsResult = null;
 		try {
-			const res = await fetch('http://localhost:8000/api/sync/backfill-thumbnails', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ limit: 500 })
+			const res = await fetch('/api/sync/backfill-thumbnails?limit=500', {
+				method: 'POST'
 			});
 			const data = await res.json();
 			backfillThumbsResult = `Processed: ${data.processed}, Errors: ${data.errors}, Remaining: ${data.remaining}`;
@@ -94,10 +92,8 @@
 		backfillCrops = true;
 		backfillCropsResult = null;
 		try {
-			const res = await fetch('http://localhost:8000/api/sync/backfill-crops', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ limit: 500 })
+			const res = await fetch('/api/sync/backfill-crops?limit=500', {
+				method: 'POST'
 			});
 			const data = await res.json();
 			backfillCropsResult = `Processed: ${data.processed}, Errors: ${data.errors}`;

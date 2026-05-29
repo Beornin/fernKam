@@ -277,7 +277,7 @@ async def get_tasks() -> dict:
 
 
 @router.post("/backfill-thumbnails")
-async def backfill_thumbnails(db: DB, limit: int = Body(500)) -> dict:
+async def backfill_thumbnails(db: DB, limit: int = Query(500)) -> dict:
     """Generate DB thumbnails for photos that don't have them yet."""
     import asyncio
     from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db, photo_disk_path
@@ -316,7 +316,7 @@ async def backfill_thumbnails(db: DB, limit: int = Body(500)) -> dict:
 
 
 @router.post("/backfill-crops")
-async def backfill_crops(db: DB, limit: int = Body(500)) -> dict:
+async def backfill_crops(db: DB, limit: int = Query(500)) -> dict:
     """Generate DB face crops for faces that don't have crop_data yet."""
     import asyncio
     import cv2

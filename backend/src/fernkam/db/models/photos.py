@@ -19,11 +19,25 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    types,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fernkam.db.base import Base
+
+
+class LtreeType(types.TypeDecorator):
+    """PostgreSQL ltree column type. Wraps bound values with text2ltree() so
+    asyncpg does not error on 'ltree = character varying'."""
+    impl = Text
+    cache_ok = True
+
+    def get_col_spec(self, **kw):
+        return "ltree"
+
+    def bind_expression(self, bindvalue):
+        return func.text2ltree(bindvalue)
 
 
 class Camera(Base):
@@ -120,8 +134,7 @@ class Tag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     digikam_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # ltree path stored as text; cast to ltree type in DB via migration
-    path: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(LtreeType, nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
     icon: Mapped[Optional[str]] = mapped_column(String(255))
     color: Mapped[Optional[str]] = mapped_column(String(16))

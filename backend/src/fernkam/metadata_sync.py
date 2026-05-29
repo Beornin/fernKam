@@ -293,7 +293,7 @@ def write_file_metadata(
 
         result = subprocess.run(
             [et, "-overwrite_original", f"-json={tmp_path}", str(file_path)],
-            capture_output=True, timeout=60,
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=30,
         )
         if result.returncode != 0:
             logger.warning("exiftool write failed for %s: %s",
@@ -336,23 +336,38 @@ async def sync_db_to_file(photo, tags: list, faces: list) -> bool:
 
     tag_names = [t.name for t in tags]
     tag_paths = [str(t.path).replace(".", "/") for t in tags]
+
+    # Include confirmed face person tags in Subject/HierarchicalSubject (DigiKam style)
+    for f in faces:
+        if f.x is None:
+            continue
+        person_name = f.person_tag.name if f.person_tag else (f.region_name or "")
+        if person_name and person_name not in tag_names:
+            tag_names.append(person_name)
+            tag_paths.append(f"People/{person_name}")
+
     face_regions = [
         {"x": f.x, "y": f.y, "w": f.w, "h": f.h,
          "name": f.person_tag.name if f.person_tag else (f.region_name or "")}
         for f in faces if f.x is not None
     ]
 
-    ok = write_file_metadata(
-        src,
-        tags=tag_names,
-        tag_paths=tag_paths,
-        rating=photo.rating if photo.rating >= 0 else None,
-        color_label=photo.color_label if photo.color_label else None,
-        title=photo.title,
-        caption=photo.caption,
-        faces=face_regions,
-        img_w=photo.width,
-        img_h=photo.height,
+    import asyncio
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(
+        None,
+        lambda: write_file_metadata(
+            src,
+            tags=tag_names,
+            tag_paths=tag_paths,
+            rating=photo.rating if photo.rating >= 0 else None,
+            color_label=photo.color_label if photo.color_label else None,
+            title=photo.title,
+            caption=photo.caption,
+            faces=face_regions,
+            img_w=photo.width,
+            img_h=photo.height,
+        )
     )
     return ok
 

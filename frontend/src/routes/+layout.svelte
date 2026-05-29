@@ -5,19 +5,6 @@ import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Po
 
 let { children } = $props();
 
-let scanning = $state(false);
-
-async function scanLibrary() {
-scanning = true;
-try {
-await fetch('/api/sync/scan-library', { method: 'POST' });
-} catch (e) {
-console.error('Scan failed:', e);
-} finally {
-scanning = false;
-}
-}
-
 async function shutdown() {
 if (confirm('Are you sure you want to shutdown fernKam?')) {
 try {
@@ -46,14 +33,6 @@ const navItems = [
 <aside class="w-[260px] shrink-0 bg-zinc-900 border-r border-zinc-800 flex flex-col">
 <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
 <div class="flex items-center gap-2">
-<button
-onclick={scanLibrary}
-disabled={scanning}
-class="p-1.5 rounded hover:bg-zinc-800 transition-colors {scanning ? 'text-zinc-500 animate-spin' : 'text-zinc-400 hover:text-emerald-400'}"
-title="Scan library for new photos"
->
-<RefreshCw size={16} />
-</button>
 <a href="/" class="flex items-center gap-2 text-emerald-400 font-semibold text-lg tracking-tight">
 <Activity size={20} />
 fernKam
