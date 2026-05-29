@@ -6,23 +6,13 @@ import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Po
 let { children } = $props();
 
 let scanning = $state(false);
-let scanResult = $state<string | null>(null);
 
 async function scanLibrary() {
 scanning = true;
-scanResult = null;
 try {
-const res = await fetch('/api/sync/scan-library', { method: 'POST' });
-const data = await res.json();
-if (data.error) {
-scanResult = `Error: ${data.error}`;
-} else if (data.status === "running") {
-scanResult = `Scan started in background. Task ID: ${data.task_id}`;
-} else {
-scanResult = `Added: ${data.added ?? 0}, Deleted: ${data.deleted ?? 0}, Skipped: ${data.skipped ?? 0}, Errors: ${data.errors ?? 0}`;
-}
+await fetch('/api/sync/scan-library', { method: 'POST' });
 } catch (e) {
-scanResult = `Scan failed: ${e}`;
+console.error('Scan failed:', e);
 } finally {
 scanning = false;
 }
@@ -77,11 +67,7 @@ title="Shutdown fernKam"
 <Power size={16} />
 </button>
 </div>
-{#if scanResult}
-<div class="px-5 py-2 border-b border-zinc-800 text-xs text-zinc-400">
-{scanResult}
-</div>
-{/if}
+
 <nav class="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
 {#each navItems as item}
 {@const active = $page.url.pathname.startsWith(item.href)}

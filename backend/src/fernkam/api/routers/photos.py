@@ -28,7 +28,8 @@ async def _photo_query(
     q = select(Photo).where(Photo.status == 1)
 
     if album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        clean_album = album_path.lstrip("/")
+        q = q.where(Photo.album_path.like(f"{clean_album}%"))
     if tag_id is not None:
         # Get the tag and its path to include all children
         tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
@@ -87,6 +88,7 @@ async def list_photos(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> PhotoPage:
+    print(f"[PHOTOS] list_photos: album_path={album_path!r}", flush=True)
     q = await _photo_query(album_path, tag_id, rating_min, media_type, search, date_from, date_to, db)
 
     ORDER = {

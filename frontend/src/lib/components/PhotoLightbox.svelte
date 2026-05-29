@@ -117,15 +117,26 @@ function handlePanEnd() {
 isPanning = false;
 }
 
-function onImgLoad() {
+function updateImgDims() {
 if (imgEl) {
 imgRenderedW = imgEl.clientWidth;
 imgRenderedH = imgEl.clientHeight;
 imgNaturalW = imgEl.naturalWidth;
 imgNaturalH = imgEl.naturalHeight;
-console.log(`[PhotoLightbox] Image loaded: rendered=${imgRenderedW}x${imgRenderedH} natural=${imgNaturalW}x${imgNaturalH} faces=${liveFaces.length} showFaceBoxes=${showFaceBoxes}`);
 }
 }
+
+function onImgLoad() {
+updateImgDims();
+console.log(`[PhotoLightbox] Image loaded: rendered=${imgRenderedW}x${imgRenderedH} natural=${imgNaturalW}x${imgNaturalH} faces=${liveFaces.length}`);
+}
+
+$effect(() => {
+if (!imgEl) return;
+const ro = new ResizeObserver(() => updateImgDims());
+ro.observe(imgEl);
+return () => ro.disconnect();
+});
 
 // Compute face rect in rendered-image coordinates (uses natural image dims, not DB dims)
 function faceRect(f: FaceOut) {
