@@ -209,21 +209,22 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                 print(f"[SCAN-LIBRARY] Scan completed: added={added}, skipped={stats.get('skipped',0)}, deleted={deleted}, errors={errors}", flush=True)
                 logger.info(f"Scan completed: {stats}")
                 
-                if added > 0:
-                    print(f"[SCAN-LIBRARY] Auto face-scan for {added} new photos...", flush=True)
-                    task_manager.update_task(task_id, message=f"Face scanning {added} new photos...")
-                    from fernkam.api.routers.photos import _detect_and_suggest
-                    from sqlalchemy import select as sa_select
-                    from fernkam.db.models.photos import Face, Photo as PhotoModel
-                    scanned = sa_select(Face.photo_id).distinct()
-                    unscanned_q = sa_select(PhotoModel.id).where(
-                        PhotoModel.media_type == "image",
-                        PhotoModel.status == 1,
-                        PhotoModel.id.not_in(scanned)
-                    )
-                    result = await bg_db.execute(unscanned_q)
-                    photo_ids = [r[0] for r in result.fetchall()]
-                    print(f"[SCAN-LIBRARY] Found {len(photo_ids)} unscanned photos", flush=True)
+                from fernkam.api.routers.photos import _detect_and_suggest
+                from sqlalchemy import select as sa_select
+                from fernkam.db.models.photos import Face, Photo as PhotoModel
+                # Always backfill: photos with no face embedding (new imports AND
+                # XMP-restored confirmed faces that need InsightFace re-run)
+                has_embedding = sa_select(Face.photo_id).distinct().where(Face.embedding.isnot(None))
+                needs_scan_q = sa_select(PhotoModel.id).where(
+                    PhotoModel.media_type == "image",
+                    PhotoModel.status == 1,
+                    PhotoModel.id.not_in(has_embedding)
+                )
+                result = await bg_db.execute(needs_scan_q)
+                photo_ids = [r[0] for r in result.fetchall()]
+                if photo_ids:
+                    print(f"[SCAN-LIBRARY] Face embedding backfill: {len(photo_ids)} photos need scan...", flush=True)
+                    task_manager.update_task(task_id, message=f"Face scanning {len(photo_ids)} photos...")
                     face_count = 0
                     for i, pid in enumerate(photo_ids, 1):
                         try:
@@ -238,7 +239,7 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                         progress={**stats, "faces_detected": face_count})
                     print(f"[SCAN-LIBRARY] Face scan complete: {face_count} total faces", flush=True)
                 else:
-                    print(f"[SCAN-LIBRARY] No new photos added, skipping face scan", flush=True)
+                    print(f"[SCAN-LIBRARY] All photos already have embeddings", flush=True)
                     task_manager.update_task(task_id, status="completed",
                         message=f"Done: {added} new, {deleted} deleted, {errors} errors",
                         progress=stats)

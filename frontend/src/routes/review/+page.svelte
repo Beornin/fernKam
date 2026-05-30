@@ -46,12 +46,15 @@
 		people = await api.people.list({ limit: 500 });
 	}
 
-	async function scanAll() {
+	async function batchAssign() {
 		scanning = true;
-		scanProgress = { processed: 0, total: unscannedCount, faces: 0 };
 		try {
-			const result = await api.photos.batchDetectAll();
-			scanProgress = { processed: result.processed, total: result.processed, faces: result.faces_found };
+			// First, detect faces in unscanned photos (if any)
+			if (unscannedCount > 0) {
+				await api.photos.batchDetectAll();
+			}
+			// Then, auto-confirm all unconfirmed faces against confirmed templates
+			await api.faces.autoConfirmAll();
 			await loadCounts();
 			await loadItems(true);
 		} finally {
@@ -71,6 +74,21 @@
 		await api.faces.update(item.face.id, { status: 'ignored' });
 		items = items.filter(i => i.face.id !== item.face.id);
 		unassignedCount = Math.max(0, unassignedCount - 1);
+	}
+
+	async function confirmSuggested(item: FaceWithSuggestions) {
+		if (!item.face.person_tag_id) return;
+		await api.faces.update(item.face.id, { person_tag_id: item.face.person_tag_id, status: 'confirmed' });
+		items = items.filter(i => i.face.id !== item.face.id);
+		unassignedCount = Math.max(0, unassignedCount - 1);
+	}
+
+	async function rejectSuggestion(item: FaceWithSuggestions) {
+		await api.faces.update(item.face.id, { person_tag_id: null, status: 'unconfirmed' });
+		// Update the item in-place so it becomes a plain unconfirmed face
+		items = items.map(i => i.face.id === item.face.id
+			? { ...i, face: { ...i.face, person_tag_id: null, person_name: null, status: 'unconfirmed' } }
+			: i);
 	}
 
 	async function deleteFace(item: FaceWithSuggestions) {
@@ -181,37 +199,17 @@
 				Refresh
 			</button>
 			<button
-				onclick={scanAll}
-				disabled={scanning || unscannedCount === 0}
+				onclick={batchAssign}
+				disabled={scanning || unassignedCount === 0}
 				class="text-xs px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1 disabled:opacity-50"
-				title={unscannedCount === 0 ? 'All photos already scanned' : `Scan ${unscannedCount} unscanned photos`}
+				title={unassignedCount === 0 ? 'No faces to review' : `Auto-assign ${unassignedCount} faces`}
 			>
 				<Scan size={12} class={scanning ? 'animate-spin' : ''} />
-				{scanning ? 'Scanning…' : `Scan ${unscannedCount} photos`}
+				{scanning ? 'Assigning…' : `Batch Assign ${unassignedCount}`}
 			</button>
 		</div>
 	</div>
 
-	<!-- Scan progress -->
-	{#if scanProgress && scanning}
-	<div class="shrink-0 px-5 py-2 border-b border-zinc-800 bg-zinc-900/30 flex items-center gap-3">
-		<div class="flex-1 bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-			<div
-				class="h-full bg-emerald-500 transition-all"
-				style="width: {scanProgress.total > 0 ? (scanProgress.processed / scanProgress.total) * 100 : 0}%"
-			></div>
-		</div>
-		<span class="text-xs text-zinc-400 shrink-0">
-			{scanProgress.processed} / {scanProgress.total} — {scanProgress.faces} faces found
-		</span>
-	</div>
-	{/if}
-	{#if scanProgress && !scanning}
-	<div class="shrink-0 px-5 py-2 border-b border-zinc-800 bg-emerald-900/20 text-emerald-400 text-xs flex items-center gap-2">
-		<Check size={13} />
-		Scan complete — processed {scanProgress.processed} photos, found {scanProgress.faces} faces
-	</div>
-	{/if}
 
 	<!-- Content -->
 	<div class="flex-1 overflow-y-auto p-5">
@@ -237,7 +235,13 @@
 				{#each items as item (item.face.id)}
 					<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex flex-col">
 						<!-- Face image -->
-						<div class="relative bg-zinc-800 aspect-square">
+						<div
+							role="button"
+							tabindex="0"
+							class="relative bg-zinc-800 aspect-square cursor-pointer group"
+							ondblclick={() => goto(`/photos?photo_id=${item.face.photo_id}&referrer=review`)}
+							title="Double-click to open full photo"
+						>
 							<img
 								src="/media/face/{item.face.id}?size=300"
 								alt="Detected face"
@@ -245,7 +249,7 @@
 								loading="lazy"
 							/>
 							<button
-								onclick={() => goto(`/photos?photo_id=${item.face.photo_id}`)}
+								onclick={() => goto(`/photos?photo_id=${item.face.photo_id}&referrer=review`)}
 								class="absolute top-1.5 right-1.5 p-1 rounded bg-black/50 hover:bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity"
 								title="Open source photo"
 							>
@@ -255,7 +259,33 @@
 
 						<!-- Suggestions -->
 						<div class="flex-1 p-2.5 flex flex-col gap-1.5">
-							{#if item.suggestions.length === 0}
+							{#if item.face.status === 'suggested' && item.face.person_tag_id && item.suggestions.length > 0}
+								<!-- Auto-suggested: one-click confirm or reject -->
+								<div class="text-[10px] text-amber-400 text-center pb-0.5">Auto-suggested</div>
+								<button
+									onclick={() => confirmSuggested(item)}
+									class="group/sug w-full flex items-center gap-2 px-2 py-1.5 rounded-lg bg-amber-900/30 hover:bg-emerald-900/40 border border-amber-700/40 hover:border-emerald-700 transition-colors text-left"
+									title="{scoreLabel(item.suggestions[0].score)}: {Math.round(item.suggestions[0].score * 100)}%"
+								>
+									<div class="w-5 h-5 rounded-full bg-zinc-700 flex items-center justify-center text-zinc-400 shrink-0">
+										<User size={10} />
+									</div>
+									<span class="flex-1 text-xs text-zinc-200 truncate">{item.face.person_name ?? '?'}</span>
+									<div class="flex items-center gap-1 shrink-0">
+										<div class="w-12 h-1 rounded-full bg-zinc-700 overflow-hidden">
+											<div class="h-full {scoreColor(item.suggestions[0].score)}" style="width: {Math.round(item.suggestions[0].score * 100)}%"></div>
+										</div>
+										<span class="text-[10px] text-zinc-500 w-7 text-right">{Math.round(item.suggestions[0].score * 100)}%</span>
+										<Check size={12} class="text-amber-400 shrink-0" />
+									</div>
+								</button>
+								<button
+									onclick={() => rejectSuggestion(item)}
+									class="w-full text-[11px] text-zinc-500 hover:text-red-400 py-0.5 flex items-center justify-center gap-1 hover:bg-zinc-800 rounded transition-colors"
+								>
+									<X size={10} /> Not {item.face.person_name}
+								</button>
+							{:else if item.suggestions.length === 0}
 								<p class="text-[11px] text-zinc-500 text-center py-1">No matches — assign manually</p>
 							{:else}
 								{#each item.suggestions as sug (sug.person_id)}

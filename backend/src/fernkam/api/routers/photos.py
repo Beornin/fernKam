@@ -63,13 +63,12 @@ async def _photo_query(
 
 @router.get("/unscanned-count")
 async def unscanned_count(db: DB) -> dict:
-    """Count of photos not yet scanned for faces."""
-    scanned = select(Face.photo_id).distinct()
+    """Count of photos not yet run through InsightFace detection."""
     n = (await db.execute(
         select(func.count()).select_from(Photo)
         .where(Photo.status == 1)
         .where(Photo.media_type == "image")
-        .where(Photo.id.not_in(scanned))
+        .where(Photo.faces_scanned_at.is_(None))
     )).scalar_one()
     return {"count": n}
 
@@ -244,18 +243,21 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
     import cv2 as _cv2
 
     loop = asyncio.get_event_loop()
+    from datetime import datetime, timezone
     detections = await loop.run_in_executor(None, detect_and_embed, src)
     if not detections:
+        await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+        await db.commit()
         return [], 0
 
     # Read image once for cropping all face regions
     img_bgr = _cv2.imread(str(src))
 
-    # Load existing faces on this photo to avoid duplicates
+    # Load existing faces on this photo (full rows so we can update embeddings)
     existing_faces = (await db.execute(
-        select(Face.x, Face.y, Face.w, Face.h)
+        select(Face)
         .where(Face.photo_id == photo_id)
-    )).fetchall()
+    )).scalars().all()
 
     # Load confirmed faces with embeddings for suggestion matching
     confirmed = (await db.execute(
@@ -263,16 +265,43 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
         .where(Face.status == "confirmed", Face.embedding.isnot(None), Face.person_tag_id.isnot(None))
     )).fetchall()
 
+    def _overlaps(det: dict, face) -> bool:
+        """True if detection overlaps existing face by >40% IoU or centre within 15% of face size."""
+        if face.x is None:
+            return False
+        ix1 = max(det["x"], face.x)
+        iy1 = max(det["y"], face.y)
+        ix2 = min(det["x"] + det["w"], face.x + face.w)
+        iy2 = min(det["y"] + det["h"], face.y + face.h)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if inter == 0:
+            return False
+        union = det["w"] * det["h"] + face.w * face.h - inter
+        return (inter / union) > 0.4
+
     SUGGEST_THRESH = 0.55
+    AUTO_CONFIRM_THRESH = 0.90
     new_faces: list[tuple[Face, float | None]] = []
     suggested = 0
 
     for det in detections:
-        # Skip if a face already exists at this location (within 5px tolerance)
-        if any(
-            abs(det["x"] - f.x) < 5 and abs(det["y"] - f.y) < 5
-            for f in existing_faces
-        ):
+        # Check if detection overlaps an existing face
+        matched_existing = next((f for f in existing_faces if _overlaps(det, f)), None)
+        if matched_existing is not None:
+            # Update embedding on the existing face (e.g. XMP-restored face with no embedding)
+            if matched_existing.embedding is None:
+                matched_existing.embedding = embedding_to_bytes(det["embedding"])
+                # Also try to auto-suggest person if confirmed templates exist
+                if confirmed and matched_existing.person_tag_id is None:
+                    matches = find_similar_numpy(
+                        det["embedding"],
+                        [(r.id, r.embedding, r.person_tag_id) for r in confirmed],
+                        k=1, min_score=SUGGEST_THRESH,
+                    )
+                    if matches:
+                        matched_existing.person_tag_id = matches[0]["person_tag_id"]
+                        matched_existing.status = "confirmed" if matches[0]["score"] >= AUTO_CONFIRM_THRESH else "suggested"
+                await db.flush()
             continue
         emb_bytes = embedding_to_bytes(det["embedding"])
         status = "unconfirmed"
@@ -288,8 +317,9 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             )
             if matches:
                 person_tag_id = matches[0]["person_tag_id"]
-                status = "suggested"
-                score = round(matches[0]["score"], 3)
+                match_score = matches[0]["score"]
+                status = "confirmed" if match_score >= AUTO_CONFIRM_THRESH else "suggested"
+                score = round(match_score, 3)
                 suggested += 1
 
         # Generate face crop bytes while image is in memory
@@ -337,6 +367,9 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             score=score,
         ))
 
+    from datetime import datetime, timezone
+    await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+    await db.commit()
     return results, suggested
 
 
@@ -375,14 +408,12 @@ async def batch_detect_faces(photo_ids: list[int], db: DB) -> BatchDetectResult:
 
 @router.post("/batch-detect-all", response_model=BatchDetectResult)
 async def batch_detect_all_faces(db: DB) -> BatchDetectResult:
-    """Detect faces in all photos that have no face records yet (images only)."""
-    from sqlalchemy import except_
-    scanned = select(Face.photo_id).distinct()
+    """Detect faces in all photos not yet scanned by InsightFace."""
     photo_ids_q = (
         select(Photo.id)
         .where(Photo.status == 1)
         .where(Photo.media_type == "image")
-        .where(Photo.id.not_in(scanned))
+        .where(Photo.faces_scanned_at.is_(None))
         .order_by(Photo.id)
     )
     rows = (await db.execute(photo_ids_q)).fetchall()
@@ -403,9 +434,14 @@ async def batch_detect_all_faces(db: DB) -> BatchDetectResult:
         except Exception as exc:
             errors += 1
             details.append({"photo_id": photo_id, "error": str(exc)})
+
+    # Sweep all unconfirmed faces (including pre-existing ones) against confirmed templates
+    from fernkam.api.routers.faces import _auto_confirm_sweep
+    auto_confirmed = await _auto_confirm_sweep(db)
+
     return BatchDetectResult(
         processed=processed, faces_found=faces_found,
-        suggested=suggested, errors=errors, details=details,
+        suggested=suggested + auto_confirmed, errors=errors, details=details,
     )
 
 

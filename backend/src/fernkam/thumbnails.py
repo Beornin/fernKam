@@ -53,7 +53,10 @@ def generate_thumbnail_bytes(
         tmp = _video_thumbnail(src, dest_path, size)
         if tmp and tmp.exists():
             data = tmp.read_bytes()
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except (OSError, PermissionError):
+                pass
             return data
         return None
 

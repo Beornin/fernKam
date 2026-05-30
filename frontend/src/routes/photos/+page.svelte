@@ -10,6 +10,7 @@
 	let albumPath = $derived($page.url.searchParams.get('album_path') ?? '');
 	let tagId = $derived(Number($page.url.searchParams.get('tag_id')) || undefined);
 	let photoIdParam = $derived(Number($page.url.searchParams.get('photo_id')) || null);
+	let referrer = $derived($page.url.searchParams.get('referrer') ?? null);
 	let sort = $derived($page.url.searchParams.get('sort') ?? 'taken_at_desc');
 	let currentPage = $derived(Number($page.url.searchParams.get('page') ?? 1));
 	const PAGE_SIZE = 100;
@@ -74,10 +75,16 @@
 
 	function openPhoto(p: PhotoSummary) {
 		selectedId = p.id;
-		selectedIdx = photos.indexOf(p);
+		selectedIdx = photos.findIndex(ph => ph.id === p.id);
 	}
 
-	function closeLightbox() { selectedId = null; selectedIdx = -1; }
+	function closeLightbox() {
+		selectedId = null;
+		selectedIdx = -1;
+		if (referrer === 'review') {
+			goto('/review');
+		}
+	}
 
 	function prevPhoto() {
 		if (selectedIdx > 0) {

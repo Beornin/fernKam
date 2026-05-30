@@ -20,8 +20,7 @@ async def unassigned_count(db: DB) -> dict:
     from sqlalchemy import func
     n = (await db.execute(
         select(func.count()).select_from(Face)
-        .where(Face.person_tag_id.is_(None))
-        .where(Face.status != "ignored")
+        .where(Face.status.not_in(["ignored", "confirmed"]))
     )).scalar_one()
     return {"count": n}
 
@@ -38,10 +37,9 @@ async def face_suggestions(
     unassigned = (await db.execute(
         select(Face)
         .options(selectinload(Face.person_tag))
-        .where(Face.person_tag_id.is_(None))
-        .where(Face.status != "ignored")
+        .where(Face.status.in_(["unconfirmed", "suggested"]))
         .where(Face.embedding.is_not(None))
-        .order_by(Face.created_at.desc())
+        .order_by(Face.best_match_score.desc().nullslast(), Face.created_at.desc())
         .offset(offset).limit(limit)
     )).scalars().all()
 
@@ -63,7 +61,11 @@ async def face_suggestions(
     results = []
     for face in unassigned:
         suggestions: list[dict] = []
-        if confirmed:
+        if face.status == "suggested" and face.best_match_score is not None and face.person_tag_id:
+            person_name = tag_names.get(face.person_tag_id)
+            suggestions = [{"person_id": face.person_tag_id, "person_name": person_name, "score": round(float(face.best_match_score), 4)}]
+        
+        if not suggestions and confirmed:
             try:
                 qe = bytes_to_embedding(face.embedding)
                 matches = find_similar_numpy(qe, [(r.id, r.embedding, r.person_tag_id) for r in confirmed], k=10)
@@ -159,6 +161,128 @@ async def similar_faces(
     ]
 
 
+AUTO_CONFIRM_THRESH = 0.80
+
+
+async def _auto_confirm_sweep(db) -> int:
+    """Compare ALL unconfirmed/suggested faces against ALL confirmed person embeddings.
+    Auto-confirm any that score >= AUTO_CONFIRM_THRESH. Returns count confirmed."""
+    from fernkam.face_processor import bytes_to_embedding, cosine_similarity
+
+    confirmed = (await db.execute(
+        select(Face.id, Face.embedding, Face.person_tag_id)
+        .where(Face.status == "confirmed")
+        .where(Face.person_tag_id.isnot(None))
+        .where(Face.embedding.isnot(None))
+    )).fetchall()
+    if not confirmed:
+        return 0
+
+    unconfirmed = (await db.execute(
+        select(Face.id, Face.embedding)
+        .where(Face.status.in_(["unconfirmed", "suggested"]))
+        .where(Face.embedding.isnot(None))
+    )).fetchall()
+    if not unconfirmed:
+        return 0
+
+    confirmed_embs: dict[str, tuple] = {}
+    for cid, cemb_bytes, ptid in confirmed:
+        try:
+            confirmed_embs[str(cid)] = (bytes_to_embedding(cemb_bytes), ptid)
+        except ValueError:
+            pass
+
+    pending: dict = {}
+    scores: dict = {}  # Store scores for all faces
+    for unc_id, unc_emb_bytes in unconfirmed:
+        if not unc_emb_bytes:
+            continue
+        try:
+            unc_emb = bytes_to_embedding(unc_emb_bytes)
+        except ValueError:
+            continue
+        best_score, best_ptid = 0.0, None
+        for cid, (c_emb, ptid) in confirmed_embs.items():
+            score = cosine_similarity(c_emb, unc_emb)
+            if score > best_score:
+                best_score, best_ptid = score, ptid
+        scores[unc_id] = best_score  # Store score for all faces
+        if best_score >= AUTO_CONFIRM_THRESH and best_ptid is not None:
+            pending[unc_id] = best_ptid
+
+    # Update scores for all unconfirmed/suggested faces
+    if scores:
+        for face_id, score in scores.items():
+            await db.execute(
+                update(Face).where(Face.id == face_id)
+                .values(best_match_score=round(score, 4))
+            )
+
+    if not pending:
+        await db.commit()
+        return 0
+
+    for ptid in set(pending.values()):
+        ids = [k for k, v in pending.items() if v == ptid]
+        await db.execute(
+            update(Face).where(Face.id.in_(ids))
+            .values(person_tag_id=ptid, status="confirmed")
+        )
+    await db.commit()
+    return len(pending)
+
+
+async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> None:
+    """Auto-confirm any unconfirmed/suggested faces scoring >= AUTO_CONFIRM_THRESH against seeds."""
+    from fernkam.face_processor import bytes_to_embedding, cosine_similarity
+
+    confirmed_embs = (await db.execute(
+        select(Face.embedding)
+        .where(Face.id.in_(seed_face_ids), Face.embedding.isnot(None))
+    )).scalars().all()
+    seeds = []
+    for emb_bytes in confirmed_embs:
+        try:
+            seeds.append(bytes_to_embedding(emb_bytes))
+        except ValueError:
+            pass
+    if not seeds:
+        return
+
+    unconfirmed = (await db.execute(
+        select(Face.id, Face.embedding)
+        .where(Face.status.in_(["unconfirmed", "suggested"]))
+        .where(Face.embedding.isnot(None))
+    )).fetchall()
+
+    auto_ids = set()
+    for unc_id, unc_emb_bytes in unconfirmed:
+        if not unc_emb_bytes:
+            continue
+        try:
+            unc_emb = bytes_to_embedding(unc_emb_bytes)
+        except ValueError:
+            continue
+        if any(cosine_similarity(s, unc_emb) >= AUTO_CONFIRM_THRESH for s in seeds):
+            auto_ids.add(unc_id)
+
+
+    if auto_ids:
+        await db.execute(
+            update(Face).where(Face.id.in_(list(auto_ids)))
+            .values(person_tag_id=person_tag_id, status="confirmed")
+        )
+        await db.commit()
+
+
+@router.post("/auto-confirm-all", response_model=dict)
+async def auto_confirm_all_faces(db: DB) -> dict:
+    """Compare all unconfirmed/suggested faces against confirmed templates and auto-confirm matches."""
+    confirmed = await _auto_confirm_sweep(db)
+    return {"auto_confirmed": confirmed}
+
+
 @router.post("/batch-assign", status_code=204)
 async def batch_assign_faces(
     db: DB,
@@ -173,6 +297,10 @@ async def batch_assign_faces(
         .values(person_tag_id=person_tag_id, status=status)
     )
     await db.commit()
+
+    if status == "confirmed" and person_tag_id:
+        await _auto_confirm_similar(db, person_tag_id, uuids)
+    
     photo_ids = [r[0] for r in (await db.execute(
         select(Face.photo_id).where(Face.id.in_(uuids)).distinct()
     )).fetchall()]
@@ -238,6 +366,10 @@ async def update_face(face_id: UUID, payload: FaceUpdate, db: DB) -> FaceOut:
 
     await db.execute(update(Photo).where(Photo.id == row.photo_id).values(file_sync_dirty=True))
     await db.commit()
+
+    if updates.get("status") == "confirmed" and row.person_tag_id:
+        await _auto_confirm_similar(db, row.person_tag_id, [face_id])
+
     return _make_face_out(row)
 
 

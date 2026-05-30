@@ -148,6 +148,8 @@ export const api = {
     list: (params?: { flat?: boolean; search?: string }) => get<TagOut[]>('/api/tags', params),
     create: (body: { name: string; parent_id?: number | null; is_person?: boolean }) =>
       fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
+    update: (id: number, body: { name?: string; parent_id?: number | null }) =>
+      fetch(`/api/tags/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
     delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }),
   },
   photoTags: {
@@ -170,6 +172,8 @@ export const api = {
       fetch(`/api/faces/${faceId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<FaceOut>),
     batchAssign: (body: { face_ids: string[]; person_tag_id: number | null; status?: string }) =>
       fetch('/api/faces/batch-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    autoConfirmAll: () =>
+      fetch('/api/faces/auto-confirm-all', { method: 'POST' }).then(r => r.json() as Promise<{ auto_confirmed: number }>),
     delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }),
   },
   people: {

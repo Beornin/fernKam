@@ -105,6 +105,7 @@ class Photo(Base):
     meta_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     file_modified_at_sync: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     file_sync_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    faces_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Status flags (mirrors DigiKam ImageInformation.status)
     status: Mapped[int] = mapped_column(SmallInteger, default=1)
@@ -204,6 +205,9 @@ class Face(Base):
 
     # Cached face crop (webp bytes)
     crop_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+
+    # Best match score against all confirmed faces (0.0-1.0)
+    best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(4, 4))
 
     file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 

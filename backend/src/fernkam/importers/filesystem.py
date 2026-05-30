@@ -102,11 +102,22 @@ async def scan_library(
                 if progress_callback and stats["total"] % 100 == 0:
                     await progress_callback(stats)
     
-    # Delete DB photos whose files are gone from disk
+    # Delete DB photos whose files are gone from disk.
+    # When a custom_path is given, only consider photos that live inside that directory
+    # so that photos from other folders are never accidentally removed.
     for key, photo_id in existing_photos.items():
-        if key not in disk_keys:
-            await db.execute(sa_delete(Photo).where(Photo.id == photo_id))
-            stats["deleted"] += 1
+        if key in disk_keys:
+            continue
+        album_path_str, _ = key
+        if custom_path:
+            # Check whether this photo's absolute path is under the scanned directory
+            photo_abs = main_library / album_path_str
+            try:
+                photo_abs.relative_to(library_root)
+            except ValueError:
+                continue  # outside scan scope — leave it alone
+        await db.execute(sa_delete(Photo).where(Photo.id == photo_id))
+        stats["deleted"] += 1
     
     await db.commit()  # commit deletions
     

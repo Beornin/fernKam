@@ -99,6 +99,57 @@ async def create_tag(
     )
 
 
+@router.patch("/{tag_id}", response_model=TagOut)
+async def update_tag(
+    tag_id: int,
+    db: DB,
+    name: Optional[str] = Body(None),
+    parent_id: Optional[int] = Body(None),
+) -> TagOut:
+    """Update tag name and/or parent. Rebuilds path and updates all child paths."""
+    tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
+    if not tag:
+        raise HTTPException(404, "Tag not found")
+    
+    # Update name if provided
+    if name is not None:
+        tag.name = name
+    
+    # Update parent and rebuild path if parent_id provided
+    if parent_id is not None:
+        parent = (await db.execute(select(Tag).where(Tag.id == parent_id))).scalar_one_or_none()
+        if not parent:
+            raise HTTPException(404, "Parent tag not found")
+        tag.parent_id = parent_id
+        
+        # Rebuild path: parent_path + label
+        import re
+        label = re.sub(r"[^A-Za-z0-9_]", "_", name or tag.name)
+        if not label or label[0].isdigit():
+            label = "_" + label
+        new_path = str(parent.path) + "." + label
+        
+        # Update this tag's path
+        await db.execute(
+            text("UPDATE tags SET path = CAST(:path AS ltree) WHERE id = :id"),
+            {"path": new_path, "id": tag_id}
+        )
+        
+        # Update all descendant paths
+        old_path = str(tag.path)
+        await db.execute(
+            text("UPDATE tags SET path = CAST(:new_prefix || subpath(path, nlevel(:old_path)) AS ltree) WHERE path <@ :old_path AND id != :id"),
+            {"new_prefix": new_path, "old_path": old_path, "id": tag_id}
+        )
+    
+    await db.commit()
+    tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
+    return TagOut(
+        id=tag.id, digikam_id=tag.digikam_id, name=tag.name, path=str(tag.path),
+        parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,
+    )
+
+
 @router.delete("/{tag_id}", status_code=204)
 async def delete_tag(tag_id: int, db: DB) -> None:
     await db.execute(delete(PhotoTag).where(PhotoTag.tag_id == tag_id))
