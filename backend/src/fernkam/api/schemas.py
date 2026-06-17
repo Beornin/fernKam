@@ -84,11 +84,11 @@ class PhotoSummary(BaseModel):
     media_type: str
     width: Optional[int]
     height: Optional[int]
+    file_size: Optional[int] = None
 
 
 class PhotoDetail(PhotoSummary):
     sha256: Optional[str]
-    file_size: Optional[int]
     modified_at: Optional[datetime]
     imported_at: datetime
     title: Optional[str]

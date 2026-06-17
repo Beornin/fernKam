@@ -4,9 +4,11 @@ from fernkam.db.models.photos import (
     Face,
     Lens,
     Person,
+    PersonCentroid,
     Photo,
     PhotoTag,
     Tag,
 )
+from fernkam.db.models.tasks import BackgroundTask
 
-__all__ = ["Camera", "Lens", "Photo", "Tag", "PhotoTag", "Person", "Face", "AuditLog"]
+__all__ = ["Camera", "Lens", "Photo", "Tag", "PhotoTag", "Person", "Face", "AuditLog", "BackgroundTask", "PersonCentroid"]

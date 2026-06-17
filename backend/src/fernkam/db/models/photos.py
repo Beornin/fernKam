@@ -24,6 +24,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+try:
+    from pgvector.sqlalchemy import Vector  # type: ignore
+except ImportError:  # pragma: no cover
+    Vector = None  # type: ignore
+
 from fernkam.db.base import Base
 
 
@@ -143,7 +148,7 @@ class Tag(Base):
 
     parent: Mapped[Optional["Tag"]] = relationship("Tag", remote_side="Tag.id", back_populates="children")
     children: Mapped[list["Tag"]] = relationship("Tag", back_populates="parent")
-    photo_tags: Mapped[list["PhotoTag"]] = relationship(back_populates="tag")
+    photo_tags: Mapped[list["PhotoTag"]] = relationship(back_populates="tag", cascade="all, delete-orphan")
     faces: Mapped[list["Face"]] = relationship(back_populates="person_tag")
 
     __table_args__ = (
@@ -200,14 +205,23 @@ class Face(Base):
     # Recognition status: unconfirmed|confirmed|ignored|unknown
     status: Mapped[str] = mapped_column(String(32), default="unconfirmed")
 
-    # 512-dim float32 embedding stored as raw bytes
+    # 512-dim float32 embedding stored as raw bytes (legacy / file-sync source)
     embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+
+    # Indexed pgvector copy used for similarity search (HNSW). Kept in sync with `embedding`.
+    embedding_v: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(512) if Vector is not None else LargeBinary,
+        nullable=True,
+    )
 
     # Cached face crop (webp bytes)
     crop_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
 
+    # InsightFace detection confidence (0.0-1.0); stored at scan time
+    det_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)
+
     # Best match score against all confirmed faces (0.0-1.0)
-    best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(4, 4))
+    best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4))
 
     file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
@@ -226,6 +240,28 @@ class Face(Base):
     )
 
 
+class PersonCentroid(Base):
+    """Per-person mean embedding (centroid) for fast ranked suggestions."""
+    __tablename__ = "person_centroids"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    person_tag_id: Mapped[int] = mapped_column(
+        ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[int] = mapped_column(SmallInteger, default=0)  # sub-cluster index
+    embedding_v: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(512) if Vector is not None else LargeBinary,
+        nullable=True,
+    )
+    face_count: Mapped[int] = mapped_column(Integer, default=0)
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("person_tag_id", "label", name="uq_person_centroids_ptid_label"),
+        Index("ix_person_centroids_ptid", "person_tag_id"),
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -238,3 +274,37 @@ class AuditLog(Base):
     payload: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     __table_args__ = (Index("ix_audit_log_table_changed_at", "table_name", "changed_at"),)
+
+
+class AppLog(Base):
+    """Centralized log entries: Python logger output + native stderr lines.
+
+    Repeated identical messages are coalesced (see logs_sink.py): the first row
+    is INSERTed, subsequent ones inside the coalesce window UPDATE
+    `occurrences` and `last_seen_at` instead of inserting again.
+    """
+
+    __tablename__ = "app_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    level: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    level_name: Mapped[str] = mapped_column(String(10), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)  # 'python' | 'stderr' | 'request'
+    logger_name: Mapped[Optional[str]] = mapped_column(String(128))
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    file: Mapped[Optional[str]] = mapped_column(String(255))
+    line: Mapped[Optional[int]] = mapped_column(Integer)
+    func_name: Mapped[Optional[str]] = mapped_column("func", String(128))
+    exc_info: Mapped[Optional[str]] = mapped_column(Text)
+    context: Mapped[Optional[dict]] = mapped_column(JSONB)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurrences: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_app_logs_ts", ts.desc()),
+        Index("ix_app_logs_level", "level"),
+        Index("ix_app_logs_source", "source"),
+        Index("ix_app_logs_fp_recent", "fingerprint", last_seen_at.desc()),
+    )

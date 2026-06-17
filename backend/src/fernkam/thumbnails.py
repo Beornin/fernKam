@@ -7,6 +7,8 @@ from typing import Literal
 
 from PIL import Image, ImageOps
 
+Image.MAX_IMAGE_PIXELS = None
+
 from fernkam.config import get_settings
 
 SIZES: dict[str, tuple[int, int]] = {
@@ -18,6 +20,29 @@ SIZES: dict[str, tuple[int, int]] = {
 }
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".mts", ".mpg", ".mpeg", ".wmv"}
+
+RAW_EXTENSIONS = {
+    ".nef", ".cr2", ".cr3", ".arw", ".orf", ".raf",
+    ".rw2", ".dng", ".pef", ".srw", ".x3f", ".3fr",
+}
+
+
+def _open_raw_as_pil(src: Path) -> "Image.Image":
+    """Open a RAW camera file as PIL Image via embedded JPEG preview (fast)."""
+    import rawpy
+    from io import BytesIO
+    with rawpy.imread(str(src)) as raw:
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                return Image.open(BytesIO(bytes(thumb.data))).copy()
+            else:
+                import numpy as np
+                return Image.fromarray(np.asarray(thumb.data, dtype="uint8"))
+        except Exception:
+            import numpy as np
+            rgb = raw.postprocess()
+            return Image.fromarray(rgb)
 
 
 def photo_disk_path(album_path: str, filename: str) -> Path:
@@ -61,15 +86,18 @@ def generate_thumbnail_bytes(
         return None
 
     try:
-        with Image.open(src) as img:
-            img = ImageOps.exif_transpose(img)
-            img.thumbnail(SIZES[size], Image.LANCZOS)
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            from io import BytesIO
-            buf = BytesIO()
-            img.save(buf, "WEBP", quality=82, method=4)
-            return buf.getvalue()
+        if ext in RAW_EXTENSIONS:
+            img = _open_raw_as_pil(src)
+        else:
+            img = Image.open(src)
+        img = ImageOps.exif_transpose(img)
+        img.thumbnail(SIZES[size], Image.LANCZOS)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        from io import BytesIO
+        buf = BytesIO()
+        img.save(buf, "WEBP", quality=82, method=4)
+        return buf.getvalue()
     except Exception:
         return None
 
@@ -129,12 +157,15 @@ def get_or_create_thumbnail(
 
     try:
         logger.debug(f"Opening image: {src}")
-        with Image.open(src) as img:
-            img = ImageOps.exif_transpose(img)
-            img.thumbnail(SIZES[size], Image.LANCZOS)
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            img.save(dest, "WEBP", quality=82, method=4)
+        if ext in RAW_EXTENSIONS:
+            img = _open_raw_as_pil(src)
+        else:
+            img = Image.open(src)
+        img = ImageOps.exif_transpose(img)
+        img.thumbnail(SIZES[size], Image.LANCZOS)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        img.save(dest, "WEBP", quality=82, method=4)
         logger.debug(f"Thumbnail saved: {dest}")
         return dest
     except Exception as e:

@@ -223,10 +223,14 @@
 				</div>
 				<h2 class="text-lg font-semibold text-zinc-100">Backfill Thumbnails</h2>
 			</div>
-			<p class="text-sm text-zinc-400 mb-4">Generate DB thumbnails for existing photos that don't have them yet.</p>
+			<p class="text-sm text-zinc-400 mb-4">
+				Generates sm/md/lg/xl WebP thumbnails stored in the database for any photos that are missing them.
+				Only processes photos without existing thumbnails — safe to re-run. Processes up to 500 per click.
+			</p>
 			<button
 				onclick={runBackfillThumbs}
 				disabled={backfillThumbs}
+				title="Generates missing DB thumbnails (sm/md/lg/xl WebP) for photos imported before thumbnailing was added, or after failures. Runs 500 at a time — click again for more. Skips photos that already have thumbnails."
 				class="w-full px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-medium hover:bg-emerald-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
 			>
 				{#if backfillThumbs}
@@ -252,10 +256,14 @@
 				</div>
 				<h2 class="text-lg font-semibold text-zinc-100">Backfill Face Crops</h2>
 			</div>
-			<p class="text-sm text-zinc-400 mb-4">Generate DB face crops for existing faces that don't have them yet.</p>
+			<p class="text-sm text-zinc-400 mb-4">
+				Re-reads source images to generate 200×200 WebP face crop thumbnails for detected faces that are missing them.
+				Requires source images on disk. Only processes faces without crops — safe to re-run. Processes up to 500 per click.
+			</p>
 			<button
 				onclick={runBackfillCrops}
 				disabled={backfillCrops}
+				title="Generates missing 200×200 WebP face crop thumbnails for faces detected before crop storage was added, or after failures. Reads source images from disk — file must still exist. Runs 500 at a time — click again for more. Skips faces that already have crops."
 				class="w-full px-4 py-2 rounded-lg bg-purple-500 text-zinc-900 font-medium hover:bg-purple-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
 			>
 				{#if backfillCrops}

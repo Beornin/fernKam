@@ -14,6 +14,8 @@ from sqlalchemy import select
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
 from fernkam.thumbnails import (
+    RAW_EXTENSIONS,
+    _open_raw_as_pil,
     generate_thumbnail_bytes,
     get_thumbnail_from_db,
     store_thumbnail_to_db,
@@ -106,16 +108,18 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
     if not src.exists():
         raise HTTPException(404, "Source file not found")
 
-    img = cv2.imread(str(src))
+    try:
+        img = cv2.imread(str(src))
+    except Exception:
+        img = None
     if img is None:
         raise HTTPException(422, "Could not read image")
 
     h_img, w_img = img.shape[:2]
-    pad = int(max(row.w or 0, row.h or 0) * 0.2)
-    x1 = max(0, (row.x or 0) - pad)
-    y1 = max(0, (row.y or 0) - pad)
-    x2 = min(w_img, (row.x or 0) + (row.w or 0) + pad)
-    y2 = min(h_img, (row.y or 0) + (row.h or 0) + pad)
+    x1 = max(0, row.x or 0)
+    y1 = max(0, row.y or 0)
+    x2 = min(w_img, (row.x or 0) + (row.w or 0))
+    y2 = min(h_img, (row.y or 0) + (row.h or 0))
     crop = img[y1:y2, x1:x2]
     crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 85])
@@ -135,13 +139,66 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".mts"}
 
 
-@router.get("/original/{photo_id}")
-async def serve_original(photo_id: int, db: DB) -> FileResponse:
+@router.get("/raw-preview/{photo_id}")
+async def serve_raw_preview(photo_id: int, db: DB) -> Response:
+    """Return JPEG preview extracted from a RAW camera file (NEF, CR2, ARW, etc.)."""
+    photo = await _get_photo(photo_id, db)
+    src = photo_disk_path(photo.album_path, photo.filename)
+    if not src.exists():
+        raise HTTPException(404, "Source file not found on disk")
+    if src.suffix.lower() not in RAW_EXTENSIONS:
+        raise HTTPException(400, "Not a RAW file")
+    try:
+        loop = asyncio.get_event_loop()
+        img = await loop.run_in_executor(None, _open_raw_as_pil, src)
+        from io import BytesIO
+        buf = BytesIO()
+        img.convert("RGB").save(buf, "JPEG", quality=90)
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"RAW preview failed: {exc}")
+
+
+@router.get("/original/{photo_id}", response_model=None)
+async def serve_original(photo_id: int, db: DB) -> FileResponse | Response:
     photo = await _get_photo(photo_id, db)
     src = photo_disk_path(photo.album_path, photo.filename)
     if not src.exists():
         raise HTTPException(404, "Source file not found on disk")
     ext = src.suffix.lower()
+
+    if ext in RAW_EXTENSIONS:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=f"/media/raw-preview/{photo_id}", status_code=307)
+
+    # Browsers cannot render TIFF — transcode to JPEG on-the-fly.
+    if ext in (".tif", ".tiff"):
+        try:
+            from PIL import Image, ImageOps
+            from io import BytesIO
+            Image.MAX_IMAGE_PIXELS = None
+            loop = asyncio.get_event_loop()
+            def _tif_to_jpeg() -> bytes:
+                pil_img = Image.open(src)
+                pil_img = ImageOps.exif_transpose(pil_img)
+                if pil_img.mode not in ("RGB", "L"):
+                    pil_img = pil_img.convert("RGB")
+                buf = BytesIO()
+                pil_img.save(buf, "JPEG", quality=92)
+                return buf.getvalue()
+            data = await loop.run_in_executor(None, _tif_to_jpeg)
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
+        except Exception as exc:
+            raise HTTPException(422, f"Cannot decode TIFF: {exc}")
+
     mime = MIME_MAP.get(ext, "application/octet-stream")
     
     # For videos, serve without filename to avoid Content-Disposition: attachment

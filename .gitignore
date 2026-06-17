@@ -57,7 +57,9 @@ data/cache/
 
 # Logs
 *.log
-logs/
+/logs/
+/backend/logs/
+/frontend/logs/
 
 # Test artifacts
 .pytest_cache/

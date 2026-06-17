@@ -27,6 +27,16 @@ class ScanLibraryRequest(BaseModel):
     custom_path: Optional[str] = None
 
 
+class ScanFacesRequest(BaseModel):
+    """Re-scan photos that have never been face-scanned.
+
+    - album_path: limit to photos under this album path (NULL = entire library).
+    - limit: max number of photos to process this run; 0 means all.
+    """
+    album_path: Optional[str] = None
+    limit: int = 0
+
+
 @router.post("/db-to-file")
 async def sync_db_to_file(
     db: DB,
@@ -67,19 +77,6 @@ async def sync_db_to_file(
 
     await db.commit()
     return {"synced": ok, "errors": errors, "total": len(photos)}
-
-
-@router.get("/write-status")
-async def write_status(db: DB) -> dict:
-    """Count of photos with pending DB→file sync (DB-only, no disk access)."""
-    dirty = (await db.execute(
-        select(func.count()).select_from(Photo)
-        .where(Photo.file_sync_dirty == True)  # noqa: E712
-    )).scalar_one()
-    last_sync = (await db.execute(
-        select(func.max(Photo.meta_synced_at)).select_from(Photo)
-    )).scalar_one()
-    return {"dirty_count": dirty, "last_sync": last_sync.isoformat() if last_sync else None}
 
 
 @router.post("/file-to-db")
@@ -146,6 +143,28 @@ async def sync_file_to_db(
     return {"synced": ok, "tags_created": tags_created, "errors": errors, "total": len(photos)}
 
 
+@router.post("/reset-db")
+async def reset_db(db: DB) -> dict:
+    """Truncate all application tables and restart all sequences.
+
+    Irreversible. Intended for development / fresh-start workflows.
+    """
+    from sqlalchemy import text as _sql
+
+    tables = [
+        "faces", "photo_tags", "photos",
+        "tags", "cameras", "lenses", "people",
+        "audit_log", "app_logs",
+    ]
+    truncate_sql = "TRUNCATE TABLE {} RESTART IDENTITY CASCADE".format(
+        ", ".join(tables)
+    )
+    await db.execute(_sql(truncate_sql))
+    await db.commit()
+    logger.warning("[RESET-DB] All tables truncated by user request")
+    return {"ok": True, "tables_cleared": tables}
+
+
 @router.get("/status")
 async def sync_status(db: DB) -> dict:
     """Summary of sync state — pure DB, no disk access."""
@@ -175,79 +194,120 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
     Runs in background and returns immediately.
     """
     import asyncio
-    import sys
     from fernkam.importers.filesystem import scan_library
     from fernkam.task_manager import task_manager
 
+    import os as _os
     custom_path = request.custom_path
     print(f"[SCAN-LIBRARY] Received request with custom_path: {custom_path}", flush=True)
-    sys.stderr.write(f"[SCAN-LIBRARY] Received request with custom_path: {custom_path}\n")
-    sys.stderr.flush()
-    
+
     # Create task
-    task_id = task_manager.create_task("scan_library", f"Scanning: {custom_path or 'library root'}")
-    
-    # Write to debug file
-    with open("debug_scan.log", "a") as f:
-        f.write(f"[SCAN-LIBRARY] Received request with custom_path: {custom_path}\n")
-        f.flush()
-    
+    task_id = await task_manager.create_task("scan_library", f"Scanning: {custom_path or 'library root'}")
+
+    _cpus = _os.cpu_count() or 4
+    FACE_DETECT_CONCURRENCY = int(_os.getenv("FERNKAM_FACE_CONCURRENCY", str(max(4, _cpus))))
+
     # Run scan as background asyncio task with its OWN db session
     # (request db session closes when handler returns)
     async def run_scan():
         import traceback as tb
+        import time as _time
         from fernkam.db.session import async_session_factory
+        from fernkam.api.routers.photos import _detect_and_suggest
+        from fernkam.api.routers.faces import _auto_confirm_sweep
+
         async with async_session_factory() as bg_db:
             try:
                 print(f"[SCAN-LIBRARY] Starting scan for: {custom_path}", flush=True)
-                task_manager.update_task(task_id, message="Scanning files...")
-                stats = await scan_library(bg_db, custom_path=custom_path)
-                added = stats.get('added', 0)
-                updated = stats.get('updated', 0)
-                errors = stats.get('errors', 0)
-                deleted = stats.get('deleted', 0)
-                print(f"[SCAN-LIBRARY] Scan completed: added={added}, skipped={stats.get('skipped',0)}, deleted={deleted}, errors={errors}", flush=True)
-                logger.info(f"Scan completed: {stats}")
-                
-                from fernkam.api.routers.photos import _detect_and_suggest
-                from sqlalchemy import select as sa_select
-                from fernkam.db.models.photos import Face, Photo as PhotoModel
-                # Always backfill: photos with no face embedding (new imports AND
-                # XMP-restored confirmed faces that need InsightFace re-run)
-                has_embedding = sa_select(Face.photo_id).distinct().where(Face.embedding.isnot(None))
-                needs_scan_q = sa_select(PhotoModel.id).where(
-                    PhotoModel.media_type == "image",
-                    PhotoModel.status == 1,
-                    PhotoModel.id.not_in(has_embedding)
+                await task_manager.update_task(task_id, message="Scanning files...")
+
+                # ── Pipeline setup ────────────────────────────────────────────
+                # Face-detect tasks fire per batch as soon as photos are committed,
+                # so detection runs concurrently with importing the next batch.
+                face_tasks: list[asyncio.Task] = []
+                face_sem = asyncio.Semaphore(FACE_DETECT_CONCURRENCY)
+
+                async def detect_one(photo_id: int) -> int:
+                    async with face_sem:
+                        async with async_session_factory() as det_db:
+                            try:
+                                faces, _ = await _detect_and_suggest(photo_id, det_db)
+                                return len(faces)
+                            except Exception as fe:
+                                logger.warning("[SCAN] Face error %d: %s", photo_id, fe)
+                                return 0
+
+                async def on_photo_imported(photo_id: int) -> None:
+                    """Spawn face-detect task immediately; returns without waiting."""
+                    t = asyncio.create_task(
+                        detect_one(photo_id), name=f"face-{photo_id}"
+                    )
+                    face_tasks.append(t)
+
+                async def on_progress(stats: dict) -> None:
+                    queued = len(face_tasks)
+                    done   = sum(1 for t in face_tasks if t.done())
+                    await task_manager.update_task(task_id,
+                        message=f"Importing… {stats['added']} added "
+                                f"| faces: {done}/{queued} done")
+
+                # ── Phase 1-2: import (face tasks fire per committed batch) ──
+                t_start = _time.time()
+                stats = await scan_library(
+                    bg_db,
+                    custom_path=custom_path,
+                    photo_added_callback=on_photo_imported,
+                    progress_callback=on_progress,
                 )
-                result = await bg_db.execute(needs_scan_q)
-                photo_ids = [r[0] for r in result.fetchall()]
-                if photo_ids:
-                    print(f"[SCAN-LIBRARY] Face embedding backfill: {len(photo_ids)} photos need scan...", flush=True)
-                    task_manager.update_task(task_id, message=f"Face scanning {len(photo_ids)} photos...")
-                    face_count = 0
-                    for i, pid in enumerate(photo_ids, 1):
-                        try:
-                            print(f"[SCAN-LIBRARY] Detecting faces for photo {pid} ({i}/{len(photo_ids)})...", flush=True)
-                            faces, _ = await _detect_and_suggest(pid, bg_db)
-                            face_count += len(faces)
-                            print(f"[SCAN-LIBRARY] Photo {pid}: {len(faces)} faces detected", flush=True)
-                        except Exception as fe:
-                            print(f"[SCAN-LIBRARY] Face scan error for {pid}: {fe}", flush=True)
-                    task_manager.update_task(task_id, status="completed",
-                        message=f"Done: +{added} imported, {face_count} faces detected",
-                        progress={**stats, "faces_detected": face_count})
-                    print(f"[SCAN-LIBRARY] Face scan complete: {face_count} total faces", flush=True)
+                added     = stats.get('added', 0)
+                errors    = stats.get('errors', 0)
+                deleted   = stats.get('deleted', 0)
+                added_ids = stats.get('added_ids', [])
+
+                print(
+                    f"[SCAN-LIBRARY] Import done: +{added} added, {deleted} deleted, "
+                    f"{errors} errors | {len(face_tasks)} face tasks queued",
+                    flush=True,
+                )
+
+                # ── Phase 3: drain remaining face-detect tasks ────────────────
+                if face_tasks:
+                    await task_manager.update_task(task_id,
+                        message=f"Waiting for face detection "
+                                f"({sum(1 for t in face_tasks if not t.done())} remaining)…")
+                    results = await asyncio.gather(*face_tasks, return_exceptions=True)
+                    face_count = sum(r for r in results if isinstance(r, int))
                 else:
-                    print(f"[SCAN-LIBRARY] All photos already have embeddings", flush=True)
-                    task_manager.update_task(task_id, status="completed",
-                        message=f"Done: {added} new, {deleted} deleted, {errors} errors",
-                        progress=stats)
+                    face_count = 0
+
+                # ── Phase 4: single end-of-scan auto-confirm sweep ────────────
+                try:
+                    await task_manager.update_task(task_id, message="Auto-confirming faces…")
+                    confirmed_n = await _auto_confirm_sweep(bg_db)
+                    if confirmed_n:
+                        print(f"[SCAN-LIBRARY] Sweep auto-confirmed {confirmed_n} faces", flush=True)
+                except Exception as se:
+                    print(f"[SCAN-LIBRARY] Sweep error: {se}", flush=True)
+
+                t_total = _time.time() - t_start
+                per_photo_ms = (t_total / max(1, added)) * 1000.0
+                print(
+                    f"[SCAN-LIBRARY] Done: +{added}, {face_count} faces, {errors} errors, "
+                    f"total={t_total:.1f}s ({per_photo_ms:.0f} ms/photo)",
+                    flush=True,
+                )
+                logger.info(
+                    "Scan completed: added=%d faces=%d errors=%d total_s=%.1f ms_per=%0.f",
+                    added, face_count, errors, t_total, per_photo_ms,
+                )
+                await task_manager.update_task(task_id, status="completed",
+                    message=f"Done: +{added} imported, {face_count} faces detected",
+                    progress={**stats, "faces_detected": face_count, "total_s": round(t_total, 1)})
             except Exception as e:
                 print(f"[SCAN-LIBRARY] ERROR: {e}", flush=True)
                 print(tb.format_exc(), flush=True)
-                logger.error(f"Scan library error: {e}", exc_info=True)
-                task_manager.update_task(task_id, status="failed", message=f"Error: {e}")
+                logger.error("Scan library error: %s", e, exc_info=True)
+                await task_manager.update_task(task_id, status="failed", message=f"Error: {e}")
     
     # Start background task (named so lifespan can cancel selectively)
     asyncio.create_task(run_scan(), name=f"fernkam-scan-{task_id}")
@@ -256,11 +316,119 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
     return {"status": "running", "message": "Scan started in background", "task_id": task_id}
 
 
-@router.get("/tasks")
-async def get_tasks() -> dict:
-    """Get all background tasks."""
+@router.post("/scan-faces")
+async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
+    """Run face detection on photos where faces_scanned_at IS NULL.
+
+    Cancellable via /tasks/{task_id}/cancel. Runs in background.
+    """
+    import asyncio
     from fernkam.task_manager import task_manager
-    tasks = task_manager.get_all_tasks()
+
+    # Pick the candidate photo IDs immediately so we can return a count.
+    q = (
+        select(Photo.id)
+        .where(Photo.status == 1)
+        .where(Photo.media_type == "image")
+        .where(Photo.faces_scanned_at.is_(None))
+    )
+    if request.album_path:
+        q = q.where(Photo.album_path.like(f"{request.album_path}%"))
+    q = q.order_by(Photo.id.asc())
+    if request.limit and request.limit > 0:
+        q = q.limit(request.limit)
+
+    photo_ids = [r[0] for r in (await db.execute(q)).fetchall()]
+    if not photo_ids:
+        return {"task_id": None, "queued": 0, "message": "No unscanned photos"}
+
+    import os as _os
+    task_id = await task_manager.create_task(
+        "scan_faces",
+        f"Scanning faces for {len(photo_ids)} photos…"
+    )
+    _cpus = _os.cpu_count() or 4
+    FACE_DETECT_CONCURRENCY = int(_os.getenv("FERNKAM_FACE_CONCURRENCY", str(max(4, _cpus))))
+    PROGRESS_EVERY = 50
+
+    async def run_face_scan():
+        from fernkam.db.session import async_session_factory
+        from fernkam.api.routers.photos import _detect_and_suggest
+        from fernkam.api.routers.faces import _auto_confirm_sweep
+        import time as _time
+
+        async with async_session_factory() as bg_db:
+            try:
+                t_start = _time.time()
+                face_count = 0
+                face_sem = asyncio.Semaphore(FACE_DETECT_CONCURRENCY)
+
+                async def detect_one(pid: int) -> int:
+                    async with face_sem:
+                        async with async_session_factory() as det_db:
+                            try:
+                                faces, _ = await _detect_and_suggest(pid, det_db)
+                                return len(faces)
+                            except Exception as fe:
+                                print(f"[SCAN-FACES] Photo {pid} error: {fe}", flush=True)
+                                return 0
+
+                for batch_start in range(0, len(photo_ids), PROGRESS_EVERY):
+                    task = await task_manager.get_task(task_id)
+                    if task and task.status == "cancelled":
+                        print("[SCAN-FACES] Cancelled", flush=True)
+                        return
+                    batch = photo_ids[batch_start: batch_start + PROGRESS_EVERY]
+                    res = await asyncio.gather(*[detect_one(pid) for pid in batch])
+                    face_count += sum(res)
+                    await task_manager.update_task(
+                        task_id,
+                        message=f"Scanning faces… {batch_start + len(batch)}/{len(photo_ids)} ({face_count} found)",
+                    )
+
+                try:
+                    await task_manager.update_task(task_id, message="Auto-confirming faces…")
+                    confirmed_n = await _auto_confirm_sweep(bg_db)
+                except Exception as se:
+                    print(f"[SCAN-FACES] Sweep error: {se}", flush=True)
+                    confirmed_n = 0
+
+                t_total = _time.time() - t_start
+                ms_per = (t_total / max(1, len(photo_ids))) * 1000.0
+                print(
+                    f"[SCAN-FACES] Done: {len(photo_ids)} photos, {face_count} faces, "
+                    f"{confirmed_n} auto-confirmed, {t_total:.1f}s ({ms_per:.0f} ms/photo)",
+                    flush=True,
+                )
+                await task_manager.update_task(
+                    task_id,
+                    status="completed",
+                    message=f"Done: {face_count} faces in {len(photo_ids)} photos ({confirmed_n} auto-confirmed)",
+                    progress={
+                        "photos": len(photo_ids),
+                        "faces": face_count,
+                        "auto_confirmed": confirmed_n,
+                        "elapsed_s": round(t_total, 1),
+                        "ms_per_photo": round(ms_per),
+                    },
+                )
+            except Exception as e:
+                logger.error("scan_faces error: %s", e, exc_info=True)
+                await task_manager.update_task(task_id, status="failed", message=f"Error: {e}")
+
+    asyncio.create_task(run_face_scan(), name=f"fernkam-scan-faces-{task_id}")
+    return {"task_id": task_id, "queued": len(photo_ids), "message": "running"}
+
+
+@router.get("/tasks")
+async def get_tasks(running_only: bool = Query(False)) -> dict:
+    """Get background tasks. Pass running_only=1 for the lightweight status-bar poll."""
+    from fernkam.task_manager import task_manager
+    tasks = (
+        await task_manager.get_running_tasks()
+        if running_only
+        else await task_manager.get_all_tasks()
+    )
     return {
         "tasks": [
             {
@@ -275,6 +443,13 @@ async def get_tasks() -> dict:
             for t in tasks
         ]
     }
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str) -> dict:
+    """Cancel a running task."""
+    from fernkam.task_manager import task_manager
+    cancelled = await task_manager.cancel_task(task_id)
+    return {"cancelled": cancelled}
 
 
 @router.post("/backfill-thumbnails")

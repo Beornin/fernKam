@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import asyncio
+import logging
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,116 +17,202 @@ from fernkam.config import get_settings
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
 from fernkam.metadata_sync import read_file_metadata_async
 
+log = logging.getLogger(__name__)
+
+# Parallelism tuning — auto-scaled to CPU count, overridable by env vars.
+_CPUS = os.cpu_count() or 4
+METADATA_CONCURRENCY = int(os.getenv("FERNKAM_META_CONCURRENCY", str(min(32, _CPUS * 2))))
+THUMB_CONCURRENCY = int(os.getenv("FERNKAM_THUMB_CONCURRENCY", str(max(4, _CPUS))))
+BATCH_COMMIT_SIZE = 50      # photos committed per transaction
+
 # Supported image/video extensions
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".heic", ".heif", ".raw", ".cr2", ".nef", ".arw", ".dng"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"}
 ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 
+async def _read_meta_safe(sem: asyncio.Semaphore, file_path: Path) -> dict:
+    """Read file metadata with bounded concurrency; never raises."""
+    async with sem:
+        try:
+            return await read_file_metadata_async(file_path)
+        except Exception as exc:
+            log.warning("metadata read error %s: %s", file_path, exc)
+            return {}
+
+
+async def _gen_thumbs_for_photo(
+    sem: asyncio.Semaphore,
+    file_path: Path,
+    photo_id: int,
+    media_type: str,
+) -> tuple[int, dict[str, bytes]]:
+    """Generate all thumbnail sizes for one photo using a thread executor."""
+    from fernkam.thumbnails import generate_thumbnail_bytes
+    if media_type != "image":
+        return photo_id, {}
+    loop = asyncio.get_event_loop()
+    async with sem:
+        results = await asyncio.gather(*[
+            loop.run_in_executor(None, generate_thumbnail_bytes, file_path, size)
+            for size in ("sm", "md", "lg", "xl")
+        ], return_exceptions=True)
+    size_bytes = {
+        sz: data
+        for sz, data in zip(("sm", "md", "lg", "xl"), results)
+        if isinstance(data, bytes) and data
+    }
+    return photo_id, size_bytes
+
+
 async def scan_library(
     db: AsyncSession,
     custom_path: Optional[str] = None,
     progress_callback: Optional[callable] = None,
+    photo_added_callback: Optional[callable] = None,
 ) -> dict:
     """Scan library_root (or custom_path) for new/updated photos and import them.
 
-    - New file on disk  → import with full metadata
+    - New file on disk  → import with full metadata (parallel metadata reads, batch commits)
     - Existing file     → skip (do nothing)
     - File removed      → delete from DB
-    
-    Returns dict with stats: added, skipped, deleted, errors, total
+    - photo_added_callback(photo_id) called per batch, immediately after batch commit
+
+    Returns dict with stats: added, skipped, deleted, errors, total, added_ids
     """
     from sqlalchemy import delete as sa_delete
+    from fernkam.thumbnails import store_thumbnail_to_db
     settings = get_settings()
     main_library = Path(settings.library_root)
     library_root = Path(custom_path) if custom_path else main_library
-    
+
     if not library_root.exists():
         return {"error": f"Library root does not exist: {library_root}"}
-    
+
     stats = {"added": 0, "skipped": 0, "deleted": 0, "errors": 0, "total": 0}
-    
-    # Load all existing DB photos
+
+    # ── Phase 0: load existing photos ──────────────────────────────────────
     existing_photos: dict[tuple[str, str], int] = {}
     result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename))
     for row in result:
-        key = (row.album_path, row.filename)
-        existing_photos[key] = row.id
+        existing_photos[(row.album_path, row.filename)] = row.id
 
-    # Determine which directories to scan.
-    # If custom_path given → walk that directory fully (discovery mode).
-    # Otherwise → only walk albums already known in DB (fast resync mode).
-    if custom_path:
-        scan_dirs = [library_root]
-    else:
-        known_albums = {ap for (ap, _) in existing_photos}
-        scan_dirs = [library_root / ap for ap in known_albums if (library_root / ap).exists()]
-        # Always include library root itself (for root-level photos, album_path == "/")
-        if library_root.exists() and any(ap in ("/", "") for (ap, _) in existing_photos):
-            scan_dirs.append(library_root)
+    # Always walk from the root so new directories are discovered.
+    # Already-imported files are skipped in O(1) via the existing_photos dict,
+    # so this is cheap even for large libraries.
+    scan_dirs = [library_root]
 
+    # ── Phase 1: walk filesystem, collect new files ────────────────────────
+    new_files: list[tuple[Path, str, str, datetime]] = []  # (path, album_path, filename, mtime)
     disk_keys: set[tuple[str, str]] = set()
 
     for scan_dir in scan_dirs:
         for root, dirs, files in os.walk(scan_dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
-            
             for filename in files:
                 ext = Path(filename).suffix.lower()
                 if ext not in ALL_EXTENSIONS:
                     continue
-                
-                stats["total"] += 1
                 full_path = Path(root) / filename
-                
                 try:
                     rel_path = full_path.relative_to(main_library)
                 except ValueError:
                     rel_path = full_path.relative_to(library_root)
                 album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
-                
                 key = (album_path, filename)
                 disk_keys.add(key)
-                
                 if key in existing_photos:
                     stats["skipped"] += 1
                 else:
                     try:
-                        file_mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-                        await import_new_photo(db, full_path, album_path, filename, file_mtime)
-                        await db.commit()  # atomic per photo: success → commit
-                        stats["added"] += 1
-                    except Exception as e:
-                        await db.rollback()  # failure → rollback just this photo
-                        stats["errors"] += 1
-                        import logging
-                        logging.getLogger(__name__).warning(f"Failed to import {full_path}: {e}")
-                
-                if progress_callback and stats["total"] % 100 == 0:
-                    await progress_callback(stats)
-    
-    # Delete DB photos whose files are gone from disk.
-    # When a custom_path is given, only consider photos that live inside that directory
-    # so that photos from other folders are never accidentally removed.
+                        mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+                    except OSError:
+                        mtime = datetime.now(timezone.utc)
+                    new_files.append((full_path, album_path, filename, mtime))
+
+    stats["total"] = stats["skipped"] + len(new_files)
+    log.info("[SCAN] %d new files to import, %d existing", len(new_files), stats["skipped"])
+
+    # ── Phase 2: import in batches with concurrent metadata reads ──────────
+    meta_sem = asyncio.Semaphore(METADATA_CONCURRENCY)
+    thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
+    added_ids: list[int] = []
+
+    for batch_start in range(0, len(new_files), BATCH_COMMIT_SIZE):
+        batch = new_files[batch_start: batch_start + BATCH_COMMIT_SIZE]
+
+        # Read metadata for ALL files in batch concurrently
+        metadatas: list[dict] = list(await asyncio.gather(
+            *[_read_meta_safe(meta_sem, fp) for fp, *_ in batch]
+        ))
+
+        # Insert photos to DB (sequential within batch, savepoint per photo)
+        batch_photos: list[tuple[int, Path, str]] = []  # (photo_id, path, media_type)
+        for (full_path, album_path, filename, file_mtime), metadata in zip(batch, metadatas):
+            try:
+                async with db.begin_nested():  # savepoint — isolates per-photo failures
+                    photo = await import_new_photo(
+                        db, full_path, album_path, filename, file_mtime,
+                        metadata=metadata, generate_thumbs=False,
+                    )
+                batch_photos.append((photo.id, full_path, photo.media_type))
+                added_ids.append(photo.id)
+                stats["added"] += 1
+            except Exception as exc:
+                log.warning("import error %s: %s", full_path, exc)
+                stats["errors"] += 1
+
+        # Generate thumbnails for all photos in batch concurrently
+        if batch_photos:
+            thumb_results = await asyncio.gather(*[
+                _gen_thumbs_for_photo(thumb_sem, fp, pid, mt)
+                for pid, fp, mt in batch_photos
+            ], return_exceptions=True)
+            for res in thumb_results:
+                if isinstance(res, Exception):
+                    continue
+                photo_id, size_bytes = res
+                for size, data in size_bytes.items():
+                    try:
+                        await store_thumbnail_to_db(photo_id, size, data, db)
+                    except Exception:
+                        pass
+
+        await db.commit()
+        log.info("[SCAN] batch %d-%d committed (%d added, %d errors)",
+                 batch_start, batch_start + len(batch), stats["added"], stats["errors"])
+
+        # Fire callback per photo immediately so callers can pipeline face
+        # detection while the next import batch is in flight.
+        if photo_added_callback and batch_photos:
+            for photo_id, _, _ in batch_photos:
+                try:
+                    await photo_added_callback(photo_id)
+                except Exception as cbe:
+                    log.warning("photo_added_callback error for %d: %s", photo_id, cbe)
+
+        if progress_callback:
+            await progress_callback(stats)
+
+    # ── Phase 3: delete removed files ─────────────────────────────────────
     for key, photo_id in existing_photos.items():
         if key in disk_keys:
             continue
         album_path_str, _ = key
         if custom_path:
-            # Check whether this photo's absolute path is under the scanned directory
             photo_abs = main_library / album_path_str
             try:
                 photo_abs.relative_to(library_root)
             except ValueError:
-                continue  # outside scan scope — leave it alone
+                continue
         await db.execute(sa_delete(Photo).where(Photo.id == photo_id))
         stats["deleted"] += 1
-    
-    await db.commit()  # commit deletions
-    
+
+    await db.commit()
+
+    stats["added_ids"] = added_ids
     if progress_callback:
         await progress_callback(stats)
-    
     return stats
 
 
@@ -215,10 +304,16 @@ async def import_new_photo(
     album_path: str,
     filename: str,
     file_mtime: datetime,
+    metadata: Optional[dict] = None,
+    generate_thumbs: bool = True,
 ) -> Photo:
-    """Import a new photo into the database."""
-    # Extract metadata from file (non-blocking)
-    metadata = await read_file_metadata_async(file_path)
+    """Import a new photo into the database.
+
+    Pass pre-read ``metadata`` (from a concurrent gather) to skip re-reading.
+    Set ``generate_thumbs=False`` when the caller handles thumbnails externally.
+    """
+    if metadata is None:
+        metadata = await read_file_metadata_async(file_path)
     
     # Determine media type
     ext = file_path.suffix.lower()
@@ -269,7 +364,7 @@ async def import_new_photo(
     await db.flush()
 
     # Generate thumbnails and store in DB (images only)
-    if media_type == "image":
+    if generate_thumbs and media_type == "image":
         try:
             from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db
             for size in ("sm", "md", "lg", "xl"):

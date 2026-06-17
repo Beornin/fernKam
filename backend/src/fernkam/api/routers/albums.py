@@ -66,6 +66,7 @@ def _build_tree(rows: list[tuple[str, int]]) -> list[AlbumNode]:
     for root in roots:
         sort_children(root)
 
+    roots.sort(key=lambda n: n.name)
     return roots
 
 
@@ -97,52 +98,3 @@ async def debug_albums(db: DB) -> dict:
             for p in photos
         ]
     }
-
-
-@router.post("/fix-empty-paths")
-async def fix_empty_album_paths(db: DB) -> dict:
-    """Fix photos with empty album_path by setting to '/'."""
-    from sqlalchemy import update as sa_update
-    result = await db.execute(
-        sa_update(Photo).where(Photo.album_path == "").values(album_path="/")
-    )
-    await db.commit()
-    return {"fixed": result.rowcount}
-
-
-@router.post("/rescan-paths")
-async def rescan_album_paths(db: DB) -> dict:
-    """Re-scan disk to fix incorrect album_paths by searching for each photo file."""
-    import os
-    from pathlib import Path
-    from sqlalchemy import update as sa_update
-    from fernkam.config import get_settings
-    from fernkam.thumbnails import photo_disk_path
-
-    settings = get_settings()
-    library = Path(settings.library_root)
-    result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename))
-    photos = result.fetchall()
-
-    fixed = 0
-    not_found = 0
-    for p in photos:
-        current_path = photo_disk_path(p.album_path, p.filename)
-        if current_path.exists():
-            continue
-        # Search for the file under library root
-        found = False
-        for root, _, files in os.walk(library):
-            if p.filename in files:
-                full = Path(root) / p.filename
-                rel = full.relative_to(library)
-                new_album = str(rel.parent).replace("\\", "/") if rel.parent != Path(".") else "/"
-                await db.execute(sa_update(Photo).where(Photo.id == p.id).values(album_path=new_album))
-                fixed += 1
-                found = True
-                break
-        if not found:
-            not_found += 1
-
-    await db.commit()
-    return {"fixed": fixed, "not_found": not_found}

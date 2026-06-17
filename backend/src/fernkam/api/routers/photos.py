@@ -85,7 +85,7 @@ async def list_photos(
     date_to: Optional[date] = Query(None),
     sort: str = Query("taken_at_desc"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(200, ge=1, le=2000),
 ) -> PhotoPage:
     print(f"[PHOTOS] list_photos: album_path={album_path!r}", flush=True)
     q = await _photo_query(album_path, tag_id, rating_min, media_type, search, date_from, date_to, db)
@@ -203,7 +203,7 @@ async def map_points(
     db: DB,
     album_path: Optional[str] = Query(None),
     tag_id: Optional[int] = Query(None),
-    limit: int = Query(5000, le=20000),
+    limit: int = Query(5000, le=200000),
 ) -> list[dict]:
     """Return lat/lon + id for photos with GPS — used by the map view."""
     q = (
@@ -226,11 +226,28 @@ async def map_points(
 
 
 async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int]:
-    """Core detect + similarity-suggest logic. Returns (face_outs, suggested_count)."""
+    """Core detect + similarity-suggest logic. Returns (face_outs, suggested_count).
+
+    Pipeline:
+      1. Decode image in default thread pool (parallelisable across scan slots).
+      2. Run GPU inference in single-worker FACE_EXECUTOR (serialised).
+      3. Update embeddings for overlapping existing faces (e.g. XMP-restored).
+      4. Batch ignored + confirmed similarity queries for all new detections.
+      5. Persist Face records with crop thumbnails.
+    """
     from fernkam.face_processor import (
-        bytes_to_embedding, detect_and_embed, embedding_to_bytes, find_similar_numpy,
+        FACE_EXECUTOR, decode_image, run_face_inference,
+        embedding_to_bytes, embedding_to_pgvector,
+        find_similar_pg, find_similar_pg_batch,
     )
-    from fernkam.thumbnails import photo_disk_path
+    from fernkam.thumbnails import photo_disk_path, RAW_EXTENSIONS
+    from fernkam.config import get_settings
+    import cv2 as _cv2
+    from datetime import datetime, timezone
+
+    settings = get_settings()
+    AUTO_CONFIRM_THRESH = settings.auto_confirm_thresh
+    SUGGEST_THRESH = settings.suggest_thresh
 
     photo = (await db.execute(select(Photo).where(Photo.id == photo_id))).scalar_one_or_none()
     if not photo:
@@ -238,35 +255,37 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
 
     src = photo_disk_path(photo.album_path, photo.filename)
     if not src.exists():
-        raise HTTPException(422, f"Source file not found: {src}")
+        await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+        await db.commit()
+        return [], 0
 
-    import cv2 as _cv2
+    if src.suffix.lower() in RAW_EXTENSIONS:
+        await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+        await db.commit()
+        return [], 0
 
     loop = asyncio.get_event_loop()
-    from datetime import datetime, timezone
-    detections = await loop.run_in_executor(None, detect_and_embed, src)
+
+    # ── Step 1: Decode image (default pool — runs in parallel with other decodes) ──
+    img_bgr = await loop.run_in_executor(None, decode_image, src)
+    if img_bgr is None:
+        await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+        await db.commit()
+        return [], 0
+
+    # ── Step 2: GPU inference (single-worker FACE_EXECUTOR — keeps VRAM predictable) ──
+    detections = await loop.run_in_executor(FACE_EXECUTOR, run_face_inference, img_bgr)
     if not detections:
         await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
         await db.commit()
         return [], 0
 
-    # Read image once for cropping all face regions
-    img_bgr = _cv2.imread(str(src))
-
-    # Load existing faces on this photo (full rows so we can update embeddings)
+    # Load existing faces on this photo so we can update embeddings on XMP-restored records.
     existing_faces = (await db.execute(
-        select(Face)
-        .where(Face.photo_id == photo_id)
+        select(Face).where(Face.photo_id == photo_id)
     )).scalars().all()
 
-    # Load confirmed faces with embeddings for suggestion matching
-    confirmed = (await db.execute(
-        select(Face.id, Face.embedding, Face.person_tag_id)
-        .where(Face.status == "confirmed", Face.embedding.isnot(None), Face.person_tag_id.isnot(None))
-    )).fetchall()
-
     def _overlaps(det: dict, face) -> bool:
-        """True if detection overlaps existing face by >40% IoU or centre within 15% of face size."""
         if face.x is None:
             return False
         ix1 = max(det["x"], face.x)
@@ -279,58 +298,78 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
         union = det["w"] * det["h"] + face.w * face.h - inter
         return (inter / union) > 0.4
 
-    SUGGEST_THRESH = 0.55
-    AUTO_CONFIRM_THRESH = 0.90
+    # ── Step 3: Handle detections that overlap existing face records ──
+    new_dets: list[dict] = []
+    for det in detections:
+        matched = next((f for f in existing_faces if _overlaps(det, f)), None)
+        if matched is not None:
+            if matched.embedding is None:
+                matched.embedding = embedding_to_bytes(det["embedding"])
+                matched.embedding_v = embedding_to_pgvector(det["embedding"])
+                if matched.person_tag_id is None:
+                    m = await find_similar_pg(
+                        db, det["embedding"], confirmed_only=True,
+                        k=1, min_score=SUGGEST_THRESH,
+                    )
+                    if m:
+                        matched.person_tag_id = m[0]["person_tag_id"]
+                        matched.status = "confirmed" if m[0]["score"] >= AUTO_CONFIRM_THRESH else "suggested"
+                await db.flush()
+        else:
+            new_dets.append(det)
+
+    if not new_dets:
+        await db.commit()
+        await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
+        await db.commit()
+        return [], 0
+
+    # ── Step 4: Batch similarity lookups — 2 queries total, not 2N ──
+    new_embs = [d["embedding"] for d in new_dets]
+
+    ign_batch = await find_similar_pg_batch(
+        db, new_embs, ignored_only=True, k=1, min_score=AUTO_CONFIRM_THRESH,
+    )
+
+    non_ign_idx = [i for i, r in enumerate(ign_batch) if not r]
+    conf_for_non_ign = await find_similar_pg_batch(
+        db, [new_embs[i] for i in non_ign_idx],
+        confirmed_only=True, k=1, min_score=SUGGEST_THRESH,
+    ) if non_ign_idx else []
+
+    conf_batch: list[list[dict]] = [[] for _ in new_dets]
+    for pos, orig_i in enumerate(non_ign_idx):
+        conf_batch[orig_i] = conf_for_non_ign[pos]
+
+    # ── Step 5: Create Face records ──
     new_faces: list[tuple[Face, float | None]] = []
     suggested = 0
 
-    for det in detections:
-        # Check if detection overlaps an existing face
-        matched_existing = next((f for f in existing_faces if _overlaps(det, f)), None)
-        if matched_existing is not None:
-            # Update embedding on the existing face (e.g. XMP-restored face with no embedding)
-            if matched_existing.embedding is None:
-                matched_existing.embedding = embedding_to_bytes(det["embedding"])
-                # Also try to auto-suggest person if confirmed templates exist
-                if confirmed and matched_existing.person_tag_id is None:
-                    matches = find_similar_numpy(
-                        det["embedding"],
-                        [(r.id, r.embedding, r.person_tag_id) for r in confirmed],
-                        k=1, min_score=SUGGEST_THRESH,
-                    )
-                    if matches:
-                        matched_existing.person_tag_id = matches[0]["person_tag_id"]
-                        matched_existing.status = "confirmed" if matches[0]["score"] >= AUTO_CONFIRM_THRESH else "suggested"
-                await db.flush()
-            continue
-        emb_bytes = embedding_to_bytes(det["embedding"])
-        status = "unconfirmed"
-        person_tag_id = None
-        score: float | None = round(float(det["score"]), 3)
+    for i, det in enumerate(new_dets):
+        if ign_batch[i]:
+            status = "ignored"
+            person_tag_id = None
+            score: float | None = round(float(det["score"]), 2)
+        elif conf_batch[i]:
+            best = conf_batch[i][0]
+            person_tag_id = best["person_tag_id"]
+            match_score = best["score"]
+            status = "confirmed" if match_score >= AUTO_CONFIRM_THRESH else "suggested"
+            score = round(match_score, 2)
+            suggested += 1
+        else:
+            status = "unconfirmed"
+            person_tag_id = None
+            score = round(float(det["score"]), 2)
 
-        if confirmed:
-            matches = find_similar_numpy(
-                det["embedding"],
-                [(r.id, r.embedding, r.person_tag_id) for r in confirmed],
-                k=1,
-                min_score=SUGGEST_THRESH,
-            )
-            if matches:
-                person_tag_id = matches[0]["person_tag_id"]
-                match_score = matches[0]["score"]
-                status = "confirmed" if match_score >= AUTO_CONFIRM_THRESH else "suggested"
-                score = round(match_score, 3)
-                suggested += 1
-
-        # Generate face crop bytes while image is in memory
         crop_bytes: bytes | None = None
-        if img_bgr is not None:
-            h_img, w_img = img_bgr.shape[:2]
-            pad = int(max(det["w"], det["h"]) * 0.2)
-            x1 = max(0, det["x"] - pad)
-            y1 = max(0, det["y"] - pad)
-            x2 = min(w_img, det["x"] + det["w"] + pad)
-            y2 = min(h_img, det["y"] + det["h"] + pad)
+        h_img, w_img = img_bgr.shape[:2]
+        pad = int(max(det["w"], det["h"]) * 0.2)
+        x1 = max(0, det["x"] - pad)
+        y1 = max(0, det["y"] - pad)
+        x2 = min(w_img, det["x"] + det["w"] + pad)
+        y2 = min(h_img, det["y"] + det["h"] + pad)
+        if x2 > x1 and y2 > y1:
             crop = _cv2.resize(img_bgr[y1:y2, x1:x2], (200, 200), interpolation=_cv2.INTER_AREA)
             ok, buf = _cv2.imencode(".webp", crop, [_cv2.IMWRITE_WEBP_QUALITY, 85])
             if ok:
@@ -339,10 +378,13 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
         face = Face(
             photo_id=photo_id,
             x=det["x"], y=det["y"], w=det["w"], h=det["h"],
-            embedding=emb_bytes,
+            embedding=embedding_to_bytes(det["embedding"]),
+            embedding_v=embedding_to_pgvector(det["embedding"]),
             status=status,
             person_tag_id=person_tag_id,
             crop_data=crop_bytes,
+            det_score=round(float(det["score"]), 4),
+            best_match_score=round(float(score), 4) if score is not None and status in ("suggested", "confirmed") else None,
         )
         db.add(face)
         new_faces.append((face, score))
@@ -367,7 +409,6 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             score=score,
         ))
 
-    from datetime import datetime, timezone
     await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
     await db.commit()
     return results, suggested
@@ -406,43 +447,19 @@ async def batch_detect_faces(photo_ids: list[int], db: DB) -> BatchDetectResult:
     )
 
 
-@router.post("/batch-detect-all", response_model=BatchDetectResult)
-async def batch_detect_all_faces(db: DB) -> BatchDetectResult:
-    """Detect faces in all photos not yet scanned by InsightFace."""
-    photo_ids_q = (
-        select(Photo.id)
-        .where(Photo.status == 1)
-        .where(Photo.media_type == "image")
-        .where(Photo.faces_scanned_at.is_(None))
-        .order_by(Photo.id)
-    )
-    rows = (await db.execute(photo_ids_q)).fetchall()
-    photo_ids = [r[0] for r in rows]
+@router.post("/batch-detect-all")
+async def batch_detect_all_faces(db: DB) -> dict:
+    """Detect faces in all unscanned photos.
 
-    processed = 0
-    faces_found = 0
-    suggested = 0
-    errors = 0
-    details: list[dict] = []
-    for photo_id in photo_ids:
-        try:
-            faces, sug = await _detect_and_suggest(photo_id, db)
-            processed += 1
-            faces_found += len(faces)
-            suggested += sug
-            details.append({"photo_id": photo_id, "faces": len(faces), "suggested": sug})
-        except Exception as exc:
-            errors += 1
-            details.append({"photo_id": photo_id, "error": str(exc)})
+    Delegates to the /sync/scan-faces background task and returns immediately
+    with a task_id. The blocking serial implementation has been removed to
+    prevent long-running HTTP connections on large libraries.
+    """
+    from fernkam.api.routers.sync import scan_faces as _scan_faces
+    from fernkam.api.routers.sync import ScanFacesRequest
 
-    # Sweep all unconfirmed faces (including pre-existing ones) against confirmed templates
-    from fernkam.api.routers.faces import _auto_confirm_sweep
-    auto_confirmed = await _auto_confirm_sweep(db)
-
-    return BatchDetectResult(
-        processed=processed, faces_found=faces_found,
-        suggested=suggested + auto_confirmed, errors=errors, details=details,
-    )
+    result = await _scan_faces(db, ScanFacesRequest())
+    return result
 
 
 @router.patch("/{photo_id}", response_model=PhotoSummary)

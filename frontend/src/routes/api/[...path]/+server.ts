@@ -14,6 +14,10 @@ async function proxy(request: Request, path: string): Promise<Response> {
 		if (body) init.body = body;
 	}
 	const res = await fetch(backendUrl, init);
+	// 204/205/304 are null-body statuses — Response constructor rejects a body for these
+	if (res.status === 204 || res.status === 205 || res.status === 304) {
+		return new Response(null, { status: res.status });
+	}
 	const data = await res.text();
 	return new Response(data, {
 		status: res.status,

@@ -71,7 +71,7 @@ async def create_person(db: DB, name: str = Body(...), parent_id: Optional[int] 
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
-async def rename_person(person_id: int, db: DB, name: str = Body(...)) -> PersonOut:
+async def rename_person(person_id: int, db: DB, name: str = Body(..., embed=True)) -> PersonOut:
     tag = (await db.execute(
         select(Tag).where(Tag.id == person_id, Tag.is_person == True)
     )).scalar_one_or_none()
@@ -94,7 +94,7 @@ async def delete_person(person_id: int, db: DB) -> None:
         raise HTTPException(404, "Person not found")
     await db.execute(
         update(Face).where(Face.person_tag_id == person_id)
-        .values(person_tag_id=None, status="unknown")
+        .values(person_tag_id=None, status="unconfirmed")
     )
     await db.delete(tag)
     await db.commit()

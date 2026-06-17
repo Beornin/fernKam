@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
 	import { Activity, CheckCircle, XCircle, Clock } from '@lucide/svelte';
 	import { onMount } from 'svelte';
 
@@ -78,9 +78,17 @@
 							<div>
 								<div class="font-semibold">{task.task_type}</div>
 								<div class="text-sm text-gray-600">{task.message}</div>
-								{#if task.progress}
+								{#if task.progress && task.task_type === 'auto_confirm'}
+									<div class="text-xs text-gray-500 mt-1.5 flex flex-wrap gap-3">
+										<span>Pass <strong>{task.progress.pass}</strong></span>
+										<span>&#10003; <strong>{task.progress.confirmed}</strong> confirmed</span>
+										<span>&#10007; <strong>{task.progress.ignored}</strong> ignored</span>
+										<span>? <strong>{task.progress.suggested}</strong> queued</span>
+										<span class="text-gray-400">{task.progress.scored} scored</span>
+									</div>
+								{:else if task.progress}
 									<div class="text-sm text-gray-500 mt-1">
-										Added: {task.progress.added || 0}, Updated: {task.progress.updated || 0}, 
+										Added: {task.progress.added || 0}, Updated: {task.progress.updated || 0},
 										Skipped: {task.progress.skipped || 0}, Errors: {task.progress.errors || 0}
 									</div>
 								{/if}

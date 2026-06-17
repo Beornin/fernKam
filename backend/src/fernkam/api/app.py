@@ -6,11 +6,27 @@ import signal
 import sys
 from contextlib import asynccontextmanager
 
+# Add CUDA paths to PATH so onnxruntime-gpu can find CUDA/cuDNN DLLs.
+# DaVinci Resolve includes cuDNN 9, which works with onnxruntime-gpu.
+_CUDA_PATHS = [
+    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin",
+    r"C:\Program Files\Blackmagic Design\DaVinci Resolve",
+]
+for _p in _CUDA_PATHS:
+    if os.path.isdir(_p) and _p not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _p + os.pathsep + os.environ["PATH"]
+
+# Install native stderr capture BEFORE importing cv2/onnxruntime/insightface so
+# their cached FD-2 reference is the piped one. Keeps OpenCV/ffmpeg warnings out
+# of nowhere and into the app_logs table.
+from fernkam import stderr_capture as _stderr_capture
+_stderr_capture.install()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from fernkam.api.routers import albums, faces, media, people, photos, sync, tags
+from fernkam.api.routers import albums, backup, faces, logs as logs_router, media, people, photos, sync, tags, workflows
 from fernkam.db.session import get_async_engine
 
 # Configure logging to output to terminal
@@ -33,6 +49,47 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"✗ Database connection failed: {e}")
         print(f"  Check your PostgreSQL configuration in .env file")
+    # Ensure pgvector extension/column/index/backfill are in place
+    try:
+        from fernkam.db.pgvector_setup import ensure_pgvector
+        await ensure_pgvector(get_async_engine())
+    except Exception as _e:
+        print(f"[pgvector] setup failed: {_e}", flush=True)
+
+    # Ensure app_logs table exists, then start the async sink + retention loop.
+    try:
+        from fernkam.db.app_logs_setup import ensure_app_logs
+        await ensure_app_logs(get_async_engine())
+        from fernkam import logs_sink as _ls
+        await _ls.start_sink()
+        _ls.install_python_handler(
+            min_level=getattr(logging, os.getenv("FERNKAM_LOG_DB_LEVEL", "WARNING").upper(), logging.WARNING)
+        )
+        import asyncio as __asyncio
+        __asyncio.create_task(_ls.retention_loop(), name="fernkam-logs-retention")
+    except Exception as _e:
+        print(f"[app_logs] setup failed: {_e}", flush=True)
+
+    # Ensure tasks table exists
+    try:
+        from fernkam.db.tasks_setup import ensure_tasks
+        await ensure_tasks(get_async_engine())
+    except Exception as _e:
+        print(f"[tasks] setup failed: {_e}", flush=True)
+
+    # Ensure person_centroids table + det_score column exist; drop TWINS-blocking index
+    try:
+        from fernkam.db.person_centroids_setup import (
+            ensure_person_centroids,
+            ensure_det_score_column,
+            drop_single_confirmed_per_photo_constraint,
+        )
+        await ensure_person_centroids(get_async_engine())
+        await ensure_det_score_column(get_async_engine())
+        await drop_single_confirmed_per_photo_constraint(get_async_engine())
+    except Exception as _e:
+        print(f"[person_centroids] setup failed: {_e}", flush=True)
+
     # Pre-warm InsightFace model in background (avoids long hang on first face scan)
     import asyncio as _asyncio
     async def _warm_face_model():
@@ -108,7 +165,10 @@ app.include_router(tags.router, prefix="/api/tags", tags=["tags"])
 app.include_router(faces.router, prefix="/api/faces", tags=["faces"])
 app.include_router(people.router, prefix="/api/people", tags=["people"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+app.include_router(backup.router, prefix="/api/backup", tags=["backup"])
+app.include_router(logs_router.router, prefix="/api/logs", tags=["logs"])
 app.include_router(media.router, prefix="/media", tags=["media"])
+app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 
 
 @app.exception_handler(Exception)

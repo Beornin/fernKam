@@ -21,6 +21,32 @@ BACKEND_URL = "http://localhost:8000"
 BACKEND_HEALTH_URL = "http://127.0.0.1:8000/api/health"  # Use 127.0.0.1 for Windows compatibility
 
 
+def _kill_tree(proc) -> None:
+    """Kill a process and all its children reliably.
+
+    On Windows, proc.terminate() only kills the immediate shell (uv/npm),
+    leaving granian workers and node/Vite processes orphaned.
+    taskkill /F /T kills the entire process tree.
+    """
+    pid = proc.pid
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        try:
+            import signal as _signal
+            os.killpg(os.getpgid(pid), _signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except (TimeoutExpired, KeyboardInterrupt):
+        proc.kill()
+
+
 def wait_for_backend(backend_proc, timeout=60):
     """Wait for backend process to be ready."""
     print(f"[launcher] Waiting for backend (timeout: {timeout}s)...", flush=True)
@@ -157,31 +183,25 @@ def main():
     print("Press Ctrl+C to stop")
     print("=" * 60)
 
+    def shutdown(exit_code: int = 0) -> None:
+        print("\n[launcher] Shutting down...", flush=True)
+        _kill_tree(frontend_proc)
+        _kill_tree(backend_proc)
+        print("[launcher] Stopped.", flush=True)
+        sys.exit(exit_code)
+
     try:
         while True:
             # Check if backend died (critical)
             if backend_proc.poll() is not None:
                 print("[launcher] ✗ Backend process exited with code:", backend_proc.returncode, flush=True)
-                print("[launcher] Shutting down...", flush=True)
-                frontend_proc.terminate()
-                sys.exit(1)
+                shutdown(1)
             # Check if frontend died (non-critical but report)
             if frontend_proc.poll() is not None:
                 print("[launcher] ⚠ Frontend process exited with code:", frontend_proc.returncode, flush=True)
             time.sleep(5)
     except KeyboardInterrupt:
-        print("\n[launcher] Shutting down...")
-        backend_proc.terminate()
-        frontend_proc.terminate()
-        try:
-            backend_proc.wait(timeout=5)
-        except TimeoutExpired:
-            backend_proc.kill()
-        try:
-            frontend_proc.wait(timeout=5)
-        except TimeoutExpired:
-            frontend_proc.kill()
-        print("[launcher] Stopped.")
+        shutdown(0)
 
 
 if __name__ == "__main__":

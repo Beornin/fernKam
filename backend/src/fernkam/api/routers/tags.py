@@ -150,6 +150,14 @@ async def update_tag(
     )
 
 
+@router.delete("/{tag_id}/from-photos", status_code=200)
+async def remove_tag_from_photos(tag_id: int, db: DB) -> dict:
+    """Remove this tag from all photos without deleting the tag itself."""
+    result = await db.execute(delete(PhotoTag).where(PhotoTag.tag_id == tag_id))
+    await db.commit()
+    return {"removed": result.rowcount}
+
+
 @router.delete("/{tag_id}", status_code=204)
 async def delete_tag(tag_id: int, db: DB) -> None:
     await db.execute(delete(PhotoTag).where(PhotoTag.tag_id == tag_id))

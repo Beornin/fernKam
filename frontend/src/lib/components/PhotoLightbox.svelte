@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
 import { api, type PhotoDetail, type TagOut, type FaceOut } from '$lib/api';
 import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera, Aperture, User, Eye, EyeOff, Info, Trash2, ScanFace, Check, XCircle, Ban } from '@lucide/svelte';
+import { goto } from '$app/navigation';
 import TagPicker from './TagPicker.svelte';
 
 let {
@@ -236,6 +237,36 @@ function fmtSize(bytes: number | null) {
 if (!bytes) return '—';
 return bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${(bytes / 1e3).toFixed(0)} KB`;
 }
+
+function fmtShutter(v: unknown): string {
+const n = Number(v);
+if (isNaN(n) || n <= 0) return '—';
+if (n >= 1) return n % 1 === 0 ? `${n}s` : `${n.toFixed(1)}s`;
+return `1/${Math.round(1 / n)}`;
+}
+
+function fmtAperture(v: unknown): string {
+const n = Number(v);
+if (isNaN(n)) return '—';
+return `f/${n % 1 === 0 ? n : n.toFixed(1)}`;
+}
+
+const WB_NAMES: Record<number, string> = {
+0: 'Auto', 1: 'Manual', 3: 'Incandescent',
+4: 'Fluorescent', 5: 'Flash', 6: 'Cloudy',
+9: 'Fine Weather', 10: 'Shade',
+};
+
+function fmtWB(v: unknown): string {
+const n = Number(v);
+return WB_NAMES[n] ?? String(v);
+}
+
+function fmtFocal(v: unknown): string {
+const n = Number(v);
+if (isNaN(n)) return '—';
+return `${n % 1 === 0 ? n : n.toFixed(1)} mm`;
+}
 </script>
 
 <svelte:window onkeydown={handleKey} />
@@ -427,10 +458,46 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 <dd class="text-zinc-200 text-right">{[detail.lens.make, detail.lens.model].filter(Boolean).join(' ')}</dd>
 </div>
 {/if}
+{#if detail.exif?.ExposureTime !== undefined}
+<div class="flex justify-between">
+<dt class="text-zinc-500">Shutter</dt>
+<dd class="text-zinc-200">{fmtShutter(detail.exif.ExposureTime)}</dd>
+</div>
+{/if}
+{#if detail.exif?.FNumber !== undefined}
+<div class="flex justify-between">
+<dt class="text-zinc-500">Aperture</dt>
+<dd class="text-zinc-200">{fmtAperture(detail.exif.FNumber)}</dd>
+</div>
+{/if}
+{#if detail.exif?.ISO !== undefined}
+<div class="flex justify-between">
+<dt class="text-zinc-500">ISO</dt>
+<dd class="text-zinc-200">{detail.exif.ISO}</dd>
+</div>
+{/if}
+{#if detail.exif?.WhiteBalance !== undefined}
+<div class="flex justify-between">
+<dt class="text-zinc-500">White Balance</dt>
+<dd class="text-zinc-200">{fmtWB(detail.exif.WhiteBalance)}</dd>
+</div>
+{/if}
+{#if detail.exif?.FocalLength !== undefined}
+<div class="flex justify-between">
+<dt class="text-zinc-500">Focal Length</dt>
+<dd class="text-zinc-200">{fmtFocal(detail.exif.FocalLength)}{detail.exif.FocalLengthIn35mmFormat !== undefined ? ` (${fmtFocal(detail.exif.FocalLengthIn35mmFormat)} eq)` : ''}</dd>
+</div>
+{/if}
 {#if detail.latitude !== null && detail.longitude !== null}
 <div class="flex justify-between">
 <dt class="text-zinc-500 flex items-center gap-1"><MapPin size={12} /> GPS</dt>
-<dd class="text-zinc-200">{detail.latitude?.toFixed(5)}, {detail.longitude?.toFixed(5)}</dd>
+<dd>
+<button
+class="text-amber-400 hover:text-amber-300 hover:underline text-sm transition-colors"
+onclick={() => goto(`/map?lat=${detail!.latitude}&lon=${detail!.longitude}&zoom=14`)}
+title="Show on map"
+>{detail.latitude?.toFixed(5)}, {detail.longitude?.toFixed(5)}</button>
+</dd>
 </div>
 {/if}
 </dl>

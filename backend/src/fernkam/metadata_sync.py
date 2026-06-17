@@ -33,6 +33,28 @@ _EXIFTOOL_PATHS = [
     "/usr/local/bin/exiftool",
 ]
 
+_GPS_INVALID = frozenset({"undef", "undefined", "none", "n/a", ""})
+
+
+def _gps_float(val) -> Optional[float]:
+    """Convert exiftool GPS value to float, or None for absent / invalid values.
+
+    Exiftool returns '' or 'undef' for GPS fields when no GPS data is present
+    (even with -n flag), which would crash a NUMERIC column insert.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if s.lower() in _GPS_INVALID:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
 COLOR_LABEL_FROM_NAME: dict[str, int] = {
     "red": 1, "orange": 2, "yellow": 3, "green": 4,
     "blue": 5, "purple": 6, "gray": 7, "grey": 7,
@@ -212,9 +234,9 @@ def read_file_metadata(file_path: Path) -> dict:
         "height": meta.get("ImageHeight") or meta.get("ExifImageHeight"),
         "file_size": file_size,
         "taken_at": taken_at,
-        "latitude": meta.get("GPSLatitude"),
-        "longitude": meta.get("GPSLongitude"),
-        "altitude": meta.get("GPSAltitude"),
+        "latitude": _gps_float(meta.get("GPSLatitude")),
+        "longitude": _gps_float(meta.get("GPSLongitude")),
+        "altitude": _gps_float(meta.get("GPSAltitude")),
         "orientation": meta.get("Orientation"),
         "camera": camera_info,
         "lens": lens_info,
