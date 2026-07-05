@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Download, RefreshCw, ArrowRight, Database, HardDrive, Activity, Trash2, Save, RotateCcw, Workflow } from '@lucide/svelte';
+	import { Download, RefreshCw, ArrowRight, Database, HardDrive, Activity, Trash2, Save, RotateCcw, Workflow, FileSearch } from '@lucide/svelte';
+	import { api } from '$lib/api';
 
 	let showImportModal = $state(false);
 	let importPath = $state('');
@@ -11,6 +12,27 @@
 	let resetConfirmText = $state('');
 	let resetting = $state(false);
 	let resetResult = $state<string | null>(null);
+
+	// Refresh metadata state
+	let refreshingMeta = $state(false);
+	let refreshMetaResult = $state<string | null>(null);
+
+	async function refreshAllMetadata() {
+		refreshingMeta = true;
+		refreshMetaResult = null;
+		try {
+			const data = await api.sync.refreshMetadata();
+			if (data.task_id) {
+				refreshMetaResult = `Started: ${data.queued.toLocaleString()} photos queued. Check Tasks for progress.`;
+			} else {
+				refreshMetaResult = data.message;
+			}
+		} catch (e) {
+			refreshMetaResult = `Failed: ${e}`;
+		} finally {
+			refreshingMeta = false;
+		}
+	}
 
 	// Backup state
 	let showBackupModal = $state(false);
@@ -253,6 +275,27 @@
 			<h2 class="text-lg font-semibold text-zinc-100 mb-1">Workflows</h2>
 			<p class="text-sm text-zinc-400">Run file-system workflows (sort, clean RAW)</p>
 		</a>
+
+		<!-- Refresh All Metadata -->
+		<button
+			onclick={refreshAllMetadata}
+			disabled={refreshingMeta}
+			class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 text-left hover:border-sky-500/50 hover:bg-zinc-800/50 transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
+		>
+			<div class="flex items-start justify-between mb-4">
+				<div class="p-3 bg-sky-500/10 rounded-lg">
+					<FileSearch size={24} class="text-sky-400 {refreshingMeta ? 'animate-pulse' : ''}" />
+				</div>
+				<ArrowRight size={20} class="text-zinc-600 group-hover:text-sky-400 transition-colors" />
+			</div>
+			<h2 class="text-lg font-semibold text-zinc-100 mb-1">Refresh All Metadata</h2>
+			<p class="text-sm text-zinc-400">Re-read full EXIF, GPS, camera, dates from all files</p>
+			{#if refreshMetaResult}
+				<div class="mt-3 text-xs {refreshMetaResult.startsWith('Failed') ? 'text-red-400' : 'text-sky-400'}">
+					{refreshMetaResult}
+				</div>
+			{/if}
+		</button>
 
 		<!-- Reset Database -->
 		<button

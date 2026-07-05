@@ -167,6 +167,39 @@ class TaskManager:
         except Exception:
             return [t for t in self._cache.values() if t.status == "running"]
 
+    async def cancel_stale_tasks(self) -> int:
+        """Mark all running tasks as cancelled (call once at startup).
+
+        Running tasks from a previous process will never complete; leaving them
+        as 'running' causes the frontend to spin indefinitely.
+        """
+        from fernkam.db.models.tasks import BackgroundTask
+        from sqlalchemy import update, select
+
+        now = datetime.now(timezone.utc)
+        try:
+            async with await self._db_session() as db:
+                rows = (await db.execute(
+                    select(BackgroundTask).where(BackgroundTask.status == "running")
+                )).scalars().all()
+                count = len(rows)
+                if count:
+                    await db.execute(
+                        update(BackgroundTask)
+                        .where(BackgroundTask.status == "running")
+                        .values(status="cancelled",
+                                message="Cancelled: server restarted",
+                                completed_at=now)
+                    )
+                    await db.commit()
+                    for row in rows:
+                        if row.id in self._cache:
+                            self._cache[row.id].status = "cancelled"
+                return count
+        except Exception as exc:
+            print(f"[task_manager] cancel_stale_tasks error: {exc}", flush=True)
+            return 0
+
     async def cancel_task(self, task_id: str) -> bool:
         """Mark a task as cancelled. Returns True if it existed and was running."""
         task = self._cache.get(task_id)

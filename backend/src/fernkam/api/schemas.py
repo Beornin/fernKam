@@ -85,6 +85,7 @@ class PhotoSummary(BaseModel):
     width: Optional[int]
     height: Optional[int]
     file_size: Optional[int] = None
+    duration_secs: Optional[float] = None
 
 
 class PhotoDetail(PhotoSummary):
@@ -96,6 +97,10 @@ class PhotoDetail(PhotoSummary):
     latitude: Optional[float]
     longitude: Optional[float]
     altitude: Optional[float]
+    country_code: Optional[str] = None
+    country: Optional[str] = None
+    state: Optional[str] = None
+    city: Optional[str] = None
     orientation: Optional[int]
     color_depth: Optional[int]
     color_model: Optional[int]
@@ -111,6 +116,9 @@ class PhotoUpdate(BaseModel):
     color_label: Optional[int] = None
     title: Optional[str] = None
     caption: Optional[str] = None
+    taken_at: Optional[datetime] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class AlbumNode(BaseModel):
@@ -125,6 +133,7 @@ class PhotoPage(BaseModel):
     page: int
     page_size: int
     items: list[PhotoSummary]
+    next_cursor: Optional[str] = None
 
 
 class PersonOut(BaseModel):

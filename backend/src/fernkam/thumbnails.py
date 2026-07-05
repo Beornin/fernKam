@@ -173,11 +173,53 @@ def get_or_create_thumbnail(
         return None
 
 
+def _resolve_ffmpeg() -> str | None:
+    """Return a usable ffmpeg executable path, or None if not found."""
+    import shutil
+    settings = get_settings()
+    configured = Path(settings.ffmpeg_path)
+    if configured.exists():
+        return str(configured)
+    # Fall back to ffmpeg on system PATH
+    found = shutil.which("ffmpeg")
+    return found  # None if not found anywhere
+
+
+def probe_video_duration(src: Path) -> float | None:
+    """Return video duration in seconds using ffprobe, or None on failure."""
+    import shutil, json as _json
+    ffmpeg = _resolve_ffmpeg()
+    if not ffmpeg:
+        return None
+    ffprobe = str(Path(ffmpeg).with_name("ffprobe"))
+    if not Path(ffprobe).exists():
+        found = shutil.which("ffprobe")
+        if not found:
+            return None
+        ffprobe = found
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "quiet", "-print_format", "json",
+                "-show_streams", "-select_streams", "v:0", str(src),
+            ],
+            capture_output=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        data = _json.loads(result.stdout)
+        streams = data.get("streams", [])
+        if streams and "duration" in streams[0]:
+            return float(streams[0]["duration"])
+        return None
+    except Exception:
+        return None
+
+
 def _video_thumbnail(src: Path, dest: Path, size: str) -> Path | None:
     """Extract a frame at 10% into the video and save as WebP thumbnail."""
-    settings = get_settings()
-    ffmpeg = Path(settings.ffmpeg_path)
-    if not ffmpeg.exists():
+    ffmpeg = _resolve_ffmpeg()
+    if not ffmpeg:
         return None
 
     max_dim = SIZES[size][0]

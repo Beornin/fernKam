@@ -106,23 +106,59 @@ def decode_image(image_path: Path | str):
         return None
 
 
+def laplacian_variance(crop_bgr) -> float:
+    """Return Laplacian variance of a BGR crop — a fast blur proxy.
+
+    Values below ~50–100 indicate motion blur or heavy JPEG artefacts.
+    Returns 0.0 if cv2 is unavailable or crop is degenerate.
+    """
+    try:
+        import cv2
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    except Exception:
+        return 0.0
+
+
 def run_face_inference(img_bgr) -> list[dict]:
     """Run InsightFace detection + embedding on an already-decoded BGR array.
 
-    Returns list of {x, y, w, h, score, embedding} dicts.
+    Returns list of {x, y, w, h, score, blur_score, embedding} dicts.
+    Applies three quality gates (all configurable via env / .env):
+      - min_det_score  : InsightFace detection confidence
+      - min_face_px    : minimum crop dimension in pixels
+      - min_blur_score : Laplacian variance threshold (0 = disabled)
     Must run in FACE_EXECUTOR to serialise GPU access.
     """
+    from fernkam.config import get_settings
+    s = get_settings()
+    min_det   = s.min_det_score
+    min_px    = s.min_face_px
+    min_blur  = s.min_blur_score
+
     app = _get_app()
     faces = app.get(img_bgr)
     results = []
     for f in faces:
+        det_score = float(f.det_score)
+        if min_det > 0 and det_score < min_det:
+            continue
         x1, y1, x2, y2 = [int(v) for v in f.bbox]
+        w, h = x2 - x1, y2 - y1
+        if min_px > 0 and (w < min_px or h < min_px):
+            continue
+        x1c, y1c = max(0, x1), max(0, y1)
+        crop = img_bgr[y1c:y1c + h, x1c:x1c + w]
+        blur = laplacian_variance(crop)
+        if min_blur > 0 and blur < min_blur:
+            continue
         results.append({
             "x": x1,
             "y": y1,
-            "w": x2 - x1,
-            "h": y2 - y1,
-            "score": float(f.det_score),
+            "w": w,
+            "h": h,
+            "score": det_score,
+            "blur_score": blur,
             "embedding": f.normed_embedding.astype(np.float32),
         })
     return results

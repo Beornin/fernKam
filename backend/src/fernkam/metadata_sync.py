@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -27,7 +28,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _EXIFTOOL_PATHS = [
-    r"C:\Program Files\digiKam\exiftool.exe",
+    r"C:\Users\Ben\Documents\MY TOOLS\exiftool-13.59_64\exiftool.exe",
     r"C:\Program Files (x86)\digiKam\exiftool.exe",
     "/usr/bin/exiftool",
     "/usr/local/bin/exiftool",
@@ -105,49 +106,183 @@ async def read_file_metadata_async(file_path: Path) -> dict:
 
 # ═══════════════════════════ READ FROM FILE ══════════════════════════════════
 
-def read_file_metadata(file_path: Path) -> dict:
-    """Read all relevant metadata from a file via exiftool.
+# Tag arguments requested from exiftool for a metadata read. Shared by the
+# single-file and batched (stay_open) code paths so they stay identical.
+_ET_TAGS: list[str] = [
+    "-n",  # numeric output (no unit strings)
+    # Image info
+    "-ImageWidth", "-ImageHeight", "-Orientation", "-ColorComponents",
+    # Dates
+    "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
+    # GPS
+    "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
+    # File info
+    "-FileSize", "-MIMEType",
+    # Camera/lens
+    "-Make", "-Model", "-SerialNumber",
+    "-LensMake", "-LensModel", "-LensInfo",
+    # Exposure
+    "-ExposureTime", "-FNumber", "-ISO", "-FocalLength", "-FocalLengthIn35mmFormat",
+    "-ShutterSpeedValue", "-ApertureValue", "-ExposureBiasValue",
+    "-Flash", "-WhiteBalance", "-ExposureMode", "-ExposureProgram",
+    "-MeteringMode", "-SceneCaptureType",
+    # Color / quality
+    "-ColorSpace", "-BitsPerSample",
+    # XMP/IPTC tags, rating, caption
+    "-Subject", "-HierarchicalSubject", "-Rating", "-Label",
+    "-Title", "-Description", "-Caption-Abstract",
+    "-XPTitle", "-ImageDescription",
+    # Face regions (MWG)
+    "-struct", "-RegionInfo",
+]
 
-    Returns a dict with keys:
-      tags: list[str]
-      tag_paths: list[str]   (hierarchical, pipe-separated)
-      rating: int | None
-      color_label: int | None
-      title: str | None
-      caption: str | None
-      faces: list[{name, cx, cy, nw, nh}]  (normalized MWG coords)
-      img_w: int | None
-      img_h: int | None
-      file_mtime: datetime
+
+class ExifToolSession:
+    """Persistent ``exiftool -stay_open`` process for fast batched reads.
+
+    exiftool's process startup dominates the per-file cost; keeping one process
+    alive and feeding it argfiles via stdin removes that overhead and lets us
+    read many files in a single ``-execute``. Thread-safe via an internal lock
+    (the stay_open pipe is a single serial channel).
     """
-    meta = _run_et([
-        "-n",  # numeric output (no unit strings)
-        # Image info
-        "-ImageWidth", "-ImageHeight", "-Orientation", "-ColorComponents",
-        # Dates
-        "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
-        # GPS
-        "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
-        # File info
-        "-FileSize", "-MIMEType",
-        # Camera/lens
-        "-Make", "-Model", "-SerialNumber",
-        "-LensMake", "-LensModel", "-LensInfo",
-        # Exposure
-        "-ExposureTime", "-FNumber", "-ISO", "-FocalLength", "-FocalLengthIn35mmFormat",
-        "-ShutterSpeedValue", "-ApertureValue", "-ExposureBiasValue",
-        "-Flash", "-WhiteBalance", "-ExposureMode", "-ExposureProgram",
-        "-MeteringMode", "-SceneCaptureType",
-        # Color / quality
-        "-ColorSpace", "-BitsPerSample",
-        # XMP/IPTC tags, rating, caption
-        "-Subject", "-HierarchicalSubject", "-Rating", "-Label",
-        "-Title", "-Description", "-Caption-Abstract",
-        "-XPTitle", "-ImageDescription",
-        # Face regions (MWG)
-        "-struct", "-RegionInfo",
-        str(file_path),
-    ])
+
+    def __init__(self, exiftool_path: str):
+        self._et = exiftool_path
+        self._proc: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+        self._seq = 0
+
+    def _ensure(self) -> None:
+        if self._proc is not None and self._proc.poll() is None:
+            return
+        self._proc = subprocess.Popen(
+            [self._et, "-stay_open", "True", "-@", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # discard tag-warning noise; failures show as empty results
+            bufsize=0,
+        )
+
+    def execute(self, args: list[str]) -> Optional[str]:
+        """Run one exiftool command and return raw stdout text (None on failure)."""
+        with self._lock:
+            try:
+                self._ensure()
+                assert self._proc and self._proc.stdin and self._proc.stdout
+                self._seq += 1
+                tag = str(self._seq)
+                payload = "\n".join(args) + f"\n-execute{tag}\n"
+                self._proc.stdin.write(payload.encode("utf-8"))
+                self._proc.stdin.flush()
+                sentinel = f"{{ready{tag}}}".encode()
+                out = bytearray()
+                while True:
+                    line = self._proc.stdout.readline()
+                    if not line:
+                        self._proc = None  # process died
+                        return None
+                    if line.strip() == sentinel:
+                        break
+                    out += line
+                return out.decode("utf-8", errors="replace")
+            except Exception as exc:
+                logger.warning("exiftool stay_open error: %s", exc)
+                self.close()
+                return None
+
+    def close(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.write(b"-stay_open\nFalse\n")
+                proc.stdin.flush()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+_et_session: Optional[ExifToolSession] = None
+_et_session_lock = threading.Lock()
+
+
+def _get_et_session() -> Optional[ExifToolSession]:
+    global _et_session
+    et = _et()
+    if not et:
+        return None
+    if _et_session is None:
+        with _et_session_lock:
+            if _et_session is None:
+                _et_session = ExifToolSession(et)
+    return _et_session
+
+
+def _norm_sourcefile(s: str) -> str:
+    """Normalise a path for matching exiftool's SourceFile output to our paths."""
+    return str(s).replace("\\", "/").rstrip("/").lower()
+
+
+def read_many_metadata(paths: list[Path], chunk_size: int = 100) -> dict[Path, dict]:
+    """Read metadata for many files via one persistent exiftool process.
+
+    Files are processed in chunks (one ``-execute`` per chunk, JSON-array
+    output). Returns ``{Path: parsed_metadata}``. Falls back to per-file reads
+    when the stay_open session is unavailable or a chunk fails to parse.
+    """
+    results: dict[Path, dict] = {}
+    if not paths:
+        return results
+    session = _get_et_session()
+    if session is None:
+        return {p: read_file_metadata(p) for p in paths}
+
+    for i in range(0, len(paths), chunk_size):
+        chunk = paths[i:i + chunk_size]
+        norm_map: dict[str, Path] = {}
+        args = ["-json", *_ET_TAGS]
+        for p in chunk:
+            args.append(str(p))
+            norm_map[_norm_sourcefile(str(p))] = p
+        raw = session.execute(args)
+        if not raw:
+            for p in chunk:
+                results[p] = read_file_metadata(p)
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            for p in chunk:
+                results[p] = read_file_metadata(p)
+            continue
+        seen: set[Path] = set()
+        for obj in data:
+            p = norm_map.get(_norm_sourcefile(obj.get("SourceFile", "")))
+            if p is None:
+                continue
+            results[p] = parse_exif_dict(obj, p)
+            seen.add(p)
+        for p in chunk:
+            if p not in seen:
+                results.setdefault(p, {})
+    return results
+
+
+async def read_many_metadata_async(paths: list[Path], chunk_size: int = 100) -> dict[Path, dict]:
+    """Async wrapper - runs batched exiftool reads in a thread executor."""
+    import asyncio
+    from functools import partial
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(read_many_metadata, paths, chunk_size))
+
+
+def parse_exif_dict(meta: dict, file_path: Path) -> dict:
+    """Convert a raw exiftool JSON object into fernKam's structured metadata."""
     if meta is None:
         return {}
 
@@ -245,6 +380,27 @@ def read_file_metadata(file_path: Path) -> dict:
     }
 
 
+def read_file_metadata(file_path: Path) -> dict:
+    """Read all relevant metadata from a file via exiftool.
+
+    Returns a dict with keys:
+      tags: list[str]
+      tag_paths: list[str]   (hierarchical, pipe-separated)
+      rating: int | None
+      color_label: int | None
+      title: str | None
+      caption: str | None
+      faces: list[{name, cx, cy, nw, nh}]  (normalized MWG coords)
+      img_w: int | None
+      img_h: int | None
+      file_mtime: datetime
+    """
+    meta = _run_et([*_ET_TAGS, str(file_path)])
+    if meta is None:
+        return {}
+    return parse_exif_dict(meta, file_path)
+
+
 # ═══════════════════════════ WRITE TO FILE ═══════════════════════════════════
 
 def write_file_metadata(
@@ -333,6 +489,126 @@ def write_file_metadata(
             pass
 
 
+# ═══════════════════════════ BATCH HELPERS ═══════════════════════════════════
+
+def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
+    """Build an exiftool JSON payload dict for one photo.
+
+    Returns None if the source file does not exist.
+    Named faces (confirmed + DigiKam-imported region_name) are written as
+    MWG-RS regions so DigiKam reads them back correctly.
+    """
+    from fernkam.thumbnails import photo_disk_path
+
+    src = photo_disk_path(photo.album_path, photo.filename)
+    if not src.exists():
+        return None
+
+    payload: dict = {"SourceFile": str(src)}
+
+    tag_names = [t.name for t in tags]
+    tag_paths = [str(t.path).replace(".", "/") for t in tags]
+
+    # Merge confirmed person names into Subject/HierarchicalSubject (DigiKam style)
+    for f in faces:
+        if f.x is None:
+            continue
+        person_name = f.person_tag.name if f.person_tag else (f.region_name or "")
+        if person_name and person_name not in tag_names:
+            tag_names.append(person_name)
+            tag_paths.append(f"People/{person_name}")
+
+    if tag_names:
+        payload["Subject"] = tag_names
+        payload["Keywords"] = tag_names
+        payload["HierarchicalSubject"] = [t.replace("/", "|") for t in tag_paths]
+
+    if photo.rating is not None and photo.rating >= 0:
+        payload["Rating"] = max(0, min(5, photo.rating))
+        payload["RatingPercent"] = max(0, min(5, photo.rating)) * 20
+
+    if photo.color_label:
+        payload["Label"] = COLOR_LABEL_TO_NAME.get(photo.color_label, "")
+
+    if photo.title:
+        payload["Title"] = photo.title
+
+    if photo.caption:
+        payload["Description"] = photo.caption
+        payload["Caption-Abstract"] = photo.caption
+
+    # Face regions: DigiKam stops reading at the first entry with empty Name,
+    # so only write faces that have a name.
+    img_w = photo.width or 0
+    img_h = photo.height or 0
+    face_regions = []
+    for f in faces:
+        if f.x is None or not img_w or not img_h:
+            continue
+        person_name = f.person_tag.name if f.person_tag else (f.region_name or "")
+        if not person_name.strip():
+            continue
+        cx = round((f.x + f.w / 2) / img_w, 6)
+        cy = round((f.y + f.h / 2) / img_h, 6)
+        nw = round(f.w / img_w, 6)
+        nh = round(f.h / img_h, 6)
+        face_regions.append({
+            "Area": {"X": cx, "Y": cy, "W": nw, "H": nh, "Unit": "normalized"},
+            "Type": "Face",
+            "Name": person_name,
+        })
+
+    if face_regions:
+        payload["RegionInfo"] = {
+            "AppliedToDimensions": {"W": img_w, "H": img_h, "Unit": "pixel"},
+            "RegionList": face_regions,
+        }
+
+    return payload
+
+
+def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
+    """Write metadata for a batch of photos in a single exiftool call.
+
+    Each payload must be a dict with a "SourceFile" key and whatever XMP fields
+    should be written.  One exiftool process handles the whole batch, which
+    amortises the ~200 ms startup overhead over many files.
+
+    Returns (ok_count, error_count).
+    """
+    et = _et()
+    if not et:
+        return 0, len(payloads)
+    if not payloads:
+        return 0, 0
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            json.dump(payloads, fh, ensure_ascii=False)
+
+        result = subprocess.run(
+            [et, "-overwrite_original", f"-json={tmp_path}"],
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=300,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "exiftool batch write failed (%d files): %s",
+                len(payloads),
+                result.stderr.decode(errors="replace")[:500],
+            )
+            return 0, len(payloads)
+        return len(payloads), 0
+    except Exception as exc:
+        logger.warning("exiftool batch write exception: %s", exc)
+        return 0, len(payloads)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 # ═══════════════════════════ DB ↔ FILE SYNC ══════════════════════════════════
 
 class SyncResult:
@@ -350,48 +626,13 @@ class SyncResult:
 
 async def sync_db_to_file(photo, tags: list, faces: list) -> bool:
     """Write the DB state for one photo to its file. Returns True on success."""
-    from fernkam.thumbnails import photo_disk_path
-
-    src = photo_disk_path(photo.album_path, photo.filename)
-    if not src.exists():
-        return False
-
-    tag_names = [t.name for t in tags]
-    tag_paths = [str(t.path).replace(".", "/") for t in tags]
-
-    # Include confirmed face person tags in Subject/HierarchicalSubject (DigiKam style)
-    for f in faces:
-        if f.x is None:
-            continue
-        person_name = f.person_tag.name if f.person_tag else (f.region_name or "")
-        if person_name and person_name not in tag_names:
-            tag_names.append(person_name)
-            tag_paths.append(f"People/{person_name}")
-
-    face_regions = [
-        {"x": f.x, "y": f.y, "w": f.w, "h": f.h,
-         "name": f.person_tag.name if f.person_tag else (f.region_name or "")}
-        for f in faces if f.x is not None
-    ]
-
     import asyncio
+    payload = build_photo_payload(photo, tags, faces)
+    if payload is None:
+        return False
     loop = asyncio.get_event_loop()
-    ok = await loop.run_in_executor(
-        None,
-        lambda: write_file_metadata(
-            src,
-            tags=tag_names,
-            tag_paths=tag_paths,
-            rating=photo.rating if photo.rating >= 0 else None,
-            color_label=photo.color_label if photo.color_label else None,
-            title=photo.title,
-            caption=photo.caption,
-            faces=face_regions,
-            img_w=photo.width,
-            img_h=photo.height,
-        )
-    )
-    return ok
+    ok_count, _ = await loop.run_in_executor(None, write_metadata_batch, [payload])
+    return ok_count > 0
 
 
 async def sync_file_to_db(photo, db) -> dict:

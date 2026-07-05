@@ -3,6 +3,8 @@ import { api, type PhotoDetail, type TagOut, type FaceOut } from '$lib/api';
 import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera, Aperture, User, Eye, EyeOff, Info, Trash2, ScanFace, Check, XCircle, Ban } from '@lucide/svelte';
 import { goto } from '$app/navigation';
 import TagPicker from './TagPicker.svelte';
+import Histogram from './Histogram.svelte';
+import MiniMap from './MiniMap.svelte';
 
 let {
 photoId,
@@ -63,7 +65,7 @@ loading = false;
 }
 
 api.tags.list({ flat: true }).then(tags => {
-allPersonTags = tags.filter(t => t.is_person);
+allPersonTags = tags.filter(t => t.is_person).sort((a, b) => a.name.localeCompare(b.name));
 });
 }
 });
@@ -236,6 +238,15 @@ return new Date(s).toLocaleString();
 function fmtSize(bytes: number | null) {
 if (!bytes) return '—';
 return bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${(bytes / 1e3).toFixed(0)} KB`;
+}
+
+function fmtDuration(secs: number | null | undefined): string {
+if (!secs) return '—';
+const h = Math.floor(secs / 3600);
+const m = Math.floor((secs % 3600) / 60);
+const s = Math.floor(secs % 60);
+if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+return `${m}:${String(s).padStart(2,'0')}`;
 }
 
 function fmtShutter(v: unknown): string {
@@ -440,6 +451,12 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 <dt class="text-zinc-500">Size</dt>
 <dd class="text-zinc-200">{fmtSize(detail.file_size)}</dd>
 </div>
+{#if detail.duration_secs}
+<div class="flex justify-between">
+<dt class="text-zinc-500">Duration</dt>
+<dd class="text-zinc-200 font-mono">{fmtDuration(detail.duration_secs)}</dd>
+</div>
+{/if}
 {#if detail.width && detail.height}
 <div class="flex justify-between">
 <dt class="text-zinc-500">Dimensions</dt>
@@ -501,6 +518,19 @@ title="Show on map"
 </div>
 {/if}
 </dl>
+
+{#if detail.latitude !== null && detail.longitude !== null}
+<div class="px-4 pb-3 border-b border-zinc-800">
+<MiniMap lat={detail.latitude!} lon={detail.longitude!} />
+</div>
+{/if}
+
+{#if detail.media_type !== 'video'}
+<div class="px-4 py-3 border-b border-zinc-800">
+<p class="text-[10px] text-zinc-600 mb-1 uppercase tracking-wide">Histogram</p>
+<Histogram photoId={detail.id} />
+</div>
+{/if}
 
 <!-- Tags (editable) -->
 <div class="px-4 py-3 border-b border-zinc-800">

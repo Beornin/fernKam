@@ -1,6 +1,7 @@
 """Filesystem scanner to import photos/videos from library root."""
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.config import get_settings
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
-from fernkam.metadata_sync import read_file_metadata_async
+from fernkam.metadata_sync import read_file_metadata_async, read_many_metadata_async
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,18 @@ BATCH_COMMIT_SIZE = 50      # photos committed per transaction
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".heic", ".heif", ".raw", ".cr2", ".nef", ".arw", ".dng"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"}
 ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def _sha256_path(path: Path) -> Optional[str]:
+    """Compute SHA-256 of a file; return None on error."""
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
 
 
 async def _read_meta_safe(sem: asyncio.Semaphore, file_path: Path) -> dict:
@@ -48,7 +61,13 @@ async def _gen_thumbs_for_photo(
     media_type: str,
 ) -> tuple[int, dict[str, bytes]]:
     """Generate all thumbnail sizes for one photo using a thread executor."""
-    from fernkam.thumbnails import generate_thumbnail_bytes
+    from fernkam.thumbnails import generate_thumbnail_bytes, probe_video_duration
+    if media_type == "video":
+        loop = asyncio.get_event_loop()
+        async with sem:
+            # Only generate the "md" poster for the grid; larger sizes on demand
+            data = await loop.run_in_executor(None, generate_thumbnail_bytes, file_path, "md")
+        return photo_id, {"md": data} if data else {}
     if media_type != "image":
         return photo_id, {}
     loop = asyncio.get_event_loop()
@@ -89,7 +108,7 @@ async def scan_library(
     if not library_root.exists():
         return {"error": f"Library root does not exist: {library_root}"}
 
-    stats = {"added": 0, "skipped": 0, "deleted": 0, "errors": 0, "total": 0}
+    stats = {"added": 0, "skipped": 0, "updated": 0, "deleted": 0, "errors": 0, "total": 0}
 
     # ── Phase 0: load existing photos ──────────────────────────────────────
     existing_photos: dict[tuple[str, str], int] = {}
@@ -102,8 +121,9 @@ async def scan_library(
     # so this is cheap even for large libraries.
     scan_dirs = [library_root]
 
-    # ── Phase 1: walk filesystem, collect new files ────────────────────────
+    # ── Phase 1: walk filesystem, collect new + existing files ───────────────
     new_files: list[tuple[Path, str, str, datetime]] = []  # (path, album_path, filename, mtime)
+    existing_to_update: list[tuple[Path, str, str, datetime, int]] = []  # + photo_id
     disk_keys: set[tuple[str, str]] = set()
 
     for scan_dir in scan_dirs:
@@ -122,7 +142,11 @@ async def scan_library(
                 key = (album_path, filename)
                 disk_keys.add(key)
                 if key in existing_photos:
-                    stats["skipped"] += 1
+                    try:
+                        mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+                    except OSError:
+                        mtime = datetime.now(timezone.utc)
+                    existing_to_update.append((full_path, album_path, filename, mtime, existing_photos[key]))
                 else:
                     try:
                         mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
@@ -130,8 +154,8 @@ async def scan_library(
                         mtime = datetime.now(timezone.utc)
                     new_files.append((full_path, album_path, filename, mtime))
 
-    stats["total"] = stats["skipped"] + len(new_files)
-    log.info("[SCAN] %d new files to import, %d existing", len(new_files), stats["skipped"])
+    stats["total"] = len(existing_to_update) + len(new_files)
+    log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
 
     # ── Phase 2: import in batches with concurrent metadata reads ──────────
     meta_sem = asyncio.Semaphore(METADATA_CONCURRENCY)
@@ -141,10 +165,11 @@ async def scan_library(
     for batch_start in range(0, len(new_files), BATCH_COMMIT_SIZE):
         batch = new_files[batch_start: batch_start + BATCH_COMMIT_SIZE]
 
-        # Read metadata for ALL files in batch concurrently
-        metadatas: list[dict] = list(await asyncio.gather(
-            *[_read_meta_safe(meta_sem, fp) for fp, *_ in batch]
-        ))
+        # Read metadata for ALL files in batch via one persistent exiftool
+        # process (~13x faster than a process per file).
+        batch_paths = [fp for fp, *_ in batch]
+        meta_map = await read_many_metadata_async(batch_paths, chunk_size=BATCH_COMMIT_SIZE)
+        metadatas: list[dict] = [meta_map.get(fp, {}) for fp in batch_paths]
 
         # Insert photos to DB (sequential within batch, savepoint per photo)
         batch_photos: list[tuple[int, Path, str]] = []  # (photo_id, path, media_type)
@@ -191,6 +216,50 @@ async def scan_library(
                 except Exception as cbe:
                     log.warning("photo_added_callback error for %d: %s", photo_id, cbe)
 
+        if progress_callback:
+            await progress_callback(stats)
+
+    # ── Phase 2b: refresh metadata for existing files ─────────────────────
+    for batch_start in range(0, len(existing_to_update), BATCH_COMMIT_SIZE):
+        batch = existing_to_update[batch_start: batch_start + BATCH_COMMIT_SIZE]
+
+        # One persistent-exiftool batch read for the whole batch.
+        batch_paths = [fp for fp, *_ in batch]
+        meta_map = await read_many_metadata_async(batch_paths, chunk_size=BATCH_COMMIT_SIZE)
+        metadatas: list[dict] = [meta_map.get(fp, {}) for fp in batch_paths]
+
+        for (full_path, album_path, filename, file_mtime, photo_id), metadata in zip(batch, metadatas):
+            try:
+                async with db.begin_nested():
+                    upd: dict = {
+                        "modified_at": file_mtime,
+                        "file_modified_at_sync": file_mtime,
+                    }
+                    for field in ["width", "height", "file_size", "taken_at", "rating",
+                                  "color_label", "title", "caption", "latitude",
+                                  "longitude", "altitude", "orientation", "exif"]:
+                        val = metadata.get(field)
+                        if val is not None:
+                            upd[field] = val
+                    if metadata.get("camera"):
+                        try:
+                            cam = await _get_or_create_camera(db, metadata["camera"])
+                            upd["camera_id"] = cam.id
+                        except Exception:
+                            pass
+                    if metadata.get("lens"):
+                        try:
+                            lens = await _get_or_create_lens(db, metadata["lens"])
+                            upd["lens_id"] = lens.id
+                        except Exception:
+                            pass
+                    await db.execute(update(Photo).where(Photo.id == photo_id).values(**upd))
+                stats["updated"] += 1
+            except Exception as exc:
+                log.warning("metadata refresh error %s: %s", full_path, exc)
+                stats["errors"] += 1
+
+        await db.commit()
         if progress_callback:
             await progress_callback(stats)
 
@@ -334,6 +403,17 @@ async def import_new_photo(
         except Exception:
             pass
 
+    # Compute sha256 in a thread so we don't block the event loop
+    sha256 = await asyncio.get_event_loop().run_in_executor(None, _sha256_path, file_path)
+
+    # Probe video duration
+    duration_secs: Optional[float] = None
+    if media_type == "video":
+        from fernkam.thumbnails import probe_video_duration
+        duration_secs = await asyncio.get_event_loop().run_in_executor(
+            None, probe_video_duration, file_path
+        )
+
     # Create photo record
     photo = Photo(
         album_path=album_path,
@@ -341,6 +421,7 @@ async def import_new_photo(
         media_type=media_type,
         modified_at=file_mtime,
         file_modified_at_sync=file_mtime,
+        sha256=sha256,
         width=metadata.get("width"),
         height=metadata.get("height"),
         file_size=metadata.get("file_size"),
@@ -357,14 +438,15 @@ async def import_new_photo(
         altitude=metadata.get("altitude"),
         orientation=metadata.get("orientation"),
         exif=metadata.get("exif"),
+        duration_secs=duration_secs,
         status=1,
     )
     
     db.add(photo)
     await db.flush()
 
-    # Generate thumbnails and store in DB (images only)
-    if generate_thumbs and media_type == "image":
+    # Generate thumbnails and store in DB (images + video poster)
+    if generate_thumbs and media_type in ("image", "video"):
         try:
             from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db
             for size in ("sm", "md", "lg", "xl"):
@@ -447,10 +529,15 @@ async def update_photo_metadata(
     photo_id: int,
     file_path: Path,
     file_mtime: datetime,
+    metadata: Optional[dict] = None,
 ) -> None:
-    """Update photo metadata from file."""
-    from fernkam.metadata_sync import read_file_metadata_async
-    metadata = await read_file_metadata_async(file_path)
+    """Update photo metadata from file.
+
+    Pass ``metadata`` (already read, e.g. via batched read_many_metadata) to
+    skip the per-file exiftool read.
+    """
+    if metadata is None:
+        metadata = await read_file_metadata_async(file_path)
     
     updates = {
         "modified_at": file_mtime,
@@ -458,9 +545,10 @@ async def update_photo_metadata(
     }
     
     # Only update fields that exist in metadata
-    for field in ["width", "height", "file_size", "taken_at", "camera", "lens", "rating", "color_label", "title", "caption", "latitude", "longitude", "altitude", "orientation", "exif"]:
-        if field in metadata:
-            updates[field] = metadata[field]
+    for field in ["width", "height", "file_size", "taken_at", "rating", "color_label", "title", "caption", "latitude", "longitude", "altitude", "orientation", "exif"]:
+        val = metadata.get(field)
+        if val is not None:
+            updates[field] = val
     
     # Handle camera/lens record creation
     if metadata.get("camera"):

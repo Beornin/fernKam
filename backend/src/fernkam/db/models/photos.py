@@ -8,6 +8,8 @@ import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
+    Float,
     DateTime,
     ForeignKey,
     Index,
@@ -21,7 +23,7 @@ from sqlalchemy import (
     func,
     types,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 try:
@@ -99,6 +101,15 @@ class Photo(Base):
     longitude: Mapped[Optional[float]] = mapped_column(Numeric(10, 7))
     altitude: Mapped[Optional[float]] = mapped_column(Numeric(10, 2))
 
+    # Video duration (seconds, populated by ffprobe at import / backfill)
+    duration_secs: Mapped[Optional[float]] = mapped_column(Float)
+
+    # Reverse-geocoded place fields (populated by background task)
+    country_code: Mapped[Optional[str]] = mapped_column(String(4))
+    country: Mapped[Optional[str]] = mapped_column(Text)
+    state: Mapped[Optional[str]] = mapped_column(Text)
+    city: Mapped[Optional[str]] = mapped_column(Text)
+
     # Camera & lens
     camera_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cameras.id"))
     lens_id: Mapped[Optional[int]] = mapped_column(ForeignKey("lenses.id"))
@@ -120,17 +131,46 @@ class Photo(Base):
     color_depth: Mapped[Optional[int]] = mapped_column(SmallInteger)
     color_model: Mapped[Optional[int]] = mapped_column(SmallInteger)
 
+    # Full-text search vector (STORED generated column; read-only to the ORM).
+    # Weighted: filename(A) > title(B) > caption(C). Tag-name search is OR'd in
+    # at query time via the trigram index on tags.name.
+    search_tsv: Mapped[Optional[str]] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "setweight(to_tsvector('english', coalesce(filename, '')), 'A') || "
+            "setweight(to_tsvector('english', coalesce(title, '')), 'B') || "
+            "setweight(to_tsvector('english', coalesce(caption, '')), 'C')",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+
     camera: Mapped[Optional["Camera"]] = relationship(back_populates="photos")
     lens: Mapped[Optional["Lens"]] = relationship(back_populates="photos")
     photo_tags: Mapped[list["PhotoTag"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
     faces: Mapped[list["Face"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index("ix_photos_taken_at", "taken_at"),
-        Index("ix_photos_rating", "rating"),
-        Index("ix_photos_sha256", "sha256"),
         Index("ix_photos_filename_trgm", "filename", postgresql_using="gin", postgresql_ops={"filename": "gin_trgm_ops"}),
-        Index("ix_photos_exif_gin", "exif", postgresql_using="gin"),
+        Index("ix_photos_album_path", "album_path", postgresql_ops={"album_path": "text_pattern_ops"}),
+        Index("ix_photos_unscanned", "id",
+              postgresql_where=sa.text("faces_scanned_at IS NULL AND status = 1 AND media_type = 'image'")),
+        Index("ix_photos_sync_dirty", "id",
+              postgresql_where=sa.text("file_sync_dirty = TRUE")),
+        # Phase 0B: sort/filter + search foundation
+        Index("ix_photos_taken_at", sa.text("taken_at DESC NULLS LAST")),
+        Index("ix_photos_taken_at_id", sa.text("taken_at DESC NULLS LAST, id DESC")),
+        Index("ix_photos_imported_at", sa.text("imported_at DESC")),
+        Index("ix_photos_rating", "rating", postgresql_where=sa.text("rating > 0")),
+        Index("ix_photos_color_label", "color_label", postgresql_where=sa.text("color_label > 0")),
+        Index("ix_photos_media_type", "media_type"),
+        Index("ix_photos_camera_id", "camera_id", postgresql_where=sa.text("camera_id IS NOT NULL")),
+        Index("ix_photos_lens_id", "lens_id", postgresql_where=sa.text("lens_id IS NOT NULL")),
+        Index("ix_photos_no_date", "id", postgresql_where=sa.text("taken_at IS NULL AND status = 1")),
+        Index("ix_photos_has_gps", "id", postgresql_where=sa.text("latitude IS NOT NULL AND longitude IS NOT NULL")),
+        Index("ix_photos_exif_gin", "exif", postgresql_using="gin", postgresql_ops={"exif": "jsonb_path_ops"}),
+        Index("ix_photos_sha256", "sha256", postgresql_where=sa.text("sha256 IS NOT NULL")),
+        Index("ix_photos_search_tsv", "search_tsv", postgresql_using="gin"),
     )
 
 
@@ -220,6 +260,9 @@ class Face(Base):
     # InsightFace detection confidence (0.0-1.0); stored at scan time
     det_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)
 
+    # Laplacian variance of the face crop — proxy for sharpness (higher = sharper)
+    blur_score: Mapped[Optional[float]] = mapped_column(Numeric(8, 2), nullable=True)
+
     # Best match score against all confirmed faces (0.0-1.0)
     best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4))
 
@@ -235,8 +278,9 @@ class Face(Base):
     person_tag: Mapped[Optional["Tag"]] = relationship(foreign_keys=[person_tag_id])
 
     __table_args__ = (
-        Index("ix_faces_person_tag_id", "person_tag_id"),
         Index("ix_faces_photo_id", "photo_id"),
+        Index("ix_faces_person_tag_id", "person_tag_id"),
+        Index("ix_faces_status", "status"),
     )
 
 
@@ -308,3 +352,19 @@ class AppLog(Base):
         Index("ix_app_logs_source", "source"),
         Index("ix_app_logs_fp_recent", "fingerprint", last_seen_at.desc()),
     )
+
+
+class SavedSearch(Base):
+    """Persisted filter + sort definition (smart album / saved search)."""
+    __tablename__ = "saved_searches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    filters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    sort: Mapped[str] = mapped_column(Text, nullable=False, default="taken_at_desc")
+    pin_to_sidebar: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_saved_searches_name", "name"),)

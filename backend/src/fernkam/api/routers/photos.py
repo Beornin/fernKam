@@ -1,64 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+import re
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
 from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate, TagOut
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
+from fernkam.services.photo_query import PhotoFilters, apply_cursor, apply_sort, build_photo_query, count_photos, encode_cursor
 
 router = APIRouter()
-
-
-async def _photo_query(
-    album_path: Optional[str],
-    tag_id: Optional[int],
-    rating_min: Optional[int],
-    media_type: Optional[str],
-    search: Optional[str],
-    date_from: Optional[date],
-    date_to: Optional[date],
-    db,
-):
-    q = select(Photo).where(Photo.status == 1)
-
-    if album_path:
-        clean_album = album_path.lstrip("/")
-        q = q.where(Photo.album_path.like(f"{clean_album}%"))
-    if tag_id is not None:
-        # Get the tag and its path to include all children
-        tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
-        if tag:
-            from sqlalchemy import text, union
-            child_tags = await db.execute(
-                select(Tag.id).where(text(f"path <@ '{tag.path}'"))
-            )
-            child_tag_ids = [row[0] for row in child_tags]
-            if child_tag_ids:
-                # Match via photo_tags OR via confirmed/suggested faces (for person tags)
-                via_tags = select(PhotoTag.photo_id).where(PhotoTag.tag_id.in_(child_tag_ids))
-                via_faces = select(Face.photo_id).where(
-                    Face.person_tag_id.in_(child_tag_ids),
-                    Face.status.in_(["confirmed", "suggested"]),
-                )
-                q = q.where(Photo.id.in_(union(via_tags, via_faces)))
-    if rating_min is not None:
-        q = q.where(Photo.rating >= rating_min)
-    if media_type:
-        q = q.where(Photo.media_type == media_type)
-    if search:
-        q = q.where(Photo.filename.ilike(f"%{search}%"))
-    if date_from:
-        q = q.where(func.date(Photo.taken_at) >= date_from)
-    if date_to:
-        q = q.where(func.date(Photo.taken_at) <= date_to)
-
-    return q
 
 
 @router.get("/unscanned-count")
@@ -78,35 +35,50 @@ async def list_photos(
     db: DB,
     album_path: Optional[str] = Query(None),
     tag_id: Optional[int] = Query(None),
+    person_tag_id: Optional[int] = Query(None),
     rating_min: Optional[int] = Query(None),
+    color_label: Optional[int] = Query(None),
     media_type: Optional[str] = Query(None),
+    camera_id: Optional[int] = Query(None),
+    lens_id: Optional[int] = Query(None),
+    has_gps: Optional[bool] = Query(None),
+    has_faces: Optional[bool] = Query(None),
+    no_date: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    country_code: Optional[str] = Query(None),
     sort: str = Query("taken_at_desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=2000),
+    cursor: Optional[str] = Query(None, description="Keyset cursor from previous page's next_cursor"),
 ) -> PhotoPage:
-    print(f"[PHOTOS] list_photos: album_path={album_path!r}", flush=True)
-    q = await _photo_query(album_path, tag_id, rating_min, media_type, search, date_from, date_to, db)
+    filters = PhotoFilters(
+        album_path=album_path, tag_id=tag_id, person_tag_id=person_tag_id,
+        rating_min=rating_min, color_label=color_label, media_type=media_type,
+        camera_id=camera_id, lens_id=lens_id, has_gps=has_gps,
+        has_faces=has_faces, no_date=no_date, search=search,
+        date_from=date_from, date_to=date_to, country_code=country_code,
+    )
+    base_q = await build_photo_query(filters, db)
+    q = apply_sort(base_q, sort)
 
-    ORDER = {
-        "taken_at_desc": Photo.taken_at.desc().nulls_last(),
-        "taken_at_asc": Photo.taken_at.asc().nulls_last(),
-        "rating_desc": Photo.rating.desc(),
-        "filename_asc": Photo.filename.asc(),
-        "imported_at_desc": Photo.imported_at.desc(),
-    }
-    q = q.order_by(ORDER.get(sort, Photo.taken_at.desc().nulls_last()))
+    total = await count_photos(filters, db, base_q=base_q)
 
-    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
-    rows = (await db.execute(q.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    if cursor:
+        q_page = apply_cursor(q, cursor).limit(page_size)
+    else:
+        q_page = q.offset((page - 1) * page_size).limit(page_size)
+
+    rows = (await db.execute(q_page)).scalars().all()
+    next_cur = encode_cursor(rows[-1], sort) if rows and len(rows) == page_size else None
 
     return PhotoPage(
         total=total,
         page=page,
         page_size=page_size,
         items=[PhotoSummary.model_validate(r) for r in rows],
+        next_cursor=next_cur,
     )
 
 
@@ -166,6 +138,192 @@ async def _get_photo_for_write(db: DB, photo_id: int) -> Optional[Photo]:
             .options(selectinload(Photo.photo_tags).selectinload(PhotoTag.tag))
         )
     ).scalar_one_or_none()
+
+
+# ── Date inference helpers ──────────────────────────────────────────────────
+
+# Regex patterns tried in priority order against the filename stem.
+_DATE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # YYYY-MM-DD or YYYY_MM_DD anywhere in name
+    ("filename_ymd", re.compile(r"(?<!\d)(\d{4})[-_](\d{2})[-_](\d{2})(?!\d)")),
+    # YYYYMMDD compact (only if year 1900-2099 and valid month/day)
+    ("filename_yyyymmdd", re.compile(r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")),
+]
+
+_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+
+def _infer_date(filename: str, album_path: str) -> tuple[datetime, str] | None:
+    """Try to infer a UTC taken_at from filename then album_path.
+
+    Returns (datetime, source_label) or None.
+    """
+    stem = filename.rsplit(".", 1)[0]
+
+    for label, pat in _DATE_PATTERNS:
+        m = pat.search(stem)
+        if m:
+            try:
+                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                dt = datetime(y, mo, d, tzinfo=timezone.utc)
+                return dt, label
+            except ValueError:
+                continue
+
+    # Folder year: look for YYYY component in album_path
+    parts = [p for p in album_path.replace("\\", "/").split("/") if p]
+    for part in reversed(parts):
+        ym = _YEAR_RE.fullmatch(part)
+        if ym:
+            y = int(ym.group(1))
+            return datetime(y, 1, 1, tzinfo=timezone.utc), "folder_year"
+        # YYYY/MM
+        ym2 = re.fullmatch(r"((?:19|20)\d{2})[/-](0[1-9]|1[0-2])", part)
+        if ym2:
+            try:
+                return datetime(int(ym2.group(1)), int(ym2.group(2)), 1, tzinfo=timezone.utc), "folder_year_month"
+            except ValueError:
+                pass
+
+    return None
+
+
+@router.get("/infer-dates/preview")
+async def infer_dates_preview(
+    db: DB,
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """Return a paginated list of undated photos with their inferred dates.
+
+    Does NOT write anything to the DB.
+    """
+    rows = (await db.execute(
+        select(Photo.id, Photo.filename, Photo.album_path)
+        .where(Photo.status == 1)
+        .where(Photo.taken_at.is_(None))
+        .order_by(Photo.id)
+        .offset(offset)
+        .limit(limit)
+    )).fetchall()
+
+    candidates = []
+    for photo_id, filename, album_path in rows:
+        result = _infer_date(filename, album_path)
+        if result:
+            dt, source = result
+            candidates.append({
+                "id": photo_id,
+                "filename": filename,
+                "album_path": album_path,
+                "inferred_date": dt.isoformat(),
+                "source": source,
+            })
+
+    total_undated = (await db.execute(
+        select(func.count()).select_from(Photo)
+        .where(Photo.status == 1)
+        .where(Photo.taken_at.is_(None))
+    )).scalar_one()
+
+    return {
+        "total_undated": total_undated,
+        "offset": offset,
+        "limit": limit,
+        "candidates": candidates,
+    }
+
+
+class InferDatesApplyRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/infer-dates/apply")
+async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
+    """Apply inferred dates to the given photo IDs (must still be undated).
+
+    Re-computes the inference server-side so stale client data is harmless.
+    Only updates photos that are still undated and have an inferable date.
+    Marks updated photos as file_sync_dirty.
+    """
+    if not payload.ids:
+        return {"updated": 0}
+
+    rows = (await db.execute(
+        select(Photo.id, Photo.filename, Photo.album_path)
+        .where(Photo.id.in_(payload.ids))
+        .where(Photo.taken_at.is_(None))
+        .where(Photo.status == 1)
+    )).fetchall()
+
+    applied = 0
+    for photo_id, filename, album_path in rows:
+        result = _infer_date(filename, album_path)
+        if result:
+            dt, _ = result
+            await db.execute(
+                update(Photo).where(Photo.id == photo_id)
+                .values(taken_at=dt, file_sync_dirty=True)
+            )
+            applied += 1
+
+    await db.commit()
+    return {"updated": applied, "skipped": len(rows) - applied}
+
+
+@router.get("/timeline")
+async def timeline(db: DB) -> dict:
+    """Return photo counts bucketed by year and year+month, for the timeline page.
+
+    Returns:
+      years: [{year, count, months: [{month, count}]}]
+    """
+    from sqlalchemy import text as _text
+    rows = (await db.execute(_text("""
+        SELECT
+            EXTRACT(YEAR  FROM taken_at)::int AS yr,
+            EXTRACT(MONTH FROM taken_at)::int AS mo,
+            COUNT(*)                          AS cnt
+        FROM photos
+        WHERE status = 1 AND taken_at IS NOT NULL
+        GROUP BY yr, mo
+        ORDER BY yr DESC, mo DESC
+    """))).fetchall()
+
+    years_dict: dict[int, dict] = {}
+    for yr, mo, cnt in rows:
+        if yr not in years_dict:
+            years_dict[yr] = {"year": yr, "count": 0, "months": []}
+        years_dict[yr]["count"] += cnt
+        years_dict[yr]["months"].append({"month": mo, "count": cnt})
+
+    return {"years": list(years_dict.values())}
+
+
+@router.get("/cameras")
+async def list_cameras(db: DB) -> list[dict]:
+    """All cameras that have at least one photo, for filter dropdowns."""
+    from fernkam.db.models.photos import Camera
+    rows = (await db.execute(
+        select(Camera.id, Camera.make, Camera.model)
+        .where(Camera.id.in_(select(Photo.camera_id).where(Photo.camera_id.is_not(None)).distinct()))
+        .order_by(Camera.make.asc(), Camera.model.asc())
+    )).fetchall()
+    return [{"id": r[0], "make": r[1], "model": r[2],
+             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+
+
+@router.get("/lenses")
+async def list_lenses(db: DB) -> list[dict]:
+    """All lenses that have at least one photo, for filter dropdowns."""
+    from fernkam.db.models.photos import Lens
+    rows = (await db.execute(
+        select(Lens.id, Lens.make, Lens.model)
+        .where(Lens.id.in_(select(Photo.lens_id).where(Photo.lens_id.is_not(None)).distinct()))
+        .order_by(Lens.make.asc(), Lens.model.asc())
+    )).fetchall()
+    return [{"id": r[0], "make": r[1], "model": r[2],
+             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
 
 
 @router.get("/{photo_id}/tags", response_model=list[TagOut])
@@ -253,6 +411,9 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
     if not photo:
         raise HTTPException(404, "Photo not found")
 
+    if photo.media_type != "image":
+        return [], 0
+
     src = photo_disk_path(photo.album_path, photo.filename)
     if not src.exists():
         await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
@@ -299,10 +460,14 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
         return (inter / union) > 0.4
 
     # ── Step 3: Handle detections that overlap existing face records ──
+    MIN_DET_SCORE = settings.min_det_score
     new_dets: list[dict] = []
     for det in detections:
+        if MIN_DET_SCORE > 0 and det["score"] < MIN_DET_SCORE:
+            continue
         matched = next((f for f in existing_faces if _overlaps(det, f)), None)
         if matched is not None:
+            matched.det_score = round(float(det["score"]), 4)
             if matched.embedding is None:
                 matched.embedding = embedding_to_bytes(det["embedding"])
                 matched.embedding_v = embedding_to_pgvector(det["embedding"])
@@ -314,7 +479,7 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
                     if m:
                         matched.person_tag_id = m[0]["person_tag_id"]
                         matched.status = "confirmed" if m[0]["score"] >= AUTO_CONFIRM_THRESH else "suggested"
-                await db.flush()
+            await db.flush()
         else:
             new_dets.append(det)
 
@@ -384,6 +549,7 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             person_tag_id=person_tag_id,
             crop_data=crop_bytes,
             det_score=round(float(det["score"]), 4),
+            blur_score=round(float(det.get("blur_score", 0.0)), 2),
             best_match_score=round(float(score), 4) if score is not None and status in ("suggested", "confirmed") else None,
         )
         db.add(face)
@@ -460,6 +626,54 @@ async def batch_detect_all_faces(db: DB) -> dict:
 
     result = await _scan_faces(db, ScanFacesRequest())
     return result
+
+
+@router.post("/{photo_id}/trash")
+async def trash_photo(photo_id: int, db: DB) -> dict:
+    """Move the photo file to system Trash and mark it inactive in the DB."""
+    from fernkam.thumbnails import photo_disk_path
+
+    row = (await db.execute(select(Photo).where(Photo.id == photo_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Photo not found")
+
+    src = photo_disk_path(row.album_path, row.filename)
+    if src.exists():
+        try:
+            from send2trash import send2trash
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, send2trash, str(src))
+        except Exception as exc:
+            raise HTTPException(500, f"Failed to trash file: {exc}")
+
+    await db.execute(update(Photo).where(Photo.id == photo_id).values(status=0))
+    await db.commit()
+    return {"ok": True, "filename": row.filename}
+
+
+class BatchEditRequest(PhotoUpdate):
+    ids: list[int]
+
+
+@router.post("/batch-edit", response_model=dict)
+async def batch_edit_photos(payload: BatchEditRequest, db: DB) -> dict:
+    """Apply the same metadata changes to multiple photos at once.
+
+    Only non-null fields (besides ``ids``) are written. Marks all affected
+    photos as ``file_sync_dirty`` so the next XMP sync picks them up.
+    """
+    updates = payload.model_dump(exclude_none=True, exclude={"ids"})
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    if not payload.ids:
+        raise HTTPException(400, "No photo IDs provided")
+
+    updates["file_sync_dirty"] = True
+    await db.execute(
+        update(Photo).where(Photo.id.in_(payload.ids)).values(**updates)
+    )
+    await db.commit()
+    return {"updated": len(payload.ids)}
 
 
 @router.patch("/{photo_id}", response_model=PhotoSummary)

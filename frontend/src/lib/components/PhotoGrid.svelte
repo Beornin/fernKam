@@ -52,6 +52,15 @@
 		return bytes + ' B';
 	}
 
+	function fmtDuration(secs: number | null | undefined): string | null {
+		if (!secs) return null;
+		const h = Math.floor(secs / 3600);
+		const m = Math.floor((secs % 3600) / 60);
+		const s = Math.floor(secs % 60);
+		if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+		return `${m}:${String(s).padStart(2,'0')}`;
+	}
+
 	function getExt(filename: string): string {
 		return filename.split('.').pop()?.toUpperCase() ?? '';
 	}
@@ -115,11 +124,18 @@
 					<span class="absolute top-1 right-1 w-2 h-2 rounded-full {COLOR_LABELS[photo.color_label] ?? 'bg-zinc-500'}"></span>
 				{/if}
 
-				<!-- Video icon -->
+				<!-- Video icon / duration badge -->
 				{#if photo.media_type === 'video'}
-					<span class="absolute top-1 right-1 text-white/80">
-						<Video size={12} />
-					</span>
+					{@const dur = fmtDuration(photo.duration_secs)}
+					{#if dur}
+						<span class="absolute top-1 right-1 flex items-center gap-0.5 bg-black/70 text-white/90 text-[9px] font-mono px-1 py-0.5 rounded leading-none">
+							<Video size={9} />{dur}
+						</span>
+					{:else}
+						<span class="absolute top-1 right-1 text-white/80">
+							<Video size={12} />
+						</span>
+					{/if}
 				{/if}
 
 				<!-- Rating -->

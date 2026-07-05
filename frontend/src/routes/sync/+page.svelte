@@ -22,6 +22,15 @@
 	let backfillCrops = $state(false);
 	let backfillCropsResult = $state<string | null>(null);
 
+	let backfillDuration = $state(false);
+	let backfillDurationResult = $state<string | null>(null);
+
+	let archivingLowQuality = $state(false);
+	let archiveLowQualityResult = $state<string | null>(null);
+
+	let incrementalSweeping = $state(false);
+	let incrementalSweepResult = $state<string | null>(null);
+
 	async function loadStatus() {
 		loadingStatus = true;
 		try {
@@ -85,6 +94,20 @@
 			backfillThumbsResult = `Backfill failed: ${e}`;
 		} finally {
 			backfillThumbs = false;
+		}
+	}
+
+	async function runBackfillDuration() {
+		backfillDuration = true;
+		backfillDurationResult = null;
+		try {
+			const res = await fetch('/api/sync/backfill-video-duration', { method: 'POST' });
+			const data = await res.json();
+			backfillDurationResult = `Started probing ${data.total} videos (task: ${data.task_id})`;
+		} catch (e) {
+			backfillDurationResult = `Failed: ${e}`;
+		} finally {
+			backfillDuration = false;
 		}
 	}
 
@@ -277,6 +300,110 @@
 			{#if backfillCropsResult}
 				<div class="mt-3 text-xs {backfillCropsResult.startsWith('Backfill failed') ? 'text-red-400' : 'text-emerald-400'}">
 					{backfillCropsResult}
+				</div>
+			{/if}
+		</div>
+
+		<!-- Backfill Video Duration -->
+		<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+			<div class="flex items-center gap-3 mb-4">
+				<div class="p-2 bg-sky-500/10 rounded-lg">
+					<Database size={20} class="text-sky-400" />
+				</div>
+				<h2 class="text-lg font-semibold text-zinc-100">Backfill Video Duration</h2>
+			</div>
+			<p class="text-sm text-zinc-400 mb-4">
+				Probes all videos missing a <code class="text-sky-300">duration_secs</code> value using ffprobe. Runs as a background task — check Tasks for progress.
+			</p>
+			<button
+				onclick={runBackfillDuration}
+				disabled={backfillDuration}
+				class="w-full px-4 py-2 rounded-lg bg-sky-600 text-white font-medium hover:bg-sky-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+			>
+				{#if backfillDuration}
+					<Loader2 size={16} class="animate-spin" /> Starting…
+				{:else}
+					<RefreshCw size={16} /> Probe Video Durations
+				{/if}
+			</button>
+			{#if backfillDurationResult}
+				<div class="mt-3 text-xs {backfillDurationResult.startsWith('Failed') ? 'text-red-400' : 'text-sky-400'}">
+					{backfillDurationResult}
+				</div>
+			{/if}
+		</div>
+
+		<!-- Archive Low-Quality Faces -->
+		<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+			<div class="flex items-center gap-3 mb-4">
+				<div class="p-2 bg-rose-500/10 rounded-lg">
+					<Database size={20} class="text-rose-400" />
+				</div>
+				<h2 class="text-lg font-semibold text-zinc-100">Archive Low-Quality Faces</h2>
+			</div>
+			<p class="text-sm text-zinc-400 mb-4">
+				Marks unconfirmed faces with low detection score (&lt;0.5) or tiny bounding box (&lt;30 px) as ignored.
+				Reduces review queue noise. Configurable via <code class="text-rose-300">FERNKAM_MIN_DET_SCORE</code> / <code class="text-rose-300">FERNKAM_MIN_FACE_PX</code>.
+			</p>
+			<button
+				onclick={async () => {
+					archivingLowQuality = true; archiveLowQualityResult = null;
+					try {
+						const { api } = await import('$lib/api');
+						const r = await api.faces.archiveLowQuality();
+						archiveLowQualityResult = `Archived ${r.archived.toLocaleString()} faces (det<${r.min_det_score}, px<${r.min_face_px})`;
+					} catch(e: any) { archiveLowQualityResult = 'Failed: ' + (e.message ?? e); }
+					finally { archivingLowQuality = false; }
+				}}
+				disabled={archivingLowQuality}
+				class="w-full px-4 py-2 rounded-lg bg-rose-700 text-white font-medium hover:bg-rose-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+			>
+				{#if archivingLowQuality}
+					<Loader2 size={16} class="animate-spin" /> Working…
+				{:else}
+					<RefreshCw size={16} /> Archive Low-Quality Faces
+				{/if}
+			</button>
+			{#if archiveLowQualityResult}
+				<div class="mt-3 text-xs {archiveLowQualityResult.startsWith('Failed') ? 'text-red-400' : 'text-emerald-400'}">
+					{archiveLowQualityResult}
+				</div>
+			{/if}
+		</div>
+
+		<!-- Incremental Face Sweep -->
+		<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+			<div class="flex items-center gap-3 mb-4">
+				<div class="p-2 bg-violet-500/10 rounded-lg">
+					<Database size={20} class="text-violet-400" />
+				</div>
+				<h2 class="text-lg font-semibold text-zinc-100">Incremental Face Sweep</h2>
+			</div>
+			<p class="text-sm text-zinc-400 mb-4">
+				Runs the auto-confirm sweep only over faces added since the last completed sweep — much faster than a full pass after routine imports.
+			</p>
+			<button
+				onclick={async () => {
+					incrementalSweeping = true; incrementalSweepResult = null;
+					try {
+						const { api } = await import('$lib/api');
+						const r = await api.faces.autoConfirmIncremental();
+						incrementalSweepResult = r.since ? `Started since ${new Date(r.since).toLocaleString()}` : 'Started (full sweep — no prior run)';
+					} catch(e: any) { incrementalSweepResult = 'Failed: ' + (e.message ?? e); }
+					finally { incrementalSweeping = false; }
+				}}
+				disabled={incrementalSweeping}
+				class="w-full px-4 py-2 rounded-lg bg-violet-700 text-white font-medium hover:bg-violet-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+			>
+				{#if incrementalSweeping}
+					<Loader2 size={16} class="animate-spin" /> Starting…
+				{:else}
+					<RefreshCw size={16} /> Incremental Sweep
+				{/if}
+			</button>
+			{#if incrementalSweepResult}
+				<div class="mt-3 text-xs {incrementalSweepResult.startsWith('Failed') ? 'text-red-400' : 'text-violet-400'}">
+					{incrementalSweepResult}
 				</div>
 			{/if}
 		</div>

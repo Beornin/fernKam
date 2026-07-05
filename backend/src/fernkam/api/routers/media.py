@@ -113,7 +113,15 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
     except Exception:
         img = None
     if img is None:
-        raise HTTPException(422, "Could not read image")
+        try:
+            from PIL import Image, ImageOps
+            import numpy as np
+            pil_img = Image.open(src)
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            raise HTTPException(422, "Could not read image")
 
     h_img, w_img = img.shape[:2]
     x1 = max(0, row.x or 0)
@@ -253,7 +261,6 @@ async def _stream_transcode(src: Path, ffmpeg_path: str) -> AsyncIterator[bytes]
 @router.get("/video/{photo_id}")
 async def serve_video_transcoded(photo_id: int, db: DB) -> StreamingResponse:
     """Serve video transcoded to H.264/AAC for browser compatibility."""
-    from fernkam.config import get_settings
     photo = await _get_photo(photo_id, db)
     src = photo_disk_path(photo.album_path, photo.filename)
     if not src.exists():
@@ -261,9 +268,12 @@ async def serve_video_transcoded(photo_id: int, db: DB) -> StreamingResponse:
     ext = src.suffix.lower()
     if ext not in VIDEO_EXTENSIONS:
         raise HTTPException(400, "Not a video file")
-    settings = get_settings()
+    from fernkam.thumbnails import _resolve_ffmpeg
+    ffmpeg = _resolve_ffmpeg()
+    if not ffmpeg:
+        raise HTTPException(503, "ffmpeg not available — install it or set FERNKAM_FFMPEG_PATH")
     return StreamingResponse(
-        _stream_transcode(src, settings.ffmpeg_path),
+        _stream_transcode(src, ffmpeg),
         media_type="video/mp4",
         headers={
             "Cache-Control": "no-cache",

@@ -1,10 +1,13 @@
 ﻿<script lang="ts">
 	import { api, type PersonOut, type FaceOut } from '$lib/api';
-	import { Plus, Search, Trash2, Pencil, Check, X, User, ExternalLink, EyeOff } from '@lucide/svelte';
+	import { Plus, Search, Trash2, Pencil, Check, X, User, ExternalLink, EyeOff, Layers, ArrowUpDown, ArrowUp, ArrowDown, Merge, Scissors } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { page as pageStore } from '$app/state';
 	import { onMount } from 'svelte';
-	import { statusCountStore } from '$lib/stores';
+	import { statusCountStore, thumbSizeStore } from '$lib/stores';
+
+	let thumbSize = $state(180);
+	const unsubThumb = thumbSizeStore.subscribe(v => { thumbSize = v; });
 
 	let people = $state<PersonOut[]>([]);
 	let faces = $state<FaceOut[]>([]);
@@ -26,6 +29,79 @@
 	let facePage = $state(0);
 	let faceHasMore = $state(false);
 	const PAGE = 200;
+
+	type SortMode = 'created' | 'photo_date' | 'score';
+	let sortMode = $state<SortMode>('created');
+	let sortDir = $state<'asc' | 'desc'>('desc');
+	const SORT_LABELS: Record<SortMode, string> = {
+		created: 'Recently added',
+		photo_date: 'Photo date',
+		score: 'Match score',
+	};
+
+	// ── merge / split state ─────────────────────────────────────────────────
+	let showMergeModal = $state(false);
+	let mergeSearch = $state('');
+	let merging = $state(false);
+	let splitMode = $state(false);
+	let splitSelected = $state<Set<string>>(new Set());
+	let splitNewName = $state('');
+	let splitting = $state(false);
+	let showSplitTargetPicker = $state(false);
+	let filteredPeopleForMerge = $derived(
+		people.filter(p => p.id !== selectedPerson?.id && (!mergeSearch.trim() || p.name.toLowerCase().includes(mergeSearch.toLowerCase())))
+	);
+
+	async function mergePerson(targetId: number) {
+		if (!selectedPerson) return;
+		merging = true;
+		try {
+			const res = await api.people.merge(selectedPerson.id, targetId);
+			people = people.filter(p => p.id !== selectedPerson!.id);
+			const target = people.find(p => p.id === targetId);
+			if (target) {
+				people = people.map(p => p.id === targetId ? { ...p, face_count: res.face_count } : p);
+				await selectPerson({ ...target, face_count: res.face_count });
+			} else {
+				selectedPerson = null; faces = [];
+			}
+			showMergeModal = false;
+		} catch (e: any) {
+			alert(e.message ?? 'Merge failed');
+		} finally {
+			merging = false;
+		}
+	}
+
+	function toggleSplitFace(faceId: string) {
+		const s = new Set(splitSelected);
+		if (s.has(faceId)) s.delete(faceId); else s.add(faceId);
+		splitSelected = s;
+	}
+
+	async function doSplit(intoId?: number) {
+		if (!selectedPerson || splitSelected.size === 0) return;
+		if (!intoId && !splitNewName.trim()) { alert('Enter a name for the new person'); return; }
+		splitting = true;
+		try {
+			const res = await api.people.split(selectedPerson.id, [...splitSelected], splitNewName.trim() || undefined, intoId);
+			const moved = splitSelected.size;
+			faces = faces.filter(f => !splitSelected.has(f.id));
+			people = people.map(p => p.id === selectedPerson!.id ? { ...p, face_count: p.face_count - moved } : p);
+			selectedPerson = { ...selectedPerson, face_count: selectedPerson.face_count - moved };
+			// add new person if created
+			if (!intoId) people = [...people, { id: res.target_id, name: res.into, tag_id: res.target_id, face_count: moved, avatar_face_id: null }];
+			else people = people.map(p => p.id === intoId ? { ...p, face_count: p.face_count + moved } : p);
+			splitSelected = new Set();
+			splitMode = false;
+			splitNewName = '';
+			showSplitTargetPicker = false;
+		} catch (e: any) {
+			alert(e.message ?? 'Split failed');
+		} finally {
+			splitting = false;
+		}
+	}
 
 	// person picker for assigning ignored faces
 	let ignoredPickerFaceId = $state<string | null>(null);
@@ -94,7 +170,7 @@
 		loadingFaces = true;
 		faces = [];
 		try {
-			faces = await api.people.faces(person.id, { limit: PAGE, offset: facePage * PAGE });
+			faces = await api.people.faces(person.id, { limit: PAGE, offset: facePage * PAGE, sort: sortMode, dir: sortDir });
 			faceHasMore = faces.length >= PAGE;
 		} finally {
 			loadingFaces = false;
@@ -299,8 +375,21 @@
 					</div>
 				{/each}
 			{/if}
-			<!-- Ignored faces entry -->
+			<!-- Review Clusters entry -->
 			<div class="border-t border-zinc-800 mt-1 pt-1">
+				<div
+					class="flex items-center gap-2 px-2 py-1.5 rounded mx-1 cursor-pointer transition-colors hover:bg-zinc-800"
+					onclick={() => goto('/people/review')}
+				>
+					<div class="w-6 h-6 rounded-full bg-violet-600/20 flex items-center justify-center text-violet-400 shrink-0">
+						<Layers size={14} />
+					</div>
+					<span class="flex-1 text-xs text-violet-300 truncate">Review Clusters</span>
+				</div>
+			</div>
+
+			<!-- Ignored faces entry -->
+			<div class="mt-1 pt-1">
 				<div
 					class="flex items-center gap-2 px-2 py-1.5 rounded mx-1 cursor-pointer transition-colors
 						{showIgnored ? 'bg-amber-500/15' : 'hover:bg-zinc-800'}"
@@ -369,7 +458,7 @@
 						<p class="text-xs">Click Ignore on a face in Face Review to add it to this pool</p>
 					</div>
 				{:else}
-					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(110px, 1fr))">
+					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each ignoredFaces as face (face.id)}
 							<div class="group relative aspect-square bg-zinc-900 rounded overflow-hidden">
 								<img src="http://localhost:8000/media/face/{face.id}?size=200" alt="" class="w-full h-full object-cover" loading="lazy" />
@@ -438,6 +527,45 @@
 				</div>
 			</div>
 
+			<!-- Split toolbar -->
+			{#if splitMode}
+			<div class="shrink-0 px-5 py-2 border-b border-amber-500/30 bg-amber-500/5 flex items-center gap-3">
+				<span class="text-xs text-amber-300"><Scissors size={12} class="inline mr-1" />{splitSelected.size} face{splitSelected.size === 1 ? '' : 's'} selected</span>
+				{#if splitSelected.size > 0}
+					<input type="text" bind:value={splitNewName} placeholder="New person name…"
+						class="flex-1 max-w-[200px] bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500" />
+					<button onclick={() => doSplit()} disabled={splitting || !splitNewName.trim()}
+						class="text-xs px-2 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-40 flex items-center gap-1">
+						{splitting ? '…' : 'Split to new'}
+					</button>
+					<button onclick={() => showSplitTargetPicker = true}
+						class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 flex items-center gap-1">
+						Move to existing…
+					</button>
+				{/if}
+				<button onclick={() => splitSelected = new Set(faces.map(f => f.id))} class="text-xs text-zinc-500 hover:text-zinc-300 ml-auto">Select all</button>
+				<button onclick={() => splitSelected = new Set()} class="text-xs text-zinc-500 hover:text-zinc-300">Clear</button>
+			</div>
+			{/if}
+
+			<!-- Sort toolbar -->
+			<div class="shrink-0 px-5 py-2 border-b border-zinc-800 flex items-center gap-2">
+				<span class="text-xs text-zinc-500 mr-1">Sort:</span>
+				{#each (['created', 'photo_date', 'score'] as SortMode[]) as mode}
+					<button
+						onclick={() => { if (sortMode === mode) { sortDir = sortDir === 'desc' ? 'asc' : 'desc'; } else { sortMode = mode; sortDir = 'desc'; } facePage = 0; loadFaces(selectedPerson!); }}
+						class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors {sortMode === mode ? 'bg-amber-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+					>
+						{SORT_LABELS[mode]}
+						{#if sortMode === mode}
+							{#if sortDir === 'desc'}<ArrowDown size={11} />{:else}<ArrowUp size={11} />{/if}
+						{:else}
+							<ArrowUpDown size={11} class="opacity-40" />
+						{/if}
+					</button>
+				{/each}
+			</div>
+
 			<!-- Face grid -->
 			<div class="flex-1 overflow-y-auto p-4">
 				{#if loadingFaces}
@@ -451,15 +579,24 @@
 						<p class="text-xs">Use Face Review to assign faces to this person</p>
 					</div>
 				{:else}
-					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(110px, 1fr))">
+					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each faces as face (face.id)}
-							<div class="group relative aspect-square bg-zinc-900 rounded overflow-hidden">
+							<div
+								class="group relative aspect-square bg-zinc-900 rounded overflow-hidden {splitMode ? 'cursor-pointer' : ''} {splitMode && splitSelected.has(face.id) ? 'ring-2 ring-amber-400' : ''}"
+								onclick={() => splitMode && toggleSplitFace(face.id)}
+							>
 								<img
 									src="http://localhost:8000/media/face/{face.id}?size=200"
 									alt=""
 									class="w-full h-full object-cover"
 									loading="lazy"
 								/>
+								{#if splitMode && splitSelected.has(face.id)}
+									<div class="absolute top-1 right-1 w-5 h-5 rounded-full bg-amber-500 flex items-center justify-center">
+										<Check size={12} class="text-white" />
+									</div>
+								{/if}
+								{#if !splitMode}
 								<div class="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
 									<button
 										onclick={() => goto(`/photos?photo_id=${face.photo_id}&back=${encodeURIComponent(pageStore.url.href)}`)}
@@ -483,6 +620,7 @@
 										<Trash2 size={13} />
 									</button>
 								</div>
+								{/if}
 							</div>
 						{/each}
 					</div>

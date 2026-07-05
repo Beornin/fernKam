@@ -237,7 +237,7 @@ async def similar_faces(
 def _thresholds():
     from fernkam.config import get_settings
     s = get_settings()
-    return s.auto_confirm_thresh, s.suggest_thresh, s.knn_k, s.knn_min_votes, s.knn_margin
+    return s.auto_confirm_thresh, s.suggest_thresh, s.knn_k, s.knn_min_votes, s.knn_margin, s.min_ref_score
 
 
 async def _auto_confirm_sweep(db) -> int:
@@ -256,7 +256,7 @@ async def _auto_confirm_sweep(db) -> int:
     from sqlalchemy import text as _sql
 
     logger = logging.getLogger(__name__)
-    auto_thresh, suggest_thresh, knn_k, min_votes, margin = _thresholds()
+    auto_thresh, suggest_thresh, knn_k, min_votes, margin, min_ref_score = _thresholds()
 
     # ── 1. Ignored pool: nearest ignored face >= auto_thresh → auto-ignore ──
     ignored_q = _sql("""
@@ -305,6 +305,7 @@ async def _auto_confirm_sweep(db) -> int:
             WHERE status = 'confirmed'
               AND person_tag_id IS NOT NULL
               AND embedding_v IS NOT NULL
+              AND (best_match_score IS NULL OR best_match_score >= :ref_min)
             ORDER BY embedding_v <=> u.embedding_v
             LIMIT :k
         ) c
@@ -314,6 +315,7 @@ async def _auto_confirm_sweep(db) -> int:
             "exclude_count": len(auto_ignore),
             "exclude_ids": [str(x) for x in auto_ignore],
             "k": knn_k,
+            "ref_min": min_ref_score,
         }
         rows = (await db.execute(confirmed_q, params)).fetchall()
     except Exception as e:
@@ -488,14 +490,16 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
             FROM faces
             WHERE id = ANY(CAST(:seeds AS uuid[]))
               AND embedding_v IS NOT NULL
+              AND (best_match_score IS NULL OR best_match_score >= :ref_min)
             ORDER BY embedding_v <=> u.embedding_v
             LIMIT 1
         ) s
         WHERE 1 - (u.embedding_v <=> s.embedding_v) >= :thresh
         """
     )
-    auto_thresh = _thresholds()[0]
-    rows = (await db.execute(q, {"seeds": seed_str, "thresh": auto_thresh - 0.005})).fetchall()
+    thresholds = _thresholds()
+    auto_thresh, min_ref_score = thresholds[0], thresholds[5]
+    rows = (await db.execute(q, {"seeds": seed_str, "thresh": auto_thresh - 0.005, "ref_min": min_ref_score})).fetchall()
     auto_ids = [r[0] for r in rows]
     if not auto_ids:
         return
@@ -856,5 +860,516 @@ def _make_face_out(f: Face) -> FaceOut:
         region_name=f.region_name,
         score=float(f.best_match_score) if f.best_match_score is not None else None,
     )
+
+
+@router.post("/purge-weak-suggestions")
+async def purge_weak_suggestions(db: DB) -> dict:
+    """Reset suggested faces below suggest_thresh back to unconfirmed.
+
+    Cleans the review queue of low-confidence suggestions produced before
+    the threshold was raised.
+    """
+    from fernkam.config import get_settings
+    from sqlalchemy import text as _sql
+
+    thresh = get_settings().suggest_thresh
+    result = await db.execute(
+        update(Face)
+        .where(Face.status == "suggested")
+        .where(Face.best_match_score < thresh)
+        .values(status="unconfirmed", person_tag_id=None)
+    )
+    await db.commit()
+    return {"cleared": result.rowcount, "threshold": thresh}
+
+
+@router.post("/demote-low-confidence-confirmed")
+async def demote_low_confidence_confirmed(db: DB) -> dict:
+    """Demote confirmed faces that look suspicious back to 'suggested' for review.
+
+    Targets faces where:
+    - det_score IS NULL  (processed via buggy overlap path — quality gate was never applied)
+    - best_match_score < 0.65  (well below auto-confirm threshold)
+
+    These are moved to 'suggested' (keeping person_tag_id) so they appear in the
+    face review queue for manual confirmation or rejection.
+    """
+    result = await db.execute(
+        update(Face)
+        .where(Face.status == "confirmed")
+        .where(Face.det_score.is_(None))
+        .where(Face.best_match_score < 0.65)
+        .values(status="suggested")
+    )
+    await db.commit()
+    return {"demoted": result.rowcount}
+
+
+# ───────────────────────────── cluster review ────────────────────────────────
+
+async def _rebuild_face_clusters(
+    db, *, cluster_thresh: float, k: int, min_size: int
+) -> int:
+    """Build same-person clusters of unconfirmed faces and persist to face_clusters.
+
+    Uses the HNSW pgvector index to find each face's k nearest unconfirmed
+    neighbours, keeps edges with cosine similarity >= cluster_thresh, then
+    union-finds the edge list into connected components. Singletons (no edge
+    above threshold) are dropped. Returns the number of clusters written.
+    """
+    from collections import defaultdict
+    from sqlalchemy import text as _sql
+
+    # Boost ef_search so the HNSW index scans enough candidates when
+    # filtering to status='unconfirmed' (a subset of all indexed faces).
+    await db.execute(_sql("SET LOCAL hnsw.ef_search = 300"))
+
+    edges_q = _sql("""
+        WITH unc AS (
+            SELECT id, embedding_v
+            FROM faces
+            WHERE status = 'unconfirmed' AND embedding_v IS NOT NULL
+              AND (:min_size = 0 OR (w >= :min_size AND h >= :min_size))
+        )
+        SELECT u.id AS a, nb.id AS b
+        FROM unc u
+        CROSS JOIN LATERAL (
+            SELECT o.id, 1 - (o.embedding_v <=> u.embedding_v) AS score
+            FROM faces o
+            WHERE o.status = 'unconfirmed' AND o.embedding_v IS NOT NULL
+              AND o.id <> u.id
+              AND (:min_size = 0 OR (o.w >= :min_size AND o.h >= :min_size))
+            ORDER BY o.embedding_v <=> u.embedding_v
+            LIMIT :k
+        ) nb
+        WHERE nb.score >= :thresh
+    """)
+    rows = (await db.execute(
+        edges_q, {"min_size": min_size, "k": k, "thresh": cluster_thresh}
+    )).fetchall()
+
+    # ── Union-find over the edge list ──
+    parent: dict = {}
+
+    def find(x):
+        root = x
+        while parent.get(root, root) != root:
+            root = parent[root]
+        while parent.get(x, x) != root:
+            parent[x], x = root, parent.get(x, x)
+        return root
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for a, b in rows:
+        if a not in parent:
+            parent[a] = a
+        if b not in parent:
+            parent[b] = b
+        union(a, b)
+
+    # ── Group faces by root; assign sequential cluster ids ──
+    groups: dict = defaultdict(list)
+    for node in parent:
+        groups[find(node)].append(node)
+
+    cluster_rows: list = []
+    cid = 0
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for fid in members:
+            cluster_rows.append({"fid": str(fid), "cid": cid})
+        cid += 1
+
+    # ── Persist: truncate + bulk insert ──
+    await db.execute(_sql("TRUNCATE TABLE face_clusters"))
+    if cluster_rows:
+        ins = _sql(
+            "INSERT INTO face_clusters (face_id, cluster_id) VALUES "
+            + ",".join(
+                f"('{r['fid']}'::uuid, {r['cid']})" for r in cluster_rows
+            )
+        )
+        await db.execute(ins)
+    await db.commit()
+    return cid
+
+
+@router.post("/clusters/rebuild", response_model=dict)
+async def rebuild_clusters(
+    min_size: int = Query(0, ge=0),
+    cluster_thresh: Optional[float] = Query(None),
+    k: int = Query(30, ge=2, le=100),
+) -> dict:
+    """Kick off cluster rebuild as a background task. Returns a task_id."""
+    import asyncio
+    from fernkam.task_manager import task_manager
+    from fernkam.config import get_settings
+    from fernkam.db.session import async_session_factory as _session_factory
+
+    thresh = cluster_thresh if cluster_thresh is not None else max(
+        get_settings().suggest_thresh, 0.72
+    )
+    task_id = await task_manager.create_task("cluster_rebuild", "Building face clusters…")
+
+    async def _run() -> None:
+        async with _session_factory() as bg_db:
+            try:
+                n = await _rebuild_face_clusters(
+                    bg_db, cluster_thresh=thresh, k=k, min_size=min_size
+                )
+                await task_manager.update_task(
+                    task_id, status="completed",
+                    message=f"Built {n} clusters",
+                    progress={"clusters": n},
+                )
+            except Exception as exc:  # noqa: BLE001
+                await task_manager.update_task(task_id, status="failed", message=str(exc))
+
+    asyncio.create_task(_run())
+    return {"task_id": task_id, "status": "started", "threshold": thresh}
+
+
+@router.get("/clusters")
+async def list_clusters(
+    db: DB,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict:
+    """Paginated clusters (largest first) of currently-unconfirmed faces, each
+    with member face crops and a top suggested person (centroid k-NN)."""
+    from collections import defaultdict
+    from sqlalchemy import text as _sql
+    from fernkam.config import get_settings
+
+    ref_min = get_settings().min_ref_score
+
+    # 1. Page of cluster ids ordered by current (still-unconfirmed) size.
+    page_q = _sql("""
+        SELECT fc.cluster_id AS cid, COUNT(*) AS size
+        FROM face_clusters fc
+        JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+        GROUP BY fc.cluster_id
+        HAVING COUNT(*) >= 2
+        ORDER BY size DESC, fc.cluster_id ASC
+        OFFSET :offset LIMIT :limit
+    """)
+    page_rows = (await db.execute(page_q, {"offset": offset, "limit": limit})).fetchall()
+    if not page_rows:
+        # total remaining cluster count for UI progress
+        total = (await db.execute(_sql("""
+            SELECT COUNT(*) FROM (
+                SELECT fc.cluster_id
+                FROM face_clusters fc
+                JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+                GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
+            ) t
+        """))).scalar_one()
+        return {"clusters": [], "total": total}
+
+    cids = [r[0] for r in page_rows]
+    size_by_cid = {r[0]: int(r[1]) for r in page_rows}
+
+    # 2. Member faces for these clusters.
+    mem_q = _sql("""
+        SELECT fc.cluster_id, f.id, f.photo_id
+        FROM face_clusters fc
+        JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+        WHERE fc.cluster_id = ANY(CAST(:cids AS int[]))
+        ORDER BY fc.cluster_id
+    """)
+    mem_rows = (await db.execute(mem_q, {"cids": cids})).fetchall()
+
+    members: dict = defaultdict(list)
+    for cid, fid, phid in mem_rows:
+        members[cid].append({"id": str(fid), "photo_id": phid})
+
+    # 3. Suggestion per cluster: sample up to 5 faces, k-NN vs confirmed pool.
+    sample_ids: list = []
+    sample_to_cid: dict = {}
+    for cid in cids:
+        for m in members[cid][:5]:
+            sample_ids.append(m["id"])
+            sample_to_cid[m["id"]] = cid
+
+    suggestion: dict = {}  # cid -> {person_id, person_name, score}
+    if sample_ids:
+        knn_q = _sql("""
+            WITH samp AS (
+                SELECT id, embedding_v FROM faces
+                WHERE id = ANY(CAST(:ids AS uuid[]))
+            )
+            SELECT s.id AS fid, c.person_tag_id AS pid,
+                   1 - (s.embedding_v <=> c.embedding_v) AS score
+            FROM samp s
+            CROSS JOIN LATERAL (
+                SELECT person_tag_id, embedding_v FROM faces
+                WHERE status = 'confirmed' AND person_tag_id IS NOT NULL
+                  AND embedding_v IS NOT NULL
+                  AND (best_match_score IS NULL OR best_match_score >= :ref_min)
+                ORDER BY embedding_v <=> s.embedding_v LIMIT 5
+            ) c
+        """)
+        knn_rows = (await db.execute(
+            knn_q, {"ids": sample_ids, "ref_min": ref_min}
+        )).fetchall()
+
+        # cid -> {person_id -> best_score}
+        cluster_person: dict = defaultdict(lambda: defaultdict(float))
+        for fid, pid, score in knn_rows:
+            if pid is None:
+                continue
+            cid = sample_to_cid.get(str(fid))
+            if cid is None:
+                continue
+            s = float(score)
+            if s > cluster_person[cid][pid]:
+                cluster_person[cid][pid] = s
+
+        all_pids = {pid for d in cluster_person.values() for pid in d}
+        names: dict = {}
+        if all_pids:
+            name_rows = (await db.execute(
+                select(Tag.id, Tag.name).where(Tag.id.in_(all_pids))
+            )).fetchall()
+            names = {r[0]: r[1] for r in name_rows}
+
+        for cid, persons in cluster_person.items():
+            best_pid, best_score = max(persons.items(), key=lambda kv: kv[1])
+            suggestion[cid] = {
+                "person_id": best_pid,
+                "person_name": names.get(best_pid),
+                "score": round(best_score, 2),
+            }
+
+    total = (await db.execute(_sql("""
+        SELECT COUNT(*) FROM (
+            SELECT fc.cluster_id
+            FROM face_clusters fc
+            JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+            GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
+        ) t
+    """))).scalar_one()
+
+    clusters = [
+        {
+            "cluster_id": cid,
+            "size": size_by_cid[cid],
+            "faces": members[cid],
+            "suggested_person": suggestion.get(cid),
+        }
+        for cid in cids
+    ]
+    return {"clusters": clusters, "total": total}
+
+
+@router.post("/ignore-tiny")
+async def ignore_tiny_faces(
+    db: DB,
+    max_size: int = Query(50, ge=1),
+) -> dict:
+    """Mark all unconfirmed faces smaller than max_size (in either dimension)
+    as ignored. Quick triage for unidentifiable junk crops."""
+    result = await db.execute(
+        update(Face)
+        .where(Face.status == "unconfirmed")
+        .where((Face.w < max_size) | (Face.h < max_size))
+        .values(status="ignored", person_tag_id=None)
+    )
+    await db.commit()
+    return {"ignored": result.rowcount, "max_size": max_size}
+
+
+@router.post("/clusters/auto-assign", response_model=dict)
+async def auto_assign_clusters(
+    min_score: float = Query(0.82, ge=0.50, le=1.0),
+    min_agreement: float = Query(0.60, ge=0.0, le=1.0),
+    sample_k: int = Query(5, ge=1, le=10),
+    dry_run: bool = Query(False),
+) -> dict:
+    """Background task: auto-confirm clusters where k-NN consensus score >= min_score.
+
+    Iterates all unconfirmed clusters, samples up to sample_k faces per cluster,
+    runs a k-NN vote against the confirmed pool, and assigns any cluster whose
+    top-person avg similarity >= min_score AND agreement fraction >= min_agreement.
+    Returns a task_id to poll for progress.
+    """
+    import asyncio as _asyncio
+    from collections import defaultdict as _dd
+    from sqlalchemy import text as _sql
+    from fernkam.task_manager import task_manager
+    from fernkam.db.session import async_session_factory as _factory
+    from fernkam.config import get_settings
+
+    task_id = await task_manager.create_task(
+        "cluster_auto_assign",
+        f"Auto-assigning clusters (min_score={min_score:.2f})…",
+    )
+
+    async def _run() -> None:
+        assigned_clusters = 0
+        assigned_faces = 0
+        checked = 0
+        try:
+            async with _factory() as bg_db:
+                ref_min = get_settings().min_ref_score
+
+                cid_rows = (await bg_db.execute(_sql("""
+                    SELECT fc.cluster_id
+                    FROM face_clusters fc
+                    JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+                    GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
+                    ORDER BY COUNT(*) DESC
+                """))).fetchall()
+                all_cids = [r[0] for r in cid_rows]
+                total_clusters = len(all_cids)
+
+                if not total_clusters:
+                    await task_manager.update_task(
+                        task_id, status="completed",
+                        message="No clusters to process.",
+                        progress={"assigned_clusters": 0, "assigned_faces": 0, "checked": 0},
+                    )
+                    return
+
+                CHUNK = 200
+                for chunk_start in range(0, total_clusters, CHUNK):
+                    chunk = all_cids[chunk_start: chunk_start + CHUNK]
+
+                    mem_rows = (await bg_db.execute(_sql("""
+                        SELECT fc.cluster_id, f.id AS face_id
+                        FROM face_clusters fc
+                        JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+                          AND f.embedding_v IS NOT NULL
+                        WHERE fc.cluster_id = ANY(CAST(:cids AS int[]))
+                    """), {"cids": chunk})).fetchall()
+
+                    cluster_all: dict = _dd(list)
+                    cluster_sample: dict = _dd(list)
+                    for cid, fid in mem_rows:
+                        sfid = str(fid)
+                        cluster_all[cid].append(sfid)
+                        if len(cluster_sample[cid]) < sample_k:
+                            cluster_sample[cid].append(sfid)
+
+                    sample_ids = [fid for fids in cluster_sample.values() for fid in fids]
+                    sample_to_cid = {fid: cid for cid, fids in cluster_sample.items() for fid in fids}
+
+                    cluster_votes: dict = _dd(lambda: _dd(list))
+                    if sample_ids:
+                        knn_rows = (await bg_db.execute(_sql("""
+                            WITH samp AS (
+                                SELECT id, embedding_v FROM faces
+                                WHERE id = ANY(CAST(:ids AS uuid[]))
+                            )
+                            SELECT s.id AS fid, c.person_tag_id AS pid,
+                                   1 - (s.embedding_v <=> c.embedding_v) AS score
+                            FROM samp s
+                            CROSS JOIN LATERAL (
+                                SELECT person_tag_id, embedding_v FROM faces
+                                WHERE status = 'confirmed' AND person_tag_id IS NOT NULL
+                                  AND embedding_v IS NOT NULL
+                                  AND (best_match_score IS NULL OR best_match_score >= :ref_min)
+                                ORDER BY embedding_v <=> s.embedding_v LIMIT 1
+                            ) c
+                        """), {"ids": sample_ids, "ref_min": ref_min})).fetchall()
+
+                        for fid, pid, score in knn_rows:
+                            if pid is None:
+                                continue
+                            cid = sample_to_cid.get(str(fid))
+                            if cid is not None:
+                                cluster_votes[cid][pid].append(float(score))
+
+                    to_assign: list = []
+                    for cid in chunk:
+                        checked += 1
+                        if cid not in cluster_votes:
+                            continue
+                        votes = cluster_votes[cid]
+                        best_pid = max(votes, key=lambda p: (len(votes[p]), sum(votes[p])))
+                        scores = votes[best_pid]
+                        avg_score = sum(scores) / len(scores)
+                        n_samples = len(cluster_sample.get(cid, []))
+                        agreement = len(scores) / n_samples if n_samples else 0.0
+                        if avg_score >= min_score and agreement >= min_agreement:
+                            to_assign.append((cid, best_pid, cluster_all[cid]))
+
+                    if not dry_run and to_assign:
+                        for cid, pid, face_ids in to_assign:
+                            await bg_db.execute(_sql("""
+                                UPDATE faces SET status='confirmed', person_tag_id=:pid
+                                WHERE id = ANY(CAST(:ids AS uuid[]))
+                                  AND status = 'unconfirmed'
+                            """), {"pid": pid, "ids": face_ids})
+                            await bg_db.execute(_sql(
+                                "DELETE FROM face_clusters WHERE cluster_id = :cid"
+                            ), {"cid": cid})
+                            assigned_faces += len(face_ids)
+                        await bg_db.commit()
+
+                    if dry_run:
+                        for _, _, face_ids in to_assign:
+                            assigned_faces += len(face_ids)
+
+                    assigned_clusters += len(to_assign)
+
+                    await task_manager.update_task(
+                        task_id,
+                        message=(
+                            f"Checked {checked}/{total_clusters} · "
+                            f"assigned {assigned_clusters} clusters ({assigned_faces} faces)…"
+                        ),
+                        progress={
+                            "checked": checked,
+                            "total": total_clusters,
+                            "assigned_clusters": assigned_clusters,
+                            "assigned_faces": assigned_faces,
+                        },
+                    )
+
+                suffix = " (dry run)" if dry_run else ""
+                await task_manager.update_task(
+                    task_id, status="completed",
+                    message=(
+                        f"Done: {assigned_clusters} clusters / {assigned_faces} faces "
+                        f"auto-assigned{suffix}"
+                    ),
+                    progress={
+                        "assigned_clusters": assigned_clusters,
+                        "assigned_faces": assigned_faces,
+                        "checked": checked,
+                    },
+                )
+        except Exception as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning("cluster auto-assign error: %s", exc)
+            await task_manager.update_task(task_id, status="failed", message=str(exc))
+
+    _asyncio.create_task(_run(), name="fernkam-cluster-auto-assign")
+    return {"task_id": task_id, "status": "started", "threshold": min_score, "dry_run": dry_run}
+
+
+@router.post("/batch-delete", status_code=204)
+async def batch_delete_faces(
+    db: DB,
+    face_ids: list[str] = Body(...),
+) -> None:
+    """Permanently delete multiple face records (e.g. a junk cluster)."""
+    from sqlalchemy import delete as _delete
+    uuids = [UUID(fid) for fid in face_ids]
+    if not uuids:
+        return
+    photo_ids = [r[0] for r in (await db.execute(
+        select(Face.photo_id).where(Face.id.in_(uuids)).distinct()
+    )).fetchall()]
+    await db.execute(_delete(Face).where(Face.id.in_(uuids)))
+    if photo_ids:
+        await db.execute(update(Photo).where(Photo.id.in_(photo_ids)).values(file_sync_dirty=True))
+    await db.commit()
 
 

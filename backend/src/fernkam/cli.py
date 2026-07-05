@@ -201,8 +201,8 @@ def cmd_serve(
     from granian.constants import Interfaces
 
     console.rule("[bold cyan]fernKam API[/bold cyan]")
-    console.print(f"  [green]→[/green] http://{host}:{port}")
-    console.print(f"  [green]→[/green] Docs: http://{host}:{port}/docs")
+    console.print(f"  [green]->[/green] http://{host}:{port}")
+    console.print(f"  [green]->[/green] Docs: http://{host}:{port}/docs")
 
     granian.Granian(
         "fernkam.api.app:app",

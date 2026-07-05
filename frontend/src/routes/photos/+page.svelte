@@ -4,7 +4,7 @@
 	import { api, type PhotoSummary, type AlbumNode } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
-	import { ChevronLeft, ChevronRight, SlidersHorizontal, ChevronDown, ChevronRight as ChevronR, FolderOpen, Folder, PanelLeftClose, PanelLeftOpen, Images, PanelRightOpen, PanelRightClose } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, SlidersHorizontal, ChevronDown, ChevronRight as ChevronR, FolderOpen, Folder, PanelLeftClose, PanelLeftOpen, Images, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2 } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
 	import { onMount } from 'svelte';
 	import { statusCountStore } from '$lib/stores';
@@ -155,6 +155,129 @@
 		}
 	}
 
+	// ── Review Mode ──
+	let reviewMode = $state(false);
+	let reviewIdx = $state(0);
+	let reviewPhotos = $state<PhotoSummary[]>([]);
+	let reviewTrashedCount = $state(0);
+	let reviewTrashing = $state(false);
+	let reviewFit = $state(false); // false = 1:1, true = fit-to-screen
+
+	// pan state
+	let reviewScroll = $state<HTMLDivElement | undefined>(undefined);
+	let panActive = $state(false);
+	let panStartX = 0, panStartY = 0, panScrollX = 0, panScrollY = 0;
+
+	// scroll preservation across navigation
+	let savedScrollX = 0, savedScrollY = 0, restoreScroll = false;
+
+	// filmstrip
+	let filmstripEl = $state<HTMLDivElement | undefined>(undefined);
+
+	$effect(() => {
+		// auto-scroll filmstrip to keep active thumb centred
+		const idx = reviewIdx;
+		if (filmstripEl) {
+			const thumb = filmstripEl.querySelector(`[data-fidx="${idx}"]`) as HTMLElement | null;
+			if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+		}
+	});
+
+	function enterReview() {
+		if (photos.length === 0) return;
+		reviewPhotos = [...photos];
+		reviewIdx = 0;
+		reviewTrashedCount = 0;
+		reviewFit = false;
+		reviewMode = true;
+	}
+
+	function exitReview() {
+		reviewMode = false;
+		if (reviewTrashedCount > 0) {
+			// Reload grid to reflect trashed photos
+			photos = reviewPhotos;
+		}
+	}
+
+	function reviewPrev() {
+		if (reviewIdx > 0) { saveScroll(); reviewIdx--; }
+	}
+
+	function reviewNext() {
+		if (reviewIdx < reviewPhotos.length - 1) { saveScroll(); reviewIdx++; }
+	}
+
+	function saveScroll() {
+		if (reviewScroll) {
+			savedScrollX = reviewScroll.scrollLeft;
+			savedScrollY = reviewScroll.scrollTop;
+			restoreScroll = true;
+		}
+	}
+
+	function onImgLoad() {
+		if (restoreScroll && reviewScroll) {
+			reviewScroll.scrollLeft = savedScrollX;
+			reviewScroll.scrollTop = savedScrollY;
+			restoreScroll = false;
+		}
+	}
+
+	function centerReview() {
+		// Centre view (used only on first entry)
+		restoreScroll = false;
+		setTimeout(() => {
+			if (reviewScroll) {
+				reviewScroll.scrollLeft = (reviewScroll.scrollWidth - reviewScroll.clientWidth) / 2;
+				reviewScroll.scrollTop = (reviewScroll.scrollHeight - reviewScroll.clientHeight) / 2;
+			}
+		}, 80);
+	}
+
+	async function reviewTrash() {
+		if (reviewTrashing || reviewPhotos.length === 0) return;
+		reviewTrashing = true;
+		const photo = reviewPhotos[reviewIdx];
+		try {
+			await api.photos.trash(photo.id);
+			reviewPhotos = reviewPhotos.filter((_, i) => i !== reviewIdx);
+			reviewTrashedCount++;
+			if (reviewIdx >= reviewPhotos.length && reviewIdx > 0) reviewIdx--;
+		} catch (e) {
+			alert(`Failed to trash: ${e}`);
+		} finally {
+			reviewTrashing = false;
+		}
+	}
+
+	function onReviewKey(e: KeyboardEvent) {
+		if (!reviewMode) return;
+		if (e.key === 'ArrowLeft') { e.preventDefault(); reviewPrev(); }
+		else if (e.key === 'ArrowRight') { e.preventDefault(); reviewNext(); }
+		else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); reviewTrash(); }
+		else if (e.key === 'Escape') exitReview();
+		else if (e.key === 'f' || e.key === 'F') reviewFit = !reviewFit;
+	}
+
+	function panStart(e: MouseEvent) {
+		if (reviewFit) return;
+		panActive = true;
+		panStartX = e.clientX;
+		panStartY = e.clientY;
+		panScrollX = reviewScroll?.scrollLeft ?? 0;
+		panScrollY = reviewScroll?.scrollTop ?? 0;
+		e.preventDefault();
+	}
+
+	function panMove(e: MouseEvent) {
+		if (!panActive || !reviewScroll) return;
+		reviewScroll.scrollLeft = panScrollX - (e.clientX - panStartX);
+		reviewScroll.scrollTop = panScrollY - (e.clientY - panStartY);
+	}
+
+	function panEnd() { panActive = false; }
+
 	// Breadcrumb from albumPath
 	function breadcrumbParts(path: string): Array<{label: string, path: string}> {
 		if (!path) return [];
@@ -266,6 +389,17 @@
 				{#if rightPanelOpen}<PanelRightClose size={14} />{:else}<PanelRightOpen size={14} />{/if}
 			</button>
 
+			<!-- Review Mode button -->
+			{#if albumPath && photos.length > 0}
+				<button
+					onclick={enterReview}
+					class="text-xs px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white flex items-center gap-1 transition-colors shrink-0"
+					title="Review photos at 1:1 zoom"
+				>
+					<Clapperboard size={12} /> Review
+				</button>
+			{/if}
+
 			<!-- Toolbar right -->
 			<div class="flex items-center gap-2 shrink-0">
 				{#if selectedIds.size > 0}
@@ -346,4 +480,116 @@
 		onPrev={selectedIdx > 0 ? prevPhoto : undefined}
 		onNext={selectedIdx < photos.length - 1 ? nextPhoto : undefined}
 	/>
+{/if}
+
+<svelte:window onkeydown={onReviewKey} />
+
+<!-- ── Review Mode Overlay ── -->
+{#if reviewMode}
+<div class="fixed inset-0 z-50 bg-black flex flex-col">
+
+	<!-- Top bar -->
+	<div class="shrink-0 flex items-center justify-between px-4 py-2 bg-black/80 backdrop-blur-sm z-10">
+		<div class="flex items-center gap-3">
+			<span class="text-white font-semibold text-sm">{reviewPhotos[reviewIdx]?.filename ?? ''}</span>
+			{#if reviewTrashedCount > 0}
+				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">{reviewTrashedCount} trashed</span>
+			{/if}
+		</div>
+		<div class="flex items-center gap-2">
+			<span class="text-zinc-400 text-sm">{reviewIdx + 1} / {reviewPhotos.length}</span>
+			<button
+				onclick={() => reviewFit = !reviewFit}
+				class="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+				title={reviewFit ? '1:1 pixel zoom (F)' : 'Fit to screen (F)'}
+			>
+				{#if reviewFit}<ZoomIn size={16} />{:else}<Maximize2 size={16} />{/if}
+			</button>
+			<button
+				onclick={exitReview}
+				class="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+				title="Exit review (Esc)"
+			>
+				<X size={16} />
+			</button>
+		</div>
+	</div>
+
+	<!-- Image area -->
+	<div
+		bind:this={reviewScroll}
+		role="application"
+		aria-label="Photo review area"
+		class="flex-1 overflow-auto relative {panActive ? 'cursor-grabbing' : reviewFit ? 'cursor-default' : 'cursor-grab'}"
+		onmousedown={panStart}
+		onmousemove={panMove}
+		onmouseup={panEnd}
+		onmouseleave={panEnd}
+	>
+		{#if reviewPhotos.length > 0}
+			<img
+				src="http://localhost:8000/media/original/{reviewPhotos[reviewIdx].id}"
+				alt={reviewPhotos[reviewIdx].filename}
+				draggable="false"
+				onload={onImgLoad}
+				class="block select-none {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
+				style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
+			/>
+		{:else}
+			<div class="flex items-center justify-center h-full text-zinc-500">No photos left</div>
+		{/if}
+	</div>
+
+	<!-- Filmstrip -->
+	<div
+		bind:this={filmstripEl}
+		class="shrink-0 h-20 bg-zinc-950 border-t border-zinc-800 flex items-center gap-1 overflow-x-auto overflow-y-hidden px-2"
+		style="scrollbar-width:thin;scrollbar-color:#3f3f46 transparent;"
+	>
+		{#each reviewPhotos as fp, fi (fp.id)}
+			<button
+				data-fidx={fi}
+				onclick={() => { saveScroll(); reviewIdx = fi; }}
+				class="shrink-0 w-16 h-16 rounded overflow-hidden border-2 transition-all
+					{fi === reviewIdx ? 'border-violet-400 opacity-100' : 'border-transparent opacity-50 hover:opacity-80'}"
+				title={fp.filename}
+			>
+				<img
+					src="http://localhost:8000/media/thumbnail/{fp.id}?size=sm"
+					alt={fp.filename}
+					class="w-full h-full object-cover"
+					loading="lazy"
+				/>
+			</button>
+		{/each}
+	</div>
+
+	<!-- Bottom bar -->
+	<div class="shrink-0 flex items-center justify-center gap-4 px-4 py-3 bg-black/80 backdrop-blur-sm">
+		<button
+			onclick={reviewPrev}
+			disabled={reviewIdx === 0}
+			class="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-30 transition-colors"
+			title="Previous (←)"
+		><ChevronLeft size={20} /></button>
+
+		<button
+			onclick={reviewTrash}
+			disabled={reviewTrashing || reviewPhotos.length === 0}
+			class="flex items-center gap-2 px-5 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium disabled:opacity-40 transition-colors"
+			title="Trash this photo (Delete)"
+		>
+			<Trash2 size={16} />
+			{reviewTrashing ? 'Trashing…' : 'Trash'}
+		</button>
+
+		<button
+			onclick={reviewNext}
+			disabled={reviewIdx >= reviewPhotos.length - 1}
+			class="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-30 transition-colors"
+			title="Next (→)"
+		><ChevronRight size={20} /></button>
+	</div>
+
+</div>
 {/if}

@@ -4,7 +4,7 @@
 	import { api, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
-	import { MapPin } from '@lucide/svelte';
+	import { MapPin, Globe } from '@lucide/svelte';
 	import { statusCountStore } from '$lib/stores';
 
 	let mapEl: HTMLDivElement;
@@ -19,6 +19,22 @@
 	let lightboxId = $state<number | null>(null);
 	let lightboxIdx = $state(-1);
 	let selectedIds = $state(new Set<number>());
+
+	let geoStats = $state<{ with_gps: number; geocoded: number; pending: number } | null>(null);
+	let geocoding = $state(false);
+
+	async function runGeocode() {
+		geocoding = true;
+		try {
+			const r = await api.geocode.run();
+			alert(`Geocoding started (task ${r.task_id}). Check Tasks page for progress.`);
+			geoStats = await api.geocode.stats();
+		} catch (e: any) {
+			alert(e.message ?? 'Failed');
+		} finally {
+			geocoding = false;
+		}
+	}
 
 	onDestroy(() => { leafletMap?.remove(); });
 
@@ -97,6 +113,7 @@
 		}
 
 		map.addLayer(clusterGroup);
+		geoStats = await api.geocode.stats();
 
 		const urlParams = new URLSearchParams(window.location.search);
 		const urlLat = urlParams.get('lat');
@@ -135,7 +152,18 @@
 			{:else}
 				<span class="text-xs text-zinc-400">{pointCount.toLocaleString()} geotagged photos</span>
 			{/if}
-			<span class="ml-auto text-[10px] text-zinc-600">Click a pin to view photos</span>
+			<div class="ml-auto flex items-center gap-2">
+				{#if geoStats && geoStats.pending > 0}
+					<span class="text-[10px] text-amber-500">{geoStats.pending.toLocaleString()} pending geocode</span>
+					<button onclick={runGeocode} disabled={geocoding}
+						class="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50 transition-colors">
+						<Globe size={10} /> {geocoding ? 'Starting…' : 'Geocode'}
+					</button>
+				{:else if geoStats}
+					<span class="text-[10px] text-zinc-600">{geoStats.geocoded.toLocaleString()} geocoded</span>
+				{/if}
+				<span class="text-[10px] text-zinc-600">Click a pin to view photos</span>
+			</div>
 		</div>
 		<div class="flex-1 relative">
 			<div bind:this={mapEl} class="absolute inset-0"></div>

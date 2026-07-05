@@ -103,6 +103,7 @@ def upgrade() -> None:
         sa.Column("height", sa.Integer),
         sa.Column("color_depth", sa.SmallInteger),
         sa.Column("color_model", sa.SmallInteger),
+        sa.Column("file_sync_dirty", sa.Boolean, server_default="false", nullable=False),
     )
 
     # ── people ────────────────────────────────────────────────────────────────
@@ -138,6 +139,7 @@ def upgrade() -> None:
         sa.Column("digikam_image_id", sa.BigInteger),
         sa.Column("digikam_tag_id", sa.Integer),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("crop_data", sa.LargeBinary, nullable=True),
     )
 
     # ── audit_log ─────────────────────────────────────────────────────────────
@@ -175,14 +177,6 @@ def upgrade() -> None:
     op.create_index("ix_faces_photo_id", "faces", ["photo_id"])
     op.create_index("ix_audit_log_table_changed_at", "audit_log", ["table_name", "changed_at"])
 
-    # pgvector HNSW index (only if vector extension is available)
-    if has_vector:
-        op.execute("ALTER TABLE faces ADD COLUMN embedding vector(512)")
-        op.execute(
-            "CREATE INDEX ix_faces_embedding_hnsw ON faces "
-            "USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)"
-        )
-
     # PostGIS geography column (only if postgis is available)
     if has_postgis:
         op.execute(
@@ -198,7 +192,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_photos_geo_gist")
-    op.execute("DROP INDEX IF EXISTS ix_faces_embedding_hnsw")
     op.drop_table("audit_log")
     op.drop_table("faces")
     op.drop_table("photo_tags")

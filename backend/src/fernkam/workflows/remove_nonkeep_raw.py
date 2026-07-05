@@ -1,12 +1,14 @@
 """
 Port of RemoveNonKeepRAWWorkflow.java
 
-Walks a folder tree, collects all JPG/JPEG base names, then moves any NEF
-file whose base name has no matching JPG to the system Trash.
+Walks a folder tree and moves any NEF file to the Trash when no matching
+JPG exists in the same directory or that directory's jpg/ subfolder.
+Matching is a substring check: the NEF stem must appear inside a JPG stem.
 """
 
 import os
 import time
+from collections import defaultdict
 from pathlib import Path
 
 try:
@@ -27,14 +29,20 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
 
     all_files = _gather_files(starting_folder)
 
-    jpg_names = {
-        _base_name(f.name)
-        for f in all_files
-        if f.suffix.lower() in {".jpg", ".jpeg"}
-    }
+    # Build per-directory index of JPG base names.
+    jpg_by_dir: dict = defaultdict(set)
+    for f in all_files:
+        if f.suffix.lower() in {".jpg", ".jpeg"}:
+            jpg_by_dir[f.parent].add(_base_name(f.name))
 
-    nef_files  = [f for f in all_files if f.suffix.lower() == ".nef"]
-    to_delete  = [f for f in nef_files if _base_name(f.name) not in jpg_names]
+    nef_files = [f for f in all_files if f.suffix.lower() == ".nef"]
+    to_delete = []
+    for f in nef_files:
+        nef_stem = _base_name(f.name)
+        # Allowed JPG directories: same folder, or a jpg/ subfolder of it.
+        candidates: set = jpg_by_dir.get(f.parent, set()) | jpg_by_dir.get(f.parent / "jpg", set())
+        if not any(nef_stem in jpg for jpg in candidates):
+            to_delete.append(f)
 
     print(f"Found {len(nef_files)} NEF files. {len(to_delete)} have no matching JPG.")
 
