@@ -242,14 +242,23 @@
 	}
 
 	function onKey(e: KeyboardEvent) {
+		// Never fire single-letter shortcuts while the user is typing into any
+		// text field (new-person name, people-picker search, etc.).
+		const target = e.target as HTMLElement | null;
+		const isTyping = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 		if (previewPhotoId !== null) {
 			if (e.key === 'Escape') previewPhotoId = null;
+			return;
+		}
+		if (newPersonOpen) {
+			if (e.key === 'Escape') newPersonOpen = false;
 			return;
 		}
 		if (pickerOpen) {
 			if (e.key === 'Escape') pickerOpen = false;
 			return;
 		}
+		if (isTyping) return;
 		if (!current) return;
 		const k = e.key.toLowerCase();
 		if (k === 'a' && current.suggested_person) { e.preventDefault(); assignTo(current.suggested_person.person_id); }

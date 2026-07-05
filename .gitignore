@@ -29,15 +29,15 @@ env/
 .env
 *.env.local
 
-# Alembic
-alembic/versions/*.py
-!alembic/versions/.gitkeep
-
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# Python tooling caches
+.mypy_cache/
+.ruff_cache/
 
 # Node / SvelteKit (Phase 2)
 node_modules/
