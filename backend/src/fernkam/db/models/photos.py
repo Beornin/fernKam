@@ -72,6 +72,27 @@ class Lens(Base):
     photos: Mapped[list["Photo"]] = relationship(back_populates="lens")
 
 
+class PhotoStack(Base):
+    """Groups a RAW file with its JPG/TIF/edited derivatives (cataloging only)."""
+    __tablename__ = "photo_stacks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    album_path: Mapped[str] = mapped_column(Text, nullable=False)
+    stem_key: Mapped[str] = mapped_column(Text, nullable=False)
+    cover_photo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("photos.id", ondelete="SET NULL"))
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_raw: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("album_path", "stem_key", name="uq_photo_stacks_album_stem"),
+    )
+
+    members: Mapped[list["Photo"]] = relationship(back_populates="stack", foreign_keys="Photo.stack_id")
+    cover: Mapped[Optional["Photo"]] = relationship(foreign_keys=[cover_photo_id], post_update=True)
+
+
 class Photo(Base):
     __tablename__ = "photos"
 
@@ -131,6 +152,10 @@ class Photo(Base):
     color_depth: Mapped[Optional[int]] = mapped_column(SmallInteger)
     color_model: Mapped[Optional[int]] = mapped_column(SmallInteger)
 
+    # Stacks (RAW + JPG/TIF/edited derivatives grouped together)
+    stack_id: Mapped[Optional[int]] = mapped_column(ForeignKey("photo_stacks.id", ondelete="SET NULL"))
+    stack_role: Mapped[Optional[str]] = mapped_column(String(16))  # "raw" | "derivative"
+
     # Full-text search vector (STORED generated column; read-only to the ORM).
     # Weighted: filename(A) > title(B) > caption(C). Tag-name search is OR'd in
     # at query time via the trigram index on tags.name.
@@ -149,6 +174,7 @@ class Photo(Base):
     lens: Mapped[Optional["Lens"]] = relationship(back_populates="photos")
     photo_tags: Mapped[list["PhotoTag"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
     faces: Mapped[list["Face"]] = relationship(back_populates="photo", cascade="all, delete-orphan")
+    stack: Mapped[Optional["PhotoStack"]] = relationship(back_populates="members", foreign_keys=[stack_id])
 
     __table_args__ = (
         Index("ix_photos_filename_trgm", "filename", postgresql_using="gin", postgresql_ops={"filename": "gin_trgm_ops"}),
@@ -164,6 +190,7 @@ class Photo(Base):
         Index("ix_photos_rating", "rating", postgresql_where=sa.text("rating > 0")),
         Index("ix_photos_color_label", "color_label", postgresql_where=sa.text("color_label > 0")),
         Index("ix_photos_media_type", "media_type"),
+        Index("ix_photos_stack_id", "stack_id", postgresql_where=sa.text("stack_id IS NOT NULL")),
         Index("ix_photos_camera_id", "camera_id", postgresql_where=sa.text("camera_id IS NOT NULL")),
         Index("ix_photos_lens_id", "lens_id", postgresql_where=sa.text("lens_id IS NOT NULL")),
         Index("ix_photos_no_date", "id", postgresql_where=sa.text("taken_at IS NULL AND status = 1")),

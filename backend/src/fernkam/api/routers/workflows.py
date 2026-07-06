@@ -33,6 +33,14 @@ class RemoveNonKeepRawRequest(BaseModel):
     starting_folder: str = r"D:\Pictures and Videos\AA_RAW"
 
 
+class MoveRawsToFoldersRequest(BaseModel):
+    starting_folder: Optional[str] = None
+
+
+class SyncStackTagsRequest(BaseModel):
+    album_path: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -108,6 +116,36 @@ async def run_remove_nonkeep_raw(req: RemoveNonKeepRawRequest) -> dict:
     asyncio.create_task(
         _run_in_thread(task_id, remove_nonkeep_raw.run,
                        starting_folder=req.starting_folder),
+        name=f"fernkam-workflow-{task_id}",
+    )
+    return {"task_id": task_id, "status": "started"}
+
+
+@router.post("/run/move-raws-to-folders")
+async def run_move_raws_to_folders(req: MoveRawsToFoldersRequest) -> dict:
+    from fernkam.task_manager import task_manager
+    from fernkam.workflows import move_raws_to_folders
+
+    desc = f"Move stray RAWs: {req.starting_folder or 'full library'}"
+    task_id = await task_manager.create_task("workflow_move_raws", desc)
+    asyncio.create_task(
+        _run_in_thread(task_id, move_raws_to_folders.run,
+                       starting_folder=req.starting_folder),
+        name=f"fernkam-workflow-{task_id}",
+    )
+    return {"task_id": task_id, "status": "started"}
+
+
+@router.post("/run/sync-stack-tags")
+async def run_sync_stack_tags(req: SyncStackTagsRequest) -> dict:
+    from fernkam.task_manager import task_manager
+    from fernkam.workflows import sync_stack_tags
+
+    desc = f"Sync stack tags: {req.album_path or 'full library'}"
+    task_id = await task_manager.create_task("workflow_sync_stack_tags", desc)
+    asyncio.create_task(
+        _run_in_thread(task_id, sync_stack_tags.run,
+                       album_path=req.album_path),
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}

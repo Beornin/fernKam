@@ -28,6 +28,8 @@
 	let sortBy = $state<'score_desc' | 'score_asc' | 'newest' | 'status'>('score_desc');
 	let hideConflicts = $state(false);
 	let minScore = $state(0);
+	let personFilter = $state<number | 'all'>('all');
+	let peopleWithSuggestions = $state<Array<{ person_id: number; person_name: string; count: number }>>([]);
 
 	let filteredItems = $derived(
 		items.filter(item => {
@@ -39,9 +41,17 @@
 				const topScore = item.suggestions[0]?.score ?? item.face.score ?? 0;
 				if (topScore * 100 < minScore) return false;
 			}
+			// When personFilter is set, server already filtered — only client-side
+			// hideConflicts / minScore still apply.
 			return true;
 		})
 	);
+
+	// The suggestion (if any) matching the active person filter, for a given item.
+	function suggestionForFilter(item: FaceWithSuggestions) {
+		if (personFilter === 'all') return null;
+		return item.suggestions.find(s => s.person_id === personFilter) ?? null;
+	}
 
 	let buildingCentroids = $state(false);
 	let centroidsMessage = $state('');
@@ -87,10 +97,13 @@
 	);
 
 	async function loadCounts() {
+		const countParams = personFilter !== 'all'
+			? { status_filter: 'suggested' as const, person_tag_id: personFilter as number }
+			: { status_filter: statusFilter };
 		const [u, s, t] = await Promise.all([
 			api.faces.unassignedCount(),
 			api.photos.unscannedCount(),
-			api.faces.suggestionsCount({ status_filter: statusFilter }),
+			api.faces.suggestionsCount(countParams),
 		]);
 		unassignedCount = u.count;
 		unscannedCount = s.count;
@@ -100,7 +113,20 @@
 	async function loadPage(p = page) {
 		loading = true;
 		try {
-			const batch = await api.faces.suggestions({ limit: PAGE, offset: p * PAGE, sort: sortBy, status_filter: statusFilter });
+			let batch: typeof items;
+			if (personFilter !== 'all') {
+				// Load all of this person's suggested faces at once (server-side filter)
+				batch = await api.faces.suggestions({
+					limit: 2000,
+					offset: 0,
+					sort: sortBy,
+					status_filter: 'suggested',
+					person_tag_id: personFilter as number,
+				});
+				p = 0;
+			} else {
+				batch = await api.faces.suggestions({ limit: PAGE, offset: p * PAGE, sort: sortBy, status_filter: statusFilter });
+			}
 			hasMore = batch.length >= PAGE;
 			items = batch;
 			page = p;
@@ -161,6 +187,11 @@
 
 	async function loadPeople() {
 		people = await api.people.list({ limit: 500 });
+	}
+
+	async function loadPeopleWithSuggestions() {
+		try { peopleWithSuggestions = await api.faces.suggestionsPeople(); }
+		catch { peopleWithSuggestions = []; }
 	}
 
 	async function batchAssign() {
@@ -229,20 +260,37 @@
 	}
 
 	async function acceptAllSuggested() {
-		// Respect active filters; skip items where the top suggestion conflicts
-		const withSuggestions = filteredItems.filter(i =>
-			i.suggestions.length > 0 && !i.suggestions[0].conflict
-		);
-		if (!withSuggestions.length) return;
 		bulkAssigning = true;
 		try {
-			// Group by the highest suggestion's person_id
 			const groups = new Map<number, string[]>();
-			for (const i of withSuggestions) {
-				const top = i.suggestions[0];
-				if (!groups.has(top.person_id)) groups.set(top.person_id, []);
-				groups.get(top.person_id)!.push(i.face.id);
+			if (personFilter !== 'all') {
+				// Targeted mass-accept: assign every filtered item to the selected
+				// person specifically (using whichever suggestion matches them,
+				// or the already-suggested person_tag_id), skipping conflicts.
+				for (const i of filteredItems) {
+					if (i.face.status === 'suggested' && i.face.person_tag_id === personFilter) {
+						if (!groups.has(personFilter)) groups.set(personFilter, []);
+						groups.get(personFilter)!.push(i.face.id);
+						continue;
+					}
+					const match = i.suggestions.find(s => s.person_id === personFilter);
+					if (match && !match.conflict) {
+						if (!groups.has(personFilter)) groups.set(personFilter, []);
+						groups.get(personFilter)!.push(i.face.id);
+					}
+				}
+			} else {
+				// Respect active filters; skip items where the top suggestion conflicts
+				const withSuggestions = filteredItems.filter(i =>
+					i.suggestions.length > 0 && !i.suggestions[0].conflict
+				);
+				for (const i of withSuggestions) {
+					const top = i.suggestions[0];
+					if (!groups.has(top.person_id)) groups.set(top.person_id, []);
+					groups.get(top.person_id)!.push(i.face.id);
+				}
 			}
+			if (groups.size === 0) return;
 			await Promise.all([...groups.entries()].map(([personId, ids]) =>
 				api.faces.batchAssign({ face_ids: ids, person_tag_id: personId, status: 'confirmed' })
 			));
@@ -253,7 +301,12 @@
 	}
 
 	let suggestedOnPageCount = $derived(
-		filteredItems.filter(i => i.suggestions.length > 0 && !i.suggestions[0].conflict).length
+		personFilter !== 'all'
+			? filteredItems.filter(i =>
+				(i.face.status === 'suggested' && i.face.person_tag_id === personFilter) ||
+				i.suggestions.some(s => s.person_id === personFilter && !s.conflict)
+			).length
+			: filteredItems.filter(i => i.suggestions.length > 0 && !i.suggestions[0].conflict).length
 	);
 
 	function markSiblingConflicts(confirmedItem: FaceWithSuggestions, personId: number) {
@@ -379,6 +432,7 @@
 		loadCounts();
 		loadPage(0);
 		loadPeople();
+		loadPeopleWithSuggestions();
 		// Resume display of any in-flight face-scan task
 		(async () => {
 			try {
@@ -652,8 +706,26 @@
 			{#if hideConflicts}<Check size={11} />{/if}
 			Hide all-conflicts
 		</button>
-		{#if filteredItems.length !== items.length}
-			<span class="ml-auto text-zinc-500">Showing {filteredItems.length} of {items.length}</span>
+		<div class="w-px h-4 bg-zinc-700 mx-1"></div>
+		<span class="text-zinc-500">Person:</span>
+		<select
+			value={personFilter}
+			onchange={(e) => {
+				const v = (e.currentTarget as HTMLSelectElement).value;
+				personFilter = v === 'all' ? 'all' : Number(v);
+				loadCounts();
+				loadPage(0);
+			}}
+			class="bg-zinc-800 border border-zinc-700 rounded px-2 py-0.5 text-zinc-200 focus:outline-none focus:border-emerald-500 max-w-[180px]"
+			title="Show only faces suggested for this person, to mass-accept them"
+		>
+			<option value="all">All people ({totalSuggestions})</option>
+			{#each peopleWithSuggestions as person (person.person_id)}
+				<option value={person.person_id}>{person.person_name} ({person.count})</option>
+			{/each}
+		</select>
+		{#if personFilter !== 'all'}
+			<span class="text-zinc-400">— {filteredItems.length} faces</span>
 		{/if}
 	</div>
 
@@ -813,8 +885,8 @@
 				{/each}
 			</div>
 
-			<!-- Pagination -->
-			{#if page > 0 || hasMore || totalSuggestions > PAGE}
+			<!-- Pagination (hidden when filtered to a single person) -->
+			{#if personFilter === 'all' && (page > 0 || hasMore || totalSuggestions > PAGE)}
 				<div class="mt-6 flex items-center justify-center gap-2 flex-wrap">
 					<button
 						onclick={() => loadPage(0)}

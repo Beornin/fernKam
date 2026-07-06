@@ -33,6 +33,7 @@ let imgNaturalW = $state(0);
 let imgNaturalH = $state(0);
 let showFaceBoxes = $state(true);
 let showMetadata = $state(true);
+let showClipping = $state(true);
 let detecting = $state(false);
 let detectResult = $state<string | null>(null);
 let zoom = $state(1);
@@ -527,8 +528,15 @@ title="Show on map"
 
 {#if detail.media_type !== 'video'}
 <div class="px-4 py-3 border-b border-zinc-800">
-<p class="text-[10px] text-zinc-600 mb-1 uppercase tracking-wide">Histogram</p>
-<Histogram photoId={detail.id} />
+<div class="flex items-center justify-between mb-1">
+<p class="text-[10px] text-zinc-600 uppercase tracking-wide">Histogram</p>
+<button
+  onclick={() => showClipping = !showClipping}
+  class="text-[10px] px-1.5 py-0.5 rounded transition-colors {showClipping ? 'bg-orange-800/50 text-orange-300' : 'text-zinc-600 hover:text-zinc-400'}"
+  title="Toggle clipping warnings"
+>clip</button>
+</div>
+<Histogram photoId={detail.id} {showClipping} />
 </div>
 {/if}
 

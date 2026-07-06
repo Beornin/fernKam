@@ -1,7 +1,7 @@
 ﻿<script lang="ts">
 import '../app.css';
 import { page } from '$app/stores';
-import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock } from '@lucide/svelte';
+import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers } from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
 import { thumbSizeStore, statusCountStore } from '$lib/stores';
 
@@ -55,6 +55,7 @@ const navItems = [
 	{ href: '/map', label: 'Map', icon: MapPin, exact: false },
 	{ href: '/tasks', label: 'Tasks', icon: RefreshCw, exact: false },
 	{ href: '/logs', label: 'Logs', icon: Bug, exact: false },
+	{ href: '/stacks', label: 'Stacks', icon: Layers, exact: false },
 	{ href: '/workflows', label: 'Workflows', icon: Workflow, exact: false },
 ];
 

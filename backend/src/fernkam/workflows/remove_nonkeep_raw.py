@@ -1,9 +1,10 @@
 """
 Port of RemoveNonKeepRAWWorkflow.java
 
-Walks a folder tree and moves any NEF file to the Trash when no matching
-JPG exists in the same directory or that directory's jpg/ subfolder.
-Matching is a substring check: the NEF stem must appear inside a JPG stem.
+Walks a folder tree and moves any RAW file to the Trash when no matching
+picture (JPG/TIF/etc.) exists in the same directory or that directory's
+jpg/ subfolder. Matching is a substring check: the RAW stem must appear
+inside a picture stem.
 """
 
 import os
@@ -18,7 +19,8 @@ except ImportError:
     _SEND2TRASH_AVAILABLE = False
     print("Warning: send2trash not installed. Run: pip install send2trash")
 
-from fernkam.workflows.shared import ALL_EXTENSIONS, format_elapsed
+from fernkam.media_types import ALL_EXTENSIONS, PICTURE_EXTENSIONS, RAW_EXTENSIONS
+from fernkam.workflows.shared import format_elapsed
 
 DEFAULT_STARTING_FOLDER = r"D:\Pictures and Videos\AA_RAW"
 
@@ -29,22 +31,22 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
 
     all_files = _gather_files(starting_folder)
 
-    # Build per-directory index of JPG base names.
+    # Build per-directory index of picture base names.
     jpg_by_dir: dict = defaultdict(set)
     for f in all_files:
-        if f.suffix.lower() in {".jpg", ".jpeg"}:
+        if f.suffix.lower() in PICTURE_EXTENSIONS:
             jpg_by_dir[f.parent].add(_base_name(f.name))
 
-    nef_files = [f for f in all_files if f.suffix.lower() == ".nef"]
+    nef_files = [f for f in all_files if f.suffix.lower() in RAW_EXTENSIONS]
     to_delete = []
     for f in nef_files:
         nef_stem = _base_name(f.name)
-        # Allowed JPG directories: same folder, or a jpg/ subfolder of it.
+        # Allowed picture directories: same folder, or a jpg/ subfolder of it.
         candidates: set = jpg_by_dir.get(f.parent, set()) | jpg_by_dir.get(f.parent / "jpg", set())
         if not any(nef_stem in jpg for jpg in candidates):
             to_delete.append(f)
 
-    print(f"Found {len(nef_files)} NEF files. {len(to_delete)} have no matching JPG.")
+    print(f"Found {len(nef_files)} RAW files. {len(to_delete)} have no matching picture.")
 
     if not _SEND2TRASH_AVAILABLE:
         print("send2trash unavailable — cannot move files to Trash. Install with: pip install send2trash")

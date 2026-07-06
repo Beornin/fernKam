@@ -115,6 +115,29 @@ export interface AlbumNode {
   children: AlbumNode[];
 }
 
+export interface StackSummary {
+  id: number;
+  album_path: string;
+  stem_key: string;
+  cover_photo_id: number | null;
+  member_count: number;
+  has_raw: boolean;
+}
+
+export interface StackMember {
+  id: number;
+  filename: string;
+  album_path: string;
+  stack_role: string;
+  media_type: string;
+  rating: number;
+  is_cover: boolean;
+}
+
+export interface StackDetail extends StackSummary {
+  members: StackMember[];
+}
+
 export interface SavedSearchOut {
   id: number;
   name: string;
@@ -222,8 +245,10 @@ export const api = {
     unassigned: (params?: { photo_id?: number; limit?: number; offset?: number; has_embedding?: boolean }) =>
       get<FaceOut[]>('/api/faces/unassigned', params),
     unassignedCount: () => get<{ count: number }>('/api/faces/unassigned/count'),
-    suggestions: (params?: { limit?: number; offset?: number; sort?: string; status_filter?: string }) =>
+    suggestions: (params?: { limit?: number; offset?: number; sort?: string; status_filter?: string; person_tag_id?: number }) =>
       get<FaceWithSuggestions[]>('/api/faces/suggestions', params),
+    suggestionsPeople: () =>
+      get<Array<{ person_id: number; person_name: string; count: number }>>('/api/faces/suggestions/people'),
     similar: (faceId: string, params?: { k?: number; confirmed_only?: boolean }) =>
       get<SimilarFace[]>(`/api/faces/${faceId}/similar`, params),
     update: (faceId: string, body: { person_tag_id?: number | null; status?: string; region_name?: string }) =>
@@ -238,7 +263,7 @@ export const api = {
       fetch('/api/faces/archive-low-quality', { method: 'POST' }).then(r => r.json() as Promise<{ archived: number; min_det_score: number; min_face_px: number }>),
     buildCentroids: () =>
       fetch('/api/faces/build-centroids', { method: 'POST' }).then(r => r.json() as Promise<{ updated: number }>),
-    suggestionsCount: (params?: { status_filter?: string }) => get<{ count: number }>('/api/faces/suggestions/count', params),
+    suggestionsCount: (params?: { status_filter?: string; person_tag_id?: number }) => get<{ count: number }>('/api/faces/suggestions/count', params),
     delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }),
     clustersRebuild: (params?: { min_size?: number; cluster_thresh?: number; k?: number }) => {
       const qs = new URLSearchParams();
@@ -365,6 +390,27 @@ export const api = {
     }),
     photos: (id: number, params?: { page?: number; page_size?: number; cursor?: string }) =>
       get<PhotoPage>(`/api/saved-searches/${id}/photos`, params),
+  },
+  stacks: {
+    list: (params?: { album_path?: string; limit?: number; offset?: number }) =>
+      get<{ items: StackSummary[]; total: number }>('/api/stacks', params),
+    tree: () => get<AlbumNode[]>('/api/stacks/tree'),
+    get: (id: number) => get<StackDetail>(`/api/stacks/${id}`),
+    detect: (album_path?: string) =>
+      fetch(`${BASE}/api/stacks/detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(album_path ? { album_path } : {}),
+      }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ created: number; updated: number; removed: number }>; }),
+    syncTags: (stackId: number) =>
+      fetch(`${BASE}/api/stacks/${stackId}/sync-tags`, { method: 'POST' })
+        .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ synced: number; errors: number; members: number }>; }),
+    setCover: (stackId: number, photoId: number) =>
+      fetch(`${BASE}/api/stacks/${stackId}/set-cover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photo_id: photoId }),
+      }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
   },
 };
 

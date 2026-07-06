@@ -28,6 +28,23 @@ async def unassigned_count(db: DB) -> dict:
     return {"count": n}
 
 
+@router.get("/suggestions/people")
+async def suggestions_people_list(db: DB) -> list[dict]:
+    """People who have at least one face currently in 'suggested' status."""
+    from sqlalchemy import func
+
+    rows = (
+        await db.execute(
+            select(Tag.id, Tag.name, func.count(Face.id).label("cnt"))
+            .join(Face, Face.person_tag_id == Tag.id)
+            .where(Face.status == "suggested")
+            .group_by(Tag.id, Tag.name)
+            .order_by(Tag.name)
+        )
+    ).fetchall()
+    return [{"person_id": r.id, "person_name": r.name, "count": r.cnt} for r in rows]
+
+
 @router.get("/suggestions")
 async def face_suggestions(
     db: DB,
@@ -35,11 +52,15 @@ async def face_suggestions(
     offset: int = Query(0, ge=0),
     sort: str = Query("score_desc"),
     status_filter: str = Query("all"),
+    person_tag_id: Optional[int] = Query(None),
 ) -> list[dict]:
     """Unassigned faces with top-3 person suggestions from embedding similarity (pgvector)."""
     from sqlalchemy import text as _sql
 
-    if status_filter == "suggested":
+    # When filtering by a specific person, only 'suggested' faces make sense
+    if person_tag_id is not None:
+        status_clause = Face.status == "suggested"
+    elif status_filter == "suggested":
         status_clause = Face.status == "suggested"
     elif status_filter == "unconfirmed":
         status_clause = Face.status == "unconfirmed"
@@ -58,13 +79,16 @@ async def face_suggestions(
     else:
         order_clauses = [Face.best_match_score.desc().nullslast(), Face.created_at.desc()]
 
-    unassigned = (await db.execute(
+    q = (
         select(Face)
         .options(selectinload(Face.person_tag))
         .where(status_clause)
         .where(Face.embedding_v.is_not(None))
-        .order_by(*order_clauses)
-        .offset(offset).limit(limit)
+    )
+    if person_tag_id is not None:
+        q = q.where(Face.person_tag_id == person_tag_id)
+    unassigned = (await db.execute(
+        q.order_by(*order_clauses).offset(offset).limit(limit)
     )).scalars().all()
 
     if not unassigned:
@@ -398,20 +422,26 @@ async def auto_confirm_all_faces(
 async def suggestions_count(
     db: DB,
     status_filter: str = Query("all"),
+    person_tag_id: Optional[int] = Query(None),
 ) -> dict:
     """Total count of unassigned faces with embeddings (matches /suggestions filter)."""
     from sqlalchemy import func
-    if status_filter == "suggested":
+    if person_tag_id is not None:
+        status_clause = Face.status == "suggested"
+    elif status_filter == "suggested":
         status_clause = Face.status == "suggested"
     elif status_filter == "unconfirmed":
         status_clause = Face.status == "unconfirmed"
     else:
         status_clause = Face.status.in_(["unconfirmed", "suggested"])
-    n = (await db.execute(
+    q = (
         select(func.count()).select_from(Face)
         .where(status_clause)
         .where(Face.embedding_v.is_not(None))
-    )).scalar_one()
+    )
+    if person_tag_id is not None:
+        q = q.where(Face.person_tag_id == person_tag_id)
+    n = (await db.execute(q)).scalar_one()
     return {"count": n}
 
 

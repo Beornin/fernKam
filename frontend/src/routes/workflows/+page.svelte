@@ -46,7 +46,7 @@
 		{
 			id: 'remove-nonkeep-raw',
 			label: 'Remove Non-Keep RAW',
-			description: 'Walks the RAW folder, finds NEF files that have no matching JPG/JPEG, and moves them to the system Trash.',
+			description: 'Walks the RAW folder, finds RAW files that have no matching picture (JPG/TIF/etc.), and moves them to the system Trash.',
 			color: 'amber',
 			fields: [
 				{ key: 'starting_folder', label: 'Starting Folder', placeholder: 'D:\\Pictures and Videos\\AA_RAW' },
@@ -54,6 +54,34 @@
 			values: {
 				starting_folder: 'D:\\Pictures and Videos\\AA_RAW',
 			},
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
+		{
+			id: 'move-raws-to-folders',
+			label: 'Move RAWs to Folders',
+			description: 'Finds RAW files not yet inside a RAW/ subfolder and moves them there (e.g. Album/photo.NEF → Album/RAW/photo.NEF). Updates the catalog automatically.',
+			color: 'emerald',
+			fields: [
+				{ key: 'starting_folder', label: 'Starting Folder (blank = full library)', placeholder: '' },
+			],
+			values: { starting_folder: '' },
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
+		{
+			id: 'sync-stack-tags',
+			label: 'Sync Stack Tags',
+			description: "Detects RAW+JPG stacks across the library, then unions tags, rating, and color label across every stack's members and writes the merged metadata back to each file.",
+			color: 'sky',
+			fields: [
+				{ key: 'album_path', label: 'Album Path (blank = full library)', placeholder: 'Portfolio/Birds' },
+			],
+			values: { album_path: '' },
 			status: 'idle',
 			taskId: null,
 			lines: [],
@@ -79,6 +107,20 @@
 				icon:    'text-amber-400',
 				btn:     'bg-amber-600 hover:bg-amber-500',
 				badge:   'bg-amber-500/20 text-amber-300',
+			},
+			emerald: {
+				border:  'border-emerald-500/50',
+				'icon-bg': 'bg-emerald-500/10',
+				icon:    'text-emerald-400',
+				btn:     'bg-emerald-600 hover:bg-emerald-500',
+				badge:   'bg-emerald-500/20 text-emerald-300',
+			},
+			sky: {
+				border:  'border-sky-500/50',
+				'icon-bg': 'bg-sky-500/10',
+				icon:    'text-sky-400',
+				btn:     'bg-sky-600 hover:bg-sky-500',
+				badge:   'bg-sky-500/20 text-sky-300',
 			},
 		};
 		return map[color]?.[part] ?? '';

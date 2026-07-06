@@ -26,7 +26,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, sync, tags, workflows
+from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, stacks, sync, tags, workflows
 from fernkam.db.session import get_async_engine
 
 # Configure logging to output to terminal
@@ -264,6 +264,7 @@ app.include_router(media.router, prefix="/media", tags=["media"])
 app.include_router(dedup.router, prefix="/api/dedup", tags=["dedup"])
 app.include_router(geocode.router, prefix="/api/geocode", tags=["geocode"])
 app.include_router(saved_searches.router, prefix="/api/saved-searches", tags=["saved-searches"])
+app.include_router(stacks.router, prefix="/api/stacks", tags=["stacks"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 

@@ -13,8 +13,8 @@ from sqlalchemy import select
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
+from fernkam.media_types import MIME_MAP, RAW_EXTENSIONS, VIDEO_EXTENSIONS
 from fernkam.thumbnails import (
-    RAW_EXTENSIONS,
     _open_raw_as_pil,
     generate_thumbnail_bytes,
     get_thumbnail_from_db,
@@ -23,26 +23,6 @@ from fernkam.thumbnails import (
 )
 
 router = APIRouter()
-
-MIME_MAP = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-    ".heic": "image/heic",
-    ".heif": "image/heif",
-    ".bmp": "image/bmp",
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".avi": "video/x-msvideo",
-    ".mkv": "video/x-matroska",
-    ".m4v": "video/mp4",
-    ".wmv": "video/x-ms-wmv",
-    ".mts": "video/mp2t",
-}
 
 
 async def _get_photo(photo_id: int, db: DB) -> Photo:
@@ -142,9 +122,6 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
 
     return Response(content=crop_bytes, media_type="image/webp",
                     headers={"Cache-Control": "public, max-age=86400"})
-
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv", ".mts"}
 
 
 @router.get("/raw-preview/{photo_id}")

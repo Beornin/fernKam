@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 Image.MAX_IMAGE_PIXELS = None
 
 from fernkam.config import get_settings
+from fernkam.media_types import RAW_EXTENSIONS, VIDEO_EXTENSIONS  # noqa: F401 (re-exported for existing importers)
 
 SIZES: dict[str, tuple[int, int]] = {
     "sm": (240, 240),
@@ -17,13 +18,6 @@ SIZES: dict[str, tuple[int, int]] = {
     "lg": (960, 960),
     "xl": (1440, 1440),
     "xxl": (1920, 1920),
-}
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".mts", ".mpg", ".mpeg", ".wmv"}
-
-RAW_EXTENSIONS = {
-    ".nef", ".cr2", ".cr3", ".arw", ".orf", ".raf",
-    ".rw2", ".dng", ".pef", ".srw", ".x3f", ".3fr",
 }
 
 

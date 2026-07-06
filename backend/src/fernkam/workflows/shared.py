@@ -1,9 +1,11 @@
 import time
 
-PICTURE_EXTENSIONS = {".gif", ".png", ".bmp", ".jpg", ".jpeg", ".heic", ".dng", ".nef"}
-RAW_EXTENSIONS     = {".raw", ".cr2", ".cr3", ".nef"}
-VIDEO_EXTENSIONS   = {".mp4", ".mov", ".avi", ".vlc", ".wmv"}
-ALL_EXTENSIONS     = PICTURE_EXTENSIONS | RAW_EXTENSIONS | VIDEO_EXTENSIONS
+from fernkam.media_types import (  # noqa: F401 (re-exported for existing workflow modules)
+    ALL_EXTENSIONS,
+    PICTURE_EXTENSIONS,
+    RAW_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 
 
 def format_elapsed(start: float) -> str:

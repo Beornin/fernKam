@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.config import get_settings
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
+from fernkam.media_types import ALL_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, media_type_for  # noqa: F401 (re-exported for existing importers)
 from fernkam.metadata_sync import read_file_metadata_async, read_many_metadata_async
 
 log = logging.getLogger(__name__)
@@ -25,11 +26,6 @@ _CPUS = os.cpu_count() or 4
 METADATA_CONCURRENCY = int(os.getenv("FERNKAM_META_CONCURRENCY", str(min(32, _CPUS * 2))))
 THUMB_CONCURRENCY = int(os.getenv("FERNKAM_THUMB_CONCURRENCY", str(max(4, _CPUS))))
 BATCH_COMMIT_SIZE = 50      # photos committed per transaction
-
-# Supported image/video extensions
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".heic", ".heif", ".raw", ".cr2", ".nef", ".arw", ".dng"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"}
-ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 def _sha256_path(path: Path) -> Optional[str]:
@@ -385,8 +381,7 @@ async def import_new_photo(
         metadata = await read_file_metadata_async(file_path)
     
     # Determine media type
-    ext = file_path.suffix.lower()
-    media_type = "video" if ext in VIDEO_EXTENSIONS else "image"
+    media_type = media_type_for(file_path)
 
     # Resolve camera/lens records
     camera_obj = None
