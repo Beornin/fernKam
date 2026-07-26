@@ -1,10 +1,12 @@
 ﻿<script lang="ts">
 import { api, type PhotoDetail, type TagOut, type FaceOut } from '$lib/api';
-import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera, Aperture, User, Eye, EyeOff, Info, Trash2, ScanFace, Check, XCircle, Ban } from '@lucide/svelte';
+import { X, ChevronLeft, ChevronRight, Star, MapPin, Camera, Aperture, User, Eye, EyeOff, Info, Trash2, ScanFace, Check, XCircle, Ban, Search } from '@lucide/svelte';
 import { goto } from '$app/navigation';
 import TagPicker from './TagPicker.svelte';
 import Histogram from './Histogram.svelte';
 import MiniMap from './MiniMap.svelte';
+import PersonPicker from './PersonPicker.svelte';
+import { scoreBadgeClass } from '$lib/faceConfidence';
 
 let {
 photoId,
@@ -42,6 +44,7 @@ let panY = $state(0);
 let isPanning = $state(false);
 let panStartX = $state(0);
 let panStartY = $state(0);
+let personPickerOpen = $state(false);
 
 $effect(() => {
 if (photoId) {
@@ -400,6 +403,11 @@ style="left:{rect.left}px;top:{rect.top}px;width:{rect.width}px;height:{rect.hei
 onclick={() => { selectedFace = selectedFace?.id === face.id ? null : face; }}
 title={face.person_name ?? face.status + (face.score ? ` (${face.score.toFixed(2)})` : '')}
 >
+{#if face.score !== null && face.status !== 'confirmed'}
+<span class="absolute top-0 left-0 text-[9px] font-semibold px-1 rounded-br leading-tight {scoreBadgeClass(face.score)}">
+{Math.round(face.score * 100)}%
+</span>
+{/if}
 {#if face.person_name}
 <span class="absolute bottom-0 left-0 right-0 text-center text-[10px] font-medium bg-black/70 text-white py-0.5 leading-tight truncate px-1">
 {face.person_name}
@@ -512,7 +520,7 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 <dd>
 <button
 class="text-amber-400 hover:text-amber-300 hover:underline text-sm transition-colors"
-onclick={() => goto(`/map?lat=${detail!.latitude}&lon=${detail!.longitude}&zoom=14`)}
+onclick={() => goto(`/photos?view=map&lat=${detail!.latitude}&lon=${detail!.longitude}&zoom=14`)}
 title="Show on map"
 >{detail.latitude?.toFixed(5)}, {detail.longitude?.toFixed(5)}</button>
 </dd>
@@ -558,21 +566,22 @@ title="Show on map"
 <User size={12} />
 {selectedFace.person_name ?? 'Unidentified'}
 </p>
-<select
-class="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-300"
-value={selectedFace.person_tag_id ?? ''}
-onchange={async (e) => {
-const sf = selectedFace;
-if (!sf) return;
-const val = e.currentTarget.value;
-await assignFaceName(sf, val ? Number(val) : null);
-}}
+<div class="flex gap-1.5">
+<button
+	class="flex-1 flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 hover:border-amber-500 rounded px-2 py-1.5 text-xs text-zinc-300 text-left truncate"
+	onclick={() => personPickerOpen = true}
 >
-<option value="">— Unidentified —</option>
-{#each allPersonTags as pt (pt.id)}
-<option value={pt.id}>{pt.name}</option>
-{/each}
-</select>
+	<Search size={11} class="text-zinc-500 shrink-0" />
+	{selectedFace.person_name ?? '— Search or create person —'}
+</button>
+{#if selectedFace.person_tag_id}
+<button
+	class="px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 hover:border-red-500 text-zinc-500 hover:text-red-400"
+	onclick={() => selectedFace && assignFaceName(selectedFace, null)}
+	title="Clear assignment"
+><X size={11} /></button>
+{/if}
+</div>
 
 <!-- Review actions based on status -->
 {#if selectedFace.status === 'suggested'}
@@ -633,4 +642,9 @@ onclick={() => { selectedFace = selectedFace?.id === face.id ? null : face; }}
 {/if}
 {/if}
 </aside>
+<PersonPicker
+	bind:open={personPickerOpen}
+	onPick={(personId) => { if (selectedFace) assignFaceName(selectedFace, personId); }}
+	title="Search or create person…"
+/>
 </div>

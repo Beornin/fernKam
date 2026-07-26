@@ -16,6 +16,13 @@ dist/
 .eggs/
 *.egg
 
+# Packaged launcher exe (built via `pyinstaller launcher.spec`) — copy dist/fernKam.exe
+# wherever you want to run it from, it's relocatable (see launcher.spec)
+/fernKam.exe
+
+# Generated at build time by launcher.spec (bakes this machine's repo path into the exe)
+/_launcher_build_config.json
+
 # Virtual environments
 .venv/
 venv/
@@ -34,6 +41,9 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Claude Code local settings (machine-specific permission grants)
+.claude/settings.local.json
 
 # Python tooling caches
 .mypy_cache/

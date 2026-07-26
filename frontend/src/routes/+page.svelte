@@ -212,7 +212,7 @@
 
 		<!-- Sync Data -->
 		<a
-			href="/sync"
+			href="/maintenance"
 			class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 text-left hover:border-emerald-500/50 hover:bg-zinc-800/50 transition-all group block"
 		>
 			<div class="flex items-start justify-between mb-4">
@@ -221,8 +221,8 @@
 				</div>
 				<ArrowRight size={20} class="text-zinc-600 group-hover:text-emerald-400 transition-colors" />
 			</div>
-			<h2 class="text-lg font-semibold text-zinc-100 mb-1">Sync Data</h2>
-			<p class="text-sm text-zinc-400">Sync database to files or vice versa</p>
+			<h2 class="text-lg font-semibold text-zinc-100 mb-1">Maintenance</h2>
+			<p class="text-sm text-zinc-400">Rescan library, sync files, optimize the database</p>
 		</a>
 
 		<!-- Quick Scan -->

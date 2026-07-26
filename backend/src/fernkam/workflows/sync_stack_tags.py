@@ -35,7 +35,8 @@ async def _run_async(album_path: Optional[str]) -> None:
 
         q = select(PhotoStack.id)
         if album_path:
-            q = q.where(PhotoStack.album_path.like(f"{album_path}%"))
+            clean_album_path = album_path.lstrip("/")
+            q = q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
         stack_ids = [r[0] for r in (await db.execute(q)).fetchall()]
 
     print(f"Syncing tags for {len(stack_ids)} stacks…")

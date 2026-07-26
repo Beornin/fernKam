@@ -18,11 +18,15 @@ class Settings(BaseSettings):
     library_root: str = "D:/Pictures and Videos"
 
     # Backup
-    backup_dir: str = r"D:\Documents\Database Backups\fernKam"
+    backup_dir: str = "data/backups"
 
     # Thumbnails
     thumb_cache_dir: str = "data/thumbnails"
-    ffmpeg_path: str = r"C:\Users\Ben\Documents\MY TOOLS\ffmpeg.exe"
+
+    # External tools — leave blank to rely on PATH lookup (shutil.which), or
+    # set an explicit path via env var if the tool isn't on PATH.
+    ffmpeg_path: str = ""
+    exiftool_path: str = ""
 
     # Face matching thresholds (override via env vars)
     auto_confirm_thresh: float = 0.85  # FERNKAM_AUTO_CONFIRM_THRESH
@@ -40,6 +44,11 @@ class Settings(BaseSettings):
 
     # Minimum best_match_score for a confirmed face to be used as a k-NN reference
     min_ref_score: float = 0.55        # FERNKAM_MIN_REF_SCORE
+
+    # Person birth dates — JSON map of person name → ISO date string
+    # Faces suggested for these people on photos taken BEFORE their birth date are dropped.
+    # Example: PERSON_MIN_DATES='{"Alice": "2018-03-22", "Bob": "2024-05-18"}'
+    person_min_dates: str = "{}"  # PERSON_MIN_DATES
 
     # Extensions
     has_pgvector: bool = False

@@ -68,7 +68,8 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     """
     photo_q = select(Photo).where(Photo.status == 1)
     if album_path:
-        photo_q = photo_q.where(Photo.album_path.like(f"{album_path}%"))
+        clean_album_path = album_path.lstrip("/")
+        photo_q = photo_q.where(Photo.album_path.like(f"{clean_album_path}%"))
     all_photos = (await db.execute(photo_q)).scalars().all()
 
     # Index photos by album_path for fast derivative lookup.
@@ -141,7 +142,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     # Clean up stacks that no longer have any matching RAW (e.g. RAW moved/deleted).
     all_stacks_q = select(PhotoStack)
     if album_path:
-        all_stacks_q = all_stacks_q.where(PhotoStack.album_path.like(f"{album_path}%"))
+        all_stacks_q = all_stacks_q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
     all_stacks = (await db.execute(all_stacks_q)).scalars().all()
     stale_ids = [s.id for s in all_stacks if (s.album_path, s.stem_key) not in seen_stack_keys]
     if stale_ids:

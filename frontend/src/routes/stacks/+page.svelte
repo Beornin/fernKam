@@ -3,6 +3,7 @@
 	import { Layers, RefreshCw, ChevronRight, Star, Image, Tag, X, Loader, ScanSearch, CheckCircle } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import type { AlbumNode, StackSummary, StackDetail } from '$lib/api';
+	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 
 	const THUMB = (id: number | null) =>
 		id ? `http://localhost:8000/media/thumbnail/${id}?size=sm` : null;
@@ -25,6 +26,7 @@
 	let selected = $state<StackDetail | null>(null);
 	let syncingId = $state<number | null>(null);
 	let syncResult = $state<string | null>(null);
+	let lightboxPhotoId = $state<number | null>(null);
 
 	// ---------------------------------------------------------------------------
 	// Load
@@ -275,7 +277,7 @@
 						<div class="px-4 space-y-2 pb-4">
 							{#each selected.members as m}
 								{@const isRaw = m.stack_role === 'raw'}
-								<div class="flex items-center gap-3 rounded-lg p-2 bg-zinc-900 border border-zinc-800">
+								<div class="flex items-center gap-3 rounded-lg p-2 bg-zinc-900 border border-zinc-800 hover:border-zinc-600 cursor-pointer transition-colors" ondblclick={() => lightboxPhotoId = m.id} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (lightboxPhotoId = m.id)}>
 									<div class="w-14 h-14 shrink-0 rounded overflow-hidden bg-zinc-800">
 										{#if THUMB(m.id)}
 											<img src={THUMB(m.id)} alt={m.filename} class="w-full h-full object-cover" loading="lazy" />
@@ -311,4 +313,15 @@
 			{/if}
 		</div>
 	</div>
+
+{#if lightboxPhotoId !== null}
+	{@const allIds = (selected?.members ?? []).map(m => m.id)}
+	{@const idx = allIds.indexOf(lightboxPhotoId)}
+	<PhotoLightbox
+		photoId={lightboxPhotoId}
+		onClose={() => lightboxPhotoId = null}
+		onPrev={idx > 0 ? () => lightboxPhotoId = allIds[idx - 1] : undefined}
+		onNext={idx < allIds.length - 1 ? () => lightboxPhotoId = allIds[idx + 1] : undefined}
+	/>
+{/if}
 </div>

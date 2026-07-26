@@ -10,6 +10,7 @@ from typing import Optional
 
 import asyncio
 import logging
+import time
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,6 +123,9 @@ async def scan_library(
     existing_to_update: list[tuple[Path, str, str, datetime, int]] = []  # + photo_id
     disk_keys: set[tuple[str, str]] = set()
 
+    walk_scanned = 0
+    walk_last_report = time.monotonic()
+
     for scan_dir in scan_dirs:
         for root, dirs, files in os.walk(scan_dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
@@ -137,6 +141,7 @@ async def scan_library(
                 album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
                 key = (album_path, filename)
                 disk_keys.add(key)
+                walk_scanned += 1
                 if key in existing_photos:
                     try:
                         mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
@@ -149,6 +154,17 @@ async def scan_library(
                     except OSError:
                         mtime = datetime.now(timezone.utc)
                     new_files.append((full_path, album_path, filename, mtime))
+
+            # Throttled progress report — the disk walk (esp. the per-file stat()
+            # calls on existing photos) is the slow part on large/HDD libraries,
+            # and previously reported nothing at all for its whole duration.
+            if progress_callback and (time.monotonic() - walk_last_report) > 0.75:
+                walk_last_report = time.monotonic()
+                try:
+                    current_dir = str(Path(root).relative_to(main_library))
+                except ValueError:
+                    current_dir = root
+                await progress_callback({**stats, "phase": "scanning", "scanned": walk_scanned, "current_dir": current_dir})
 
     stats["total"] = len(existing_to_update) + len(new_files)
     log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
@@ -451,7 +467,7 @@ async def import_new_photo(
         except Exception:
             pass  # Thumbnail generation failure is non-fatal
 
-    # Restore tags from HierarchicalSubject paths (DigiKam style: "People|Ava", "Locations|Paris")
+    # Restore tags from HierarchicalSubject paths (DigiKam style: "People|Jane", "Locations|Paris")
     tag_paths = metadata.get("tag_paths") or []  # already converted from | to /
     tag_cache: dict[str, Tag] = {}
     for path_str in tag_paths:

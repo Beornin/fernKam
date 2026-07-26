@@ -1,0 +1,8 @@
+# Dependencies for launcher.py / the PyInstaller-frozen fernKam.exe.
+# Not part of backend/pyproject.toml — the launcher runs in its own
+# (system) Python env, separate from backend/.venv which it spawns as
+# a subprocess. Install with: pip install -r requirements-launcher.txt
+pywebview>=5.4
+pythonnet>=3.0.5; sys_platform == "win32"
+pyinstaller>=6.20
+pyinstaller-hooks-contrib>=2025.0

@@ -85,10 +85,17 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     face_tasks.append(t)
 
                 async def on_progress(stats: dict) -> None:
+                    if stats.get("phase") == "scanning":
+                        await task_manager.update_task(task_id,
+                            message=f"Scanning… {stats['scanned']:,} files checked | {stats['current_dir']}")
+                        return
                     queued = len(face_tasks)
                     done   = sum(1 for t in face_tasks if t.done())
+                    total  = stats.get("total", 0)
+                    processed = stats.get("added", 0) + stats.get("updated", 0)
+                    pct = f" ({processed:,}/{total:,})" if total else ""
                     await task_manager.update_task(task_id,
-                        message=f"Importing… {stats['added']} added "
+                        message=f"Importing… {stats['added']} added, {stats.get('updated', 0)} refreshed{pct} "
                                 f"| faces: {done}/{queued} done")
 
                 # ── Phase 1-2: import (face tasks fire per committed batch) ──
@@ -290,7 +297,8 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
 
                 try:
                     await task_manager.update_task(task_id, message="Auto-confirming faces…")
-                    confirmed_n = await _auto_confirm_sweep(bg_db)
+                    sweep_result = await _auto_confirm_sweep(bg_db)
+                    confirmed_n = sweep_result.get("confirmed", 0)
                 except Exception as se:
                     print(f"[SCAN-FACES] Sweep error: {se}", flush=True)
                     confirmed_n = 0
@@ -320,3 +328,68 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
 
     asyncio.create_task(run_face_scan(), name=f"fernkam-scan-faces-{task_id}")
     return {"task_id": task_id, "queued": len(photo_ids), "message": "running"}
+
+
+@router.get("/db-stats")
+async def db_stats() -> dict:
+    """Postgres size/bloat stats for the Maintenance page."""
+    from fernkam.db.session import get_async_engine
+    from fernkam.db.maintenance import get_db_stats
+
+    return await get_db_stats(get_async_engine())
+
+
+@router.post("/vacuum-analyze")
+async def vacuum_analyze() -> dict:
+    """Run VACUUM (ANALYZE) over the whole database. Runs in background — can take a while on large tables."""
+    import asyncio
+    from fernkam.task_manager import task_manager
+    from fernkam.db.session import get_async_engine
+    from fernkam.db.maintenance import run_vacuum_analyze as _run_vacuum
+
+    task_id = await task_manager.create_task("vacuum_analyze", "Running VACUUM ANALYZE…")
+
+    async def _run():
+        try:
+            await _run_vacuum(get_async_engine())
+            await task_manager.update_task(task_id, status="completed", message="VACUUM ANALYZE complete")
+        except Exception as exc:
+            logger.error("vacuum_analyze failed: %s", exc, exc_info=True)
+            await task_manager.update_task(task_id, status="failed", message=f"Error: {exc}")
+
+    asyncio.create_task(_run(), name=f"fernkam-vacuum-{task_id}")
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.post("/reindex")
+async def reindex() -> dict:
+    """REINDEX CONCURRENTLY the handful of large/heavy-churn indexes. Runs in background."""
+    import asyncio
+    from fernkam.task_manager import task_manager
+    from fernkam.db.session import get_async_engine
+    from fernkam.db.maintenance import run_reindex_concurrently, REINDEX_CANDIDATES
+
+    task_id = await task_manager.create_task("reindex", f"Reindexing {len(REINDEX_CANDIDATES)} indexes…")
+
+    async def _run():
+        try:
+            results = await run_reindex_concurrently(get_async_engine(), REINDEX_CANDIDATES)
+            ok = sum(1 for v in results.values() if v == "ok")
+            await task_manager.update_task(task_id, status="completed",
+                message=f"Reindexed {ok}/{len(results)}", progress=results)
+        except Exception as exc:
+            logger.error("reindex failed: %s", exc, exc_info=True)
+            await task_manager.update_task(task_id, status="failed", message=f"Error: {exc}")
+
+    asyncio.create_task(_run(), name=f"fernkam-reindex-{task_id}")
+    return {"task_id": task_id, "status": "running"}
+
+
+@router.post("/rebuild-indexes")
+async def rebuild_indexes() -> dict:
+    """Re-run idempotent index creation/cleanup (same routine as startup)."""
+    from fernkam.db.session import get_async_engine
+    from fernkam.db.index_setup import ensure_indexes
+
+    await ensure_indexes(get_async_engine())
+    return {"status": "ok"}

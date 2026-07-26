@@ -72,28 +72,10 @@ export interface PersonOut {
   avatar_face_id: string | null;
 }
 
-export interface FaceSuggestion {
-  person_id: number;
-  person_name: string | null;
-  score: number;
-  conflict: boolean;
-}
-
-export interface FaceWithSuggestions {
-  face: FaceOut;
-  suggestions: FaceSuggestion[];
-}
-
-export interface SimilarFace {
-  face_id: string;
-  person_tag_id: number | null;
-  person_name: string | null;
-  score: number;
-}
-
 export interface ClusterFace {
   id: string;
   photo_id: number;
+  score?: number; // present only for the sampled faces the server scored (see backend clusters.py)
 }
 
 export interface FaceCluster {
@@ -242,15 +224,19 @@ export const api = {
   faces: {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string; limit?: number; offset?: number }) =>
       get<FaceOut[]>('/api/faces/', params),
-    unassigned: (params?: { photo_id?: number; limit?: number; offset?: number; has_embedding?: boolean }) =>
-      get<FaceOut[]>('/api/faces/unassigned', params),
     unassignedCount: () => get<{ count: number }>('/api/faces/unassigned/count'),
-    suggestions: (params?: { limit?: number; offset?: number; sort?: string; status_filter?: string; person_tag_id?: number }) =>
-      get<FaceWithSuggestions[]>('/api/faces/suggestions', params),
-    suggestionsPeople: () =>
-      get<Array<{ person_id: number; person_name: string; count: number }>>('/api/faces/suggestions/people'),
-    similar: (faceId: string, params?: { k?: number; confirmed_only?: boolean }) =>
-      get<SimilarFace[]>(`/api/faces/${faceId}/similar`, params),
+    suggestionsPeople: (params?: { min_score?: number }) =>
+      get<Array<{ person_id: number; person_name: string; count: number }>>('/api/faces/suggestions/people', params),
+    candidates: (params: { person_tag_id: number; limit?: number; min_score?: number }) =>
+      get<Array<{ face_id: string; photo_id: number; status: string; score: number; conflict: boolean }>>('/api/faces/candidates', params),
+    recentAuto: (params?: { limit?: number; offset?: number }) =>
+      get<FaceOut[]>('/api/faces/recent-auto', params),
+    recentAutoCount: () => get<{ count: number }>('/api/faces/recent-auto/count'),
+    getSensitivity: () =>
+      get<{ sensitivity: number; auto_confirm_thresh: number; knn_margin: number; adaptive_floor: number }>('/api/faces/sensitivity'),
+    setSensitivity: (sensitivity: number) =>
+      fetch('/api/faces/sensitivity', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sensitivity }) })
+        .then(r => r.json() as Promise<{ sensitivity: number; auto_confirm_thresh: number; knn_margin: number; adaptive_floor: number }>),
     update: (faceId: string, body: { person_tag_id?: number | null; status?: string; region_name?: string }) =>
       fetch(`/api/faces/${faceId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<FaceOut>),
     batchAssign: (body: { face_ids: string[]; person_tag_id: number | null; status?: string }) =>
@@ -259,11 +245,12 @@ export const api = {
       fetch('/api/faces/auto-confirm-all', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string }>),
     autoConfirmIncremental: () =>
       fetch('/api/faces/auto-confirm-incremental', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string; since: string | null }>),
+    dropPreBirthSuggestions: () =>
+      fetch('/api/faces/drop-pre-birth-suggestions', { method: 'POST' }).then(r => r.json() as Promise<{ cleared: number; reason?: string }>),
     archiveLowQuality: () =>
       fetch('/api/faces/archive-low-quality', { method: 'POST' }).then(r => r.json() as Promise<{ archived: number; min_det_score: number; min_face_px: number }>),
     buildCentroids: () =>
       fetch('/api/faces/build-centroids', { method: 'POST' }).then(r => r.json() as Promise<{ updated: number }>),
-    suggestionsCount: (params?: { status_filter?: string; person_tag_id?: number }) => get<{ count: number }>('/api/faces/suggestions/count', params),
     delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }),
     clustersRebuild: (params?: { min_size?: number; cluster_thresh?: number; k?: number }) => {
       const qs = new URLSearchParams();
@@ -321,10 +308,8 @@ export const api = {
       }),
   },
   sync: {
-    dbToFile: (body?: { photo_ids?: number[]; album_path?: string; limit?: number }) =>
-      fetch('/api/sync/db-to-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ synced: number; errors: number; total: number }>),
-    fileToDB: (body?: { photo_ids?: number[]; album_path?: string; limit?: number }) =>
-      fetch('/api/sync/file-to-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ synced: number; tags_created: number; errors: number; total: number }>),
+    writeMetadata: (body?: { dirty_only?: boolean; album_path?: string }) =>
+      fetch('/api/sync/write-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string; scope?: string }>),
     refreshMetadata: (body?: { album_path?: string; photo_ids?: number[] }) =>
       fetch('/api/sync/refresh-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ status: string; task_id: string | null; queued: number; message: string }>),
     status: () => get<{ file_newer_than_db: number[]; db_never_synced_to_file: number[] }>('/api/sync/status'),
@@ -337,6 +322,22 @@ export const api = {
       fetch('/api/sync/scan-library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ status: string; task_id: string; message: string }>),
     backfillVideoDuration: () =>
       fetch('/api/sync/backfill-video-duration', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string; total: number }>),
+    backfillThumbnails: () =>
+      fetch('/api/sync/backfill-thumbnails', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string }>),
+    backfillCrops: () =>
+      fetch('/api/sync/backfill-crops', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string }>),
+    dbStats: () =>
+      get<{
+        db_size_bytes: number;
+        dead_row_pct: number;
+        tables: Array<{ table_name: string; live_rows: number; dead_rows: number; dead_pct: number; last_vacuum: string | null; total_size: number }>;
+      }>('/api/sync/db-stats'),
+    vacuumAnalyze: () =>
+      fetch('/api/sync/vacuum-analyze', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string }>),
+    reindex: () =>
+      fetch('/api/sync/reindex', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string }>),
+    rebuildIndexes: () =>
+      fetch('/api/sync/rebuild-indexes', { method: 'POST' }).then(r => r.json() as Promise<{ status: string }>),
   },
   media: {
     thumbnail: (id: number, size: 'sm' | 'md' | 'lg' = 'md') => `/media/thumbnail/${id}?size=${size}`,

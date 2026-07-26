@@ -28,7 +28,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _EXIFTOOL_PATHS = [
-    r"C:\Users\Ben\Documents\MY TOOLS\exiftool-13.59_64\exiftool.exe",
     r"C:\Program Files (x86)\digiKam\exiftool.exe",
     "/usr/bin/exiftool",
     "/usr/local/bin/exiftool",
@@ -67,6 +66,10 @@ COLOR_LABEL_TO_NAME: dict[int, str] = {
 
 
 def _et() -> Optional[str]:
+    from fernkam.config import get_settings
+    configured = get_settings().exiftool_path
+    if configured and Path(configured).exists():
+        return configured
     et = shutil.which("exiftool")
     if et:
         return et
@@ -582,13 +585,25 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
     if not payloads:
         return 0, 0
 
+    # `-json=FILE` alone only supplies tag values — exiftool still needs the
+    # target files as arguments (matched back to each JSON entry by its
+    # SourceFile key). Passed via an `-@` argfile rather than the command
+    # line directly, since a batch of long library paths can exceed Windows'
+    # ~32k command-line length limit.
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
+    argfile_fd, argfile_path = tempfile.mkstemp(suffix=".args")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
             json.dump(payloads, fh, ensure_ascii=False)
 
+        with os.fdopen(argfile_fd, "w", encoding="utf-8") as afh:
+            afh.write("-overwrite_original\n")
+            afh.write(f"-json={tmp_path}\n")
+            for p in payloads:
+                afh.write(f"{p['SourceFile']}\n")
+
         result = subprocess.run(
-            [et, "-overwrite_original", f"-json={tmp_path}"],
+            [et, "-@", argfile_path],
             capture_output=True, stdin=subprocess.DEVNULL, timeout=300,
         )
         if result.returncode != 0:
@@ -603,10 +618,11 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
         logger.warning("exiftool batch write exception: %s", exc)
         return 0, len(payloads)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        for p in (tmp_path, argfile_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 # ═══════════════════════════ DB ↔ FILE SYNC ══════════════════════════════════

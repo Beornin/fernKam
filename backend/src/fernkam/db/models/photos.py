@@ -293,6 +293,11 @@ class Face(Base):
     # Best match score against all confirmed faces (0.0-1.0)
     best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4))
 
+    # Who set status='confirmed': 'manual' (a person picked it) or 'auto' (the
+    # sweep/cluster-auto-assign/similar-propagation did it without human review).
+    # Null for faces that have never been confirmed.
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(16))
+
     file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     digikam_image_id: Mapped[Optional[int]] = mapped_column(BigInteger)

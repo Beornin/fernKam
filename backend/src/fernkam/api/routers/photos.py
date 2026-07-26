@@ -82,6 +82,66 @@ async def list_photos(
     )
 
 
+@router.get("/timeline")
+async def timeline(db: DB) -> dict:
+    """Return photo counts bucketed by year and year+month, for the timeline page.
+
+    Returns:
+      years: [{year, count, months: [{month, count}]}]
+    """
+    from sqlalchemy import text as _text
+    rows = (await db.execute(_text("""
+        SELECT
+            EXTRACT(YEAR  FROM taken_at)::int AS yr,
+            EXTRACT(MONTH FROM taken_at)::int AS mo,
+            COUNT(*)                          AS cnt
+        FROM photos
+        WHERE status = 1 AND taken_at IS NOT NULL
+        GROUP BY yr, mo
+        ORDER BY yr DESC, mo DESC
+    """))).fetchall()
+
+    years_dict: dict[int, dict] = {}
+    for yr, mo, cnt in rows:
+        if yr not in years_dict:
+            years_dict[yr] = {"year": yr, "count": 0, "months": []}
+        years_dict[yr]["count"] += cnt
+        years_dict[yr]["months"].append({"month": mo, "count": cnt})
+
+    return {"years": list(years_dict.values())}
+
+
+@router.get("/cameras")
+async def list_cameras(db: DB) -> list[dict]:
+    """All cameras that have at least one photo, for filter dropdowns."""
+    from fernkam.db.models.photos import Camera
+    rows = (await db.execute(
+        select(Camera.id, Camera.make, Camera.model)
+        .where(Camera.id.in_(select(Photo.camera_id).where(Photo.camera_id.is_not(None)).distinct()))
+        .order_by(Camera.make.asc(), Camera.model.asc())
+    )).fetchall()
+    return [{"id": r[0], "make": r[1], "model": r[2],
+             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+
+
+@router.get("/lenses")
+async def list_lenses(db: DB) -> list[dict]:
+    """All lenses that have at least one photo, for filter dropdowns."""
+    from fernkam.db.models.photos import Lens
+    rows = (await db.execute(
+        select(Lens.id, Lens.make, Lens.model)
+        .where(Lens.id.in_(select(Photo.lens_id).where(Photo.lens_id.is_not(None)).distinct()))
+        .order_by(Lens.make.asc(), Lens.model.asc())
+    )).fetchall()
+    return [{"id": r[0], "make": r[1], "model": r[2],
+             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+
+
+# NOTE: /{photo_id} must stay below every literal single-segment GET route
+# above (timeline/cameras/lenses) — FastAPI matches routes in registration
+# order, so a literal route registered after this would be shadowed (any
+# GET to e.g. /api/photos/timeline would 422 trying to parse "timeline" as
+# photo_id). Multi-segment routes like /{photo_id}/tags are unaffected.
 @router.get("/{photo_id}", response_model=PhotoDetail)
 async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
     row = (
@@ -271,61 +331,6 @@ async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
     return {"updated": applied, "skipped": len(rows) - applied}
 
 
-@router.get("/timeline")
-async def timeline(db: DB) -> dict:
-    """Return photo counts bucketed by year and year+month, for the timeline page.
-
-    Returns:
-      years: [{year, count, months: [{month, count}]}]
-    """
-    from sqlalchemy import text as _text
-    rows = (await db.execute(_text("""
-        SELECT
-            EXTRACT(YEAR  FROM taken_at)::int AS yr,
-            EXTRACT(MONTH FROM taken_at)::int AS mo,
-            COUNT(*)                          AS cnt
-        FROM photos
-        WHERE status = 1 AND taken_at IS NOT NULL
-        GROUP BY yr, mo
-        ORDER BY yr DESC, mo DESC
-    """))).fetchall()
-
-    years_dict: dict[int, dict] = {}
-    for yr, mo, cnt in rows:
-        if yr not in years_dict:
-            years_dict[yr] = {"year": yr, "count": 0, "months": []}
-        years_dict[yr]["count"] += cnt
-        years_dict[yr]["months"].append({"month": mo, "count": cnt})
-
-    return {"years": list(years_dict.values())}
-
-
-@router.get("/cameras")
-async def list_cameras(db: DB) -> list[dict]:
-    """All cameras that have at least one photo, for filter dropdowns."""
-    from fernkam.db.models.photos import Camera
-    rows = (await db.execute(
-        select(Camera.id, Camera.make, Camera.model)
-        .where(Camera.id.in_(select(Photo.camera_id).where(Photo.camera_id.is_not(None)).distinct()))
-        .order_by(Camera.make.asc(), Camera.model.asc())
-    )).fetchall()
-    return [{"id": r[0], "make": r[1], "model": r[2],
-             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
-
-
-@router.get("/lenses")
-async def list_lenses(db: DB) -> list[dict]:
-    """All lenses that have at least one photo, for filter dropdowns."""
-    from fernkam.db.models.photos import Lens
-    rows = (await db.execute(
-        select(Lens.id, Lens.make, Lens.model)
-        .where(Lens.id.in_(select(Photo.lens_id).where(Photo.lens_id.is_not(None)).distinct()))
-        .order_by(Lens.make.asc(), Lens.model.asc())
-    )).fetchall()
-    return [{"id": r[0], "make": r[1], "model": r[2],
-             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
-
-
 @router.get("/{photo_id}/tags", response_model=list[TagOut])
 async def get_photo_tags(photo_id: int, db: DB) -> list[TagOut]:
     rows = (await db.execute(
@@ -371,7 +376,7 @@ async def map_points(
         .where(Photo.longitude.is_not(None))
     )
     if album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
     if tag_id is not None:
         q = q.where(Photo.id.in_(select(PhotoTag.photo_id).where(PhotoTag.tag_id == tag_id)))
     q = q.limit(limit)
@@ -404,7 +409,8 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
     from datetime import datetime, timezone
 
     settings = get_settings()
-    AUTO_CONFIRM_THRESH = settings.auto_confirm_thresh
+    from fernkam.api.routers.faces._helpers import _resolve_sensitivity, _sensitivity_to_thresholds
+    AUTO_CONFIRM_THRESH, _margin, _floor = _sensitivity_to_thresholds(await _resolve_sensitivity(db))
     SUGGEST_THRESH = settings.suggest_thresh
 
     photo = (await db.execute(select(Photo).where(Photo.id == photo_id))).scalar_one_or_none()
@@ -479,6 +485,7 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
                     if m:
                         matched.person_tag_id = m[0]["person_tag_id"]
                         matched.status = "confirmed" if m[0]["score"] >= AUTO_CONFIRM_THRESH else "suggested"
+                        matched.confirmed_by = "auto" if matched.status == "confirmed" else None
             await db.flush()
         else:
             new_dets.append(det)
@@ -551,6 +558,7 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             det_score=round(float(det["score"]), 4),
             blur_score=round(float(det.get("blur_score", 0.0)), 2),
             best_match_score=round(float(score), 4) if score is not None and status in ("suggested", "confirmed") else None,
+            confirmed_by="auto" if status == "confirmed" else None,
         )
         db.add(face)
         new_faces.append((face, score))

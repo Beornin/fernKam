@@ -15,3 +15,119 @@ body {
 ::-webkit-scrollbar-track { background-color: #18181b; }
 ::-webkit-scrollbar-thumb { background-color: #3f3f46; border-radius: 9999px; }
 ::-webkit-scrollbar-thumb:hover { background-color: #71717a; }
+
+/* ── Color palettes ──────────────────────────────────────────────────────
+   The app uses Tailwind's amber-* scale as its one accent color everywhere
+   (nav highlights, buttons, focus states, links), so remapping just those
+   9 CSS variables per data-theme recolors the whole app without touching
+   any component. "amber" (default) needs no override — it already is
+   Tailwind's built-in amber palette. Values below are Tailwind's own
+   published OKLCH values for each hue, not custom colors. */
+
+[data-theme="ocean"] {
+  --color-amber-100: oklch(93.2% 0.032 255.585);
+  --color-amber-200: oklch(88.2% 0.059 254.128);
+  --color-amber-300: oklch(80.9% 0.105 251.813);
+  --color-amber-400: oklch(70.7% 0.165 254.624);
+  --color-amber-500: oklch(62.3% 0.214 259.815);
+  --color-amber-600: oklch(54.6% 0.245 262.881);
+  --color-amber-700: oklch(48.8% 0.243 264.376);
+  --color-amber-800: oklch(42.4% 0.199 265.638);
+  --color-amber-900: oklch(37.9% 0.146 265.522);
+}
+
+[data-theme="forest"] {
+  --color-amber-100: oklch(95% 0.052 163.051);
+  --color-amber-200: oklch(90.5% 0.093 164.15);
+  --color-amber-300: oklch(84.5% 0.143 164.978);
+  --color-amber-400: oklch(76.5% 0.177 163.223);
+  --color-amber-500: oklch(69.6% 0.17 162.48);
+  --color-amber-600: oklch(59.6% 0.145 163.225);
+  --color-amber-700: oklch(50.8% 0.118 165.612);
+  --color-amber-800: oklch(43.2% 0.095 166.913);
+  --color-amber-900: oklch(37.8% 0.077 168.94);
+}
+
+[data-theme="grape"] {
+  --color-amber-100: oklch(94.3% 0.029 294.588);
+  --color-amber-200: oklch(89.4% 0.057 293.283);
+  --color-amber-300: oklch(81.1% 0.111 293.571);
+  --color-amber-400: oklch(70.2% 0.183 293.541);
+  --color-amber-500: oklch(60.6% 0.25 292.717);
+  --color-amber-600: oklch(54.1% 0.281 293.009);
+  --color-amber-700: oklch(49.1% 0.27 292.581);
+  --color-amber-800: oklch(43.2% 0.232 292.759);
+  --color-amber-900: oklch(38% 0.189 293.745);
+}
+
+[data-theme="sunset"] {
+  --color-amber-100: oklch(94.1% 0.03 12.58);
+  --color-amber-200: oklch(89.2% 0.058 10.001);
+  --color-amber-300: oklch(81% 0.117 11.638);
+  --color-amber-400: oklch(71.2% 0.194 13.428);
+  --color-amber-500: oklch(64.5% 0.246 16.439);
+  --color-amber-600: oklch(58.6% 0.253 17.585);
+  --color-amber-700: oklch(51.4% 0.222 16.935);
+  --color-amber-800: oklch(45.5% 0.188 13.697);
+  --color-amber-900: oklch(41% 0.159 10.272);
+}
+
+[data-theme="lagoon"] {
+  --color-amber-100: oklch(95.6% 0.045 203.388);
+  --color-amber-200: oklch(91.7% 0.08 205.041);
+  --color-amber-300: oklch(86.5% 0.127 207.078);
+  --color-amber-400: oklch(78.9% 0.154 211.53);
+  --color-amber-500: oklch(71.5% 0.143 215.221);
+  --color-amber-600: oklch(60.9% 0.126 221.723);
+  --color-amber-700: oklch(52% 0.105 223.128);
+  --color-amber-800: oklch(45% 0.085 224.283);
+  --color-amber-900: oklch(39.8% 0.07 227.392);
+}
+
+[data-theme="crimson"] {
+  --color-amber-100: oklch(93.6% 0.032 17.717);
+  --color-amber-200: oklch(88.5% 0.062 18.334);
+  --color-amber-300: oklch(80.8% 0.114 19.571);
+  --color-amber-400: oklch(70.4% 0.191 22.216);
+  --color-amber-500: oklch(63.7% 0.237 25.331);
+  --color-amber-600: oklch(57.7% 0.245 27.325);
+  --color-amber-700: oklch(50.5% 0.213 27.518);
+  --color-amber-800: oklch(44.4% 0.177 26.899);
+  --color-amber-900: oklch(39.6% 0.141 25.723);
+}
+
+[data-theme="twilight"] {
+  --color-amber-100: oklch(93% 0.034 272.788);
+  --color-amber-200: oklch(87% 0.065 274.039);
+  --color-amber-300: oklch(78.5% 0.115 274.713);
+  --color-amber-400: oklch(67.3% 0.182 276.935);
+  --color-amber-500: oklch(58.5% 0.233 277.117);
+  --color-amber-600: oklch(51.1% 0.262 276.966);
+  --color-amber-700: oklch(45.7% 0.24 277.023);
+  --color-amber-800: oklch(39.8% 0.195 277.366);
+  --color-amber-900: oklch(35.9% 0.144 278.697);
+}
+
+[data-theme="citrus"] {
+  --color-amber-100: oklch(96.7% 0.067 122.328);
+  --color-amber-200: oklch(93.8% 0.127 124.321);
+  --color-amber-300: oklch(89.7% 0.196 126.665);
+  --color-amber-400: oklch(84.1% 0.238 128.85);
+  --color-amber-500: oklch(76.8% 0.233 130.85);
+  --color-amber-600: oklch(64.8% 0.2 131.684);
+  --color-amber-700: oklch(53.2% 0.157 131.589);
+  --color-amber-800: oklch(45.3% 0.124 130.933);
+  --color-amber-900: oklch(40.5% 0.101 131.063);
+}
+
+[data-theme="copper"] {
+  --color-amber-100: oklch(95.4% 0.038 75.164);
+  --color-amber-200: oklch(90.1% 0.076 70.697);
+  --color-amber-300: oklch(83.7% 0.128 66.29);
+  --color-amber-400: oklch(75% 0.183 55.934);
+  --color-amber-500: oklch(70.5% 0.213 47.604);
+  --color-amber-600: oklch(64.6% 0.222 41.116);
+  --color-amber-700: oklch(55.3% 0.195 38.402);
+  --color-amber-800: oklch(47% 0.157 37.304);
+  --color-amber-900: oklch(40.8% 0.123 38.172);
+}

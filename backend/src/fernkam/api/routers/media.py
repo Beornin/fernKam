@@ -57,23 +57,30 @@ async def serve_thumbnail(
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
-@router.get("/face/{face_id}")
-async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, le=400)) -> Response:
-    """Return a square-cropped thumbnail of a face region."""
-    from sqlalchemy.orm import selectinload
+STORED_CROP_SIZE = 200  # matches the fixed size backfill_crops()/auto-generation store at
 
+
+@router.get("/face/{face_id}")
+async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, le=800)) -> Response:
+    """Return a square-cropped thumbnail of a face region.
+
+    Requests at or below the stored resolution use the cached crop_data (fast,
+    no disk read). Larger requests — the face review close-up view — always
+    regenerate from the source photo with a little padding around the tight
+    bounding box, since upscaling the small cached crop would just look soft.
+    """
     row = (await db.execute(
         select(Face).where(Face.id == face_id)
     )).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Face not found")
 
-    # 1. Serve from stored crop if available
-    if row.crop_data:
+    # 1. Serve from stored crop if available and the request doesn't need more detail
+    if row.crop_data and size <= STORED_CROP_SIZE:
         return Response(content=bytes(row.crop_data), media_type="image/webp",
                         headers={"Cache-Control": "public, max-age=86400"})
 
-    # 2. Fallback: generate from disk, cache to DB
+    # 2. Generate from disk (fallback for uncached crops, or a larger close-up request)
     if row.x is None:
         raise HTTPException(422, "Face has no bounding box")
 
@@ -94,7 +101,7 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
         img = None
     if img is None:
         try:
-            from PIL import Image, ImageOps
+            from PIL import Image
             import numpy as np
             pil_img = Image.open(src)
             if pil_img.mode != "RGB":
@@ -104,21 +111,28 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
             raise HTTPException(422, "Could not read image")
 
     h_img, w_img = img.shape[:2]
-    x1 = max(0, row.x or 0)
-    y1 = max(0, row.y or 0)
-    x2 = min(w_img, (row.x or 0) + (row.w or 0))
-    y2 = min(h_img, (row.y or 0) + (row.h or 0))
+    fw, fh = row.w or 0, row.h or 0
+    # A little padding for larger requests so a close-up isn't an ultra-tight
+    # crop of just the face — matches the padding backfill_crops() already
+    # uses for the stored 200px version.
+    pad = int(max(fw, fh) * 0.2) if size > STORED_CROP_SIZE else 0
+    x1 = max(0, (row.x or 0) - pad)
+    y1 = max(0, (row.y or 0) - pad)
+    x2 = min(w_img, (row.x or 0) + fw + pad)
+    y2 = min(h_img, (row.y or 0) + fh + pad)
     crop = img[y1:y2, x1:x2]
     crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 85])
+    ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 90 if size > STORED_CROP_SIZE else 85])
     if not ok:
         raise HTTPException(500, "Encoding failed")
     crop_bytes = bytes(buf)
 
-    # Cache to DB for future requests
-    from sqlalchemy import update as sa_update
-    await db.execute(sa_update(Face).where(Face.id == face_id).values(crop_data=crop_bytes))
-    await db.commit()
+    # Only cache the standard small size — an oversized close-up crop would
+    # clobber the cache every grid tile elsewhere on the site relies on.
+    if size <= STORED_CROP_SIZE:
+        from sqlalchemy import update as sa_update
+        await db.execute(sa_update(Face).where(Face.id == face_id).values(crop_data=crop_bytes))
+        await db.commit()
 
     return Response(content=crop_bytes, media_type="image/webp",
                     headers={"Cache-Control": "public, max-age=86400"})

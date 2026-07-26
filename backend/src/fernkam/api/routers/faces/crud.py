@@ -31,6 +31,10 @@ async def batch_assign_faces(
     import asyncio as _asyncio
     uuids = [UUID(fid) for fid in face_ids]
 
+    # Human-initiated endpoint (review UI batch actions) — same provenance rule as
+    # the single-face PATCH above: 'manual' when confirming, cleared otherwise.
+    confirmed_by = "manual" if status == "confirmed" else None
+
     if status == "confirmed" and person_tag_id is not None:
         # TWINS bypass: persons named "…- TWINS" may appear multiple times per photo.
         tag_name = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
@@ -39,7 +43,7 @@ async def batch_assign_faces(
         if is_twins:
             await db.execute(
                 update(Face).where(Face.id.in_(uuids))
-                .values(person_tag_id=person_tag_id, status=status)
+                .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
             )
         else:
             # Duplicate guard: fetch (face_id, photo_id) for all affected faces.
@@ -75,17 +79,17 @@ async def batch_assign_faces(
             if conflict_ids:
                 await db.execute(
                     update(Face).where(Face.id.in_(conflict_ids))
-                    .values(status="unconfirmed", person_tag_id=None)
+                    .values(status="unconfirmed", person_tag_id=None, confirmed_by=None)
                 )
             if ok_ids:
                 await db.execute(
                     update(Face).where(Face.id.in_(ok_ids))
-                    .values(person_tag_id=person_tag_id, status=status)
+                    .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
                 )
     else:
         await db.execute(
             update(Face).where(Face.id.in_(uuids))
-            .values(person_tag_id=person_tag_id, status=status)
+            .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
         )
     await db.commit()
 
@@ -160,6 +164,12 @@ async def update_face(face_id: UUID, payload: FaceUpdate, db: DB) -> FaceOut:
             raise HTTPException(404)
         if await _already_confirmed_in_photo(db, face.photo_id, updates["person_tag_id"], exclude_face_id=face_id):
             raise HTTPException(409, "Person already confirmed in this photo")
+
+    # This endpoint is only ever called by a human (the review UI) — automation
+    # writes confirmations directly via _auto_confirm_sweep/_auto_confirm_similar/
+    # auto_assign_clusters, not through here. Track provenance for the audit queue.
+    if "status" in updates:
+        updates["confirmed_by"] = "manual" if updates["status"] == "confirmed" else None
 
     await db.execute(update(Face).where(Face.id == face_id).values(**updates))
     await db.commit()

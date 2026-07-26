@@ -5,6 +5,7 @@
 	import { page as pageStore } from '$app/state';
 	import { onMount } from 'svelte';
 	import { statusCountStore, thumbSizeStore } from '$lib/stores';
+	import PersonPicker from '$lib/components/PersonPicker.svelte';
 
 	let thumbSize = $state(180);
 	const unsubThumb = thumbSizeStore.subscribe(v => { thumbSize = v; });
@@ -105,12 +106,7 @@
 
 	// person picker for assigning ignored faces
 	let ignoredPickerFaceId = $state<string | null>(null);
-	let ignoredPickerSearch = $state('');
-	let filteredPeopleForPicker = $derived(
-		ignoredPickerSearch.trim()
-			? people.filter(p => p.name.toLowerCase().includes(ignoredPickerSearch.toLowerCase()))
-			: people
-	);
+	let ignoredPickerOpen = $state(false);
 
 	async function loadPeople() {
 		loadingPeople = true;
@@ -158,6 +154,7 @@
 		ignoredCount = Math.max(0, ignoredCount - 1);
 		people = people.map(p => p.id === personId ? { ...p, face_count: p.face_count + 1 } : p);
 		ignoredPickerFaceId = null;
+		ignoredPickerOpen = false;
 	}
 
 	async function deleteIgnoredFace(face: FaceOut) {
@@ -375,16 +372,16 @@
 					</div>
 				{/each}
 			{/if}
-			<!-- Review Clusters entry -->
+			<!-- Face Review entry (unified person sidebar + Unknown cluster bucket) -->
 			<div class="border-t border-zinc-800 mt-1 pt-1">
 				<div
 					class="flex items-center gap-2 px-2 py-1.5 rounded mx-1 cursor-pointer transition-colors hover:bg-zinc-800"
-					onclick={() => goto('/people/review')}
+					onclick={() => goto('/review')}
 				>
 					<div class="w-6 h-6 rounded-full bg-violet-600/20 flex items-center justify-center text-violet-400 shrink-0">
 						<Layers size={14} />
 					</div>
-					<span class="flex-1 text-xs text-violet-300 truncate">Review Clusters</span>
+					<span class="flex-1 text-xs text-violet-300 truncate">Face Review</span>
 				</div>
 			</div>
 
@@ -408,32 +405,11 @@
 	</aside>
 
 	<!-- person picker overlay for ignored faces -->
-	{#if ignoredPickerFaceId}
-	<div class="fixed inset-0 z-50 flex items-center justify-center">
-		<button class="absolute inset-0 bg-black/70" aria-label="Close" onclick={() => ignoredPickerFaceId = null}></button>
-		<div class="relative bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl w-72 flex flex-col max-h-[70vh]" role="dialog" aria-modal="true">
-			<div class="p-3 border-b border-zinc-800 flex items-center gap-2">
-				<input type="text" bind:value={ignoredPickerSearch} placeholder="Search people…"
-					class="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
-				<button onclick={() => ignoredPickerFaceId = null} class="p-1 rounded hover:bg-zinc-700 text-zinc-400"><X size={16} /></button>
-			</div>
-			<div class="overflow-y-auto flex-1 p-1">
-				{#if filteredPeopleForPicker.length === 0}
-					<p class="text-xs text-zinc-500 px-3 py-3">No people found</p>
-				{:else}
-					{#each filteredPeopleForPicker as person (person.id)}
-						<button onclick={() => { const f = ignoredFaces.find(f => f.id === ignoredPickerFaceId); if (f) assignIgnoredToPerson(f, person.id); }}
-							class="w-full flex items-center gap-2 px-3 py-2 rounded hover:bg-zinc-800 text-left">
-							<div class="w-6 h-6 rounded-full bg-zinc-700 flex items-center justify-center text-zinc-400 shrink-0"><User size={12} /></div>
-							<span class="text-sm text-zinc-200 flex-1 truncate">{person.name}</span>
-							<span class="text-xs text-zinc-500">{person.face_count}</span>
-						</button>
-					{/each}
-				{/if}
-			</div>
-		</div>
-	</div>
-	{/if}
+	<PersonPicker
+		bind:open={ignoredPickerOpen}
+		onPick={(personId) => { const f = ignoredFaces.find(f => f.id === ignoredPickerFaceId); if (f) assignIgnoredToPerson(f, personId); }}
+		title="Search or create person…"
+	/>
 
 	<!-- ── Right: face grid ── -->
 	<div class="flex-1 flex flex-col overflow-hidden">
@@ -467,7 +443,7 @@
 										class="p-1.5 rounded bg-white/10 hover:bg-white/20 text-white" title="Open photo">
 										<ExternalLink size={13} />
 									</button>
-									<button onclick={() => { ignoredPickerFaceId = face.id; ignoredPickerSearch = ''; }}
+									<button onclick={() => { ignoredPickerFaceId = face.id; ignoredPickerOpen = true; }}
 										class="p-1.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300" title="Assign to person">
 										<User size={13} />
 									</button>

@@ -202,7 +202,7 @@
 					<div class="px-3 py-2">
 						<p class="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">GPS</p>
 						<button
-							onclick={() => goto(`/map?lat=${detail!.latitude}&lon=${detail!.longitude}&zoom=14`)}
+							onclick={() => goto(`/photos?view=map&lat=${detail!.latitude}&lon=${detail!.longitude}&zoom=14`)}
 							class="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300 hover:underline transition-colors"
 							title="Show on map"
 						>
@@ -223,7 +223,7 @@
 						<div class="flex flex-wrap gap-1.5 mt-1">
 							{#each detail.tags as tag}
 								<a
-									href="/tags"
+									href="/photos?tab=tags"
 									class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 transition-colors"
 								>
 									<Tag size={10} class="text-zinc-500" />

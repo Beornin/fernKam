@@ -171,9 +171,8 @@ def _resolve_ffmpeg() -> str | None:
     """Return a usable ffmpeg executable path, or None if not found."""
     import shutil
     settings = get_settings()
-    configured = Path(settings.ffmpeg_path)
-    if configured.exists():
-        return str(configured)
+    if settings.ffmpeg_path and Path(settings.ffmpeg_path).exists():
+        return settings.ffmpeg_path
     # Fall back to ffmpeg on system PATH
     found = shutil.which("ffmpeg")
     return found  # None if not found anywhere

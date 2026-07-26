@@ -1,62 +1,70 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { api, type PhotoSummary, type AlbumNode } from '$lib/api';
+	import { api, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
-	import { ChevronLeft, ChevronRight, SlidersHorizontal, ChevronDown, ChevronRight as ChevronR, FolderOpen, Folder, PanelLeftClose, PanelLeftOpen, Images, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2 } from '@lucide/svelte';
+	import AlbumsTab from '$lib/components/sidebar/AlbumsTab.svelte';
+	import TagsTab from '$lib/components/sidebar/TagsTab.svelte';
+	import TimelineTab from '$lib/components/sidebar/TimelineTab.svelte';
+	import SearchTab from '$lib/components/sidebar/SearchTab.svelte';
+	import PeopleTab from '$lib/components/sidebar/PeopleTab.svelte';
+	import LabelsTab from '$lib/components/sidebar/LabelsTab.svelte';
+	import MapView from '$lib/components/MapView.svelte';
+	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
-	import { onMount } from 'svelte';
 	import { statusCountStore } from '$lib/stores';
+	import { createLightboxNav } from '$lib/lightboxNav.svelte';
+	import { inferTab, readListFilterParams, buildFilterUrl, type ShellTab } from '$lib/shellFilters';
 
 	// Query params
 	let albumPath = $derived($page.url.searchParams.get('album_path') ?? '');
-	let tagId = $derived(Number($page.url.searchParams.get('tag_id')) || undefined);
+	let tagIdParam = $derived(Number($page.url.searchParams.get('tag_id')) || undefined);
 	let photoIdParam = $derived(Number($page.url.searchParams.get('photo_id')) || null);
 	let referrer = $derived($page.url.searchParams.get('referrer') ?? null);
 	let backUrl = $derived($page.url.searchParams.get('back') ?? null);
 	let sort = $derived($page.url.searchParams.get('sort') ?? 'taken_at_desc');
 	let currentPage = $derived(Number($page.url.searchParams.get('page') ?? 1));
+	let activeTab = $derived<ShellTab>(inferTab($page.url.searchParams));
 	const PAGE_SIZE = 500;
 
-	// Album tree state
-	let albums = $state<AlbumNode[]>([]);
-	let treeExpanded = $state(new Set<string>());
-	let treeOpen = $state(true);
+	const TABS: Array<{ key: ShellTab; label: string }> = [
+		{ key: 'albums', label: 'Albums' },
+		{ key: 'tags', label: 'Tags' },
+		{ key: 'timeline', label: 'Timeline' },
+		{ key: 'search', label: 'Search' },
+		{ key: 'people', label: 'People' },
+		{ key: 'labels', label: 'Labels' },
+	];
+
+	// Map replaces the center grid entirely (its own layout, no album/tag filters) —
+	// a toolbar toggle rather than a sidebar tab, since it has no tree/list content.
+	let mapMode = $derived($page.url.searchParams.get('view') === 'map');
+
+	function toggleMapMode() {
+		const u = new URL($page.url);
+		if (mapMode) u.searchParams.delete('view');
+		else u.searchParams.set('view', 'map');
+		goto(u.toString());
+	}
 
 	// Photos state
 	let photos = $state<PhotoSummary[]>([]);
 	let total = $state(0);
 	let loading = $state(false);
-	let selectedId = $state<number | null>(null);
-	let selectedIdx = $state<number>(-1);
 	let selectedIds = $state<Set<number>>(new Set());
 	let batchDetecting = $state(false);
 	let batchResult = $state<string | null>(null);
-	let standalonePhoto = $state<any>(null);
+	let treeOpen = $state(true);
 	let rightPanelOpen = $state(false);
 	let rightPanelPhotoId = $state<number | null>(null);
 
-	onMount(async () => {
-		albums = await api.albums.list();
-		// Auto-expand path to selected album
-		if (albumPath) {
-			const parts = albumPath.split('/').filter(Boolean);
-			let cur = '';
-			for (const part of parts) {
-				cur += '/' + part;
-				treeExpanded.add(cur);
-			}
-			treeExpanded = new Set(treeExpanded);
-		}
-	});
+	const lightbox = createLightboxNav();
 
 	$effect(() => {
 		loading = true;
-		standalonePhoto = null;
 		api.photos.list({
-			album_path: albumPath || undefined,
-			tag_id: tagId,
+			...readListFilterParams($page.url.searchParams),
 			sort,
 			page: currentPage,
 			page_size: PAGE_SIZE,
@@ -67,23 +75,11 @@
 			statusCountStore.set(`${total.toLocaleString()} items`);
 
 			if (photoIdParam) {
-				const idx = photos.findIndex(p => p.id === photoIdParam);
-				if (idx >= 0) {
-					selectedId = photoIdParam;
-					selectedIdx = idx;
+				lightbox.openById(photos, photoIdParam).then(() => {
 					const u = new URL($page.url);
 					u.searchParams.delete('photo_id');
 					goto(u.toString(), { replaceState: true });
-				} else {
-					api.photos.get(photoIdParam).then(photo => {
-						standalonePhoto = photo;
-						selectedId = photoIdParam;
-						selectedIdx = -1;
-						const u = new URL($page.url);
-						u.searchParams.delete('photo_id');
-						goto(u.toString(), { replaceState: true });
-					});
-				}
+				});
 			}
 		});
 	});
@@ -96,40 +92,16 @@
 		goto(u.toString());
 	}
 
-	function selectAlbum(path: string) {
-		const u = new URL($page.url);
-		if (path) u.searchParams.set('album_path', path);
-		else u.searchParams.delete('album_path');
-		u.searchParams.delete('page');
-		goto(u.toString());
-	}
-
-	function toggleFolder(path: string) {
-		if (treeExpanded.has(path)) treeExpanded.delete(path);
-		else treeExpanded.add(path);
-		treeExpanded = new Set(treeExpanded);
-	}
-
 	function openPhoto(p: PhotoSummary) {
-		selectedId = p.id;
-		selectedIdx = photos.findIndex(ph => ph.id === p.id);
+		lightbox.open(photos, p);
 		rightPanelPhotoId = p.id;
 		rightPanelOpen = true;
 	}
 
 	function closeLightbox() {
-		selectedId = null;
-		selectedIdx = -1;
+		lightbox.close();
 		if (backUrl) goto(decodeURIComponent(backUrl));
 		else if (referrer === 'review') goto('/review');
-	}
-
-	function prevPhoto() {
-		if (selectedIdx > 0) { selectedIdx--; selectedId = photos[selectedIdx].id; }
-	}
-
-	function nextPhoto() {
-		if (selectedIdx < photos.length - 1) { selectedIdx++; selectedId = photos[selectedIdx].id; }
 	}
 
 	const totalPages = $derived(Math.ceil(total / PAGE_SIZE));
@@ -224,17 +196,6 @@
 		}
 	}
 
-	function centerReview() {
-		// Centre view (used only on first entry)
-		restoreScroll = false;
-		setTimeout(() => {
-			if (reviewScroll) {
-				reviewScroll.scrollLeft = (reviewScroll.scrollWidth - reviewScroll.clientWidth) / 2;
-				reviewScroll.scrollTop = (reviewScroll.scrollHeight - reviewScroll.clientHeight) / 2;
-			}
-		}, 80);
-	}
-
 	async function reviewTrash() {
 		if (reviewTrashing || reviewPhotos.length === 0) return;
 		reviewTrashing = true;
@@ -278,7 +239,7 @@
 
 	function panEnd() { panActive = false; }
 
-	// Breadcrumb from albumPath
+	// Breadcrumb from albumPath (Albums tab only)
 	function breadcrumbParts(path: string): Array<{label: string, path: string}> {
 		if (!path) return [];
 		const parts = path.split('/').filter(Boolean);
@@ -287,72 +248,39 @@
 			path: '/' + parts.slice(0, i + 1).join('/'),
 		}));
 	}
+
+	function selectAlbumFromBreadcrumb(path: string) {
+		goto(buildFilterUrl($page.url, 'albums', { album_path: path || undefined }));
+	}
 </script>
 
 <div class="flex h-full overflow-hidden">
-	<!-- Album tree left panel -->
+	<!-- Tab content panel -->
 	{#if treeOpen}
 		<aside class="w-[220px] shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
 			<div class="flex items-center justify-between px-3 py-2 border-b border-zinc-800 shrink-0">
-				<span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Albums</span>
+				<span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{TABS.find(t => t.key === activeTab)?.label}</span>
 				<button onclick={() => treeOpen = false} class="text-zinc-600 hover:text-zinc-300 transition-colors" title="Hide panel">
 					<PanelLeftClose size={14} />
 				</button>
 			</div>
-			<div class="flex-1 overflow-y-auto py-1">
-				<!-- All Photos entry -->
-				<button
-					class="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors text-left
-						{!albumPath ? 'bg-amber-500/20 text-amber-400' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}"
-					onclick={() => selectAlbum('')}
-				>
-					<Images size={13} class="shrink-0" />
-					<span class="truncate">All Photos</span>
-				</button>
-				{#snippet albumRow(node: AlbumNode, depth: number)}
-					{@const expanded = treeExpanded.has(node.path)}
-					{@const hasChildren = node.children.length > 0}
-					{@const selected = albumPath === node.path}
-					<div>
-						<div
-							class="flex items-center gap-0.5 hover:bg-zinc-800 transition-colors"
-							style="padding-left:{depth * 12 + 8}px"
-						>
-							<!-- Expand toggle -->
-							<button
-								class="w-4 h-4 flex items-center justify-center text-zinc-600 hover:text-zinc-300 shrink-0"
-								onclick={() => hasChildren && toggleFolder(node.path)}
-							>
-								{#if hasChildren}
-									{#if expanded}<ChevronDown size={11} />{:else}<ChevronR size={11} />{/if}
-								{/if}
-							</button>
-							<!-- Folder row -->
-							<button
-								class="flex-1 flex items-center gap-1.5 py-1 text-xs text-left min-w-0 pr-2
-									{selected ? 'text-amber-400' : 'text-zinc-400 hover:text-zinc-200'}"
-								onclick={() => { selectAlbum(node.path); if (hasChildren && !expanded) toggleFolder(node.path); }}
-							>
-								{#if expanded || selected}
-									<FolderOpen size={12} class="shrink-0 {selected ? 'text-amber-400' : 'text-zinc-500'}" />
-								{:else}
-									<Folder size={12} class="shrink-0 text-zinc-600" />
-								{/if}
-								<span class="truncate">{node.name}</span>
-								<span class="ml-auto text-zinc-700 shrink-0 text-[10px]">{node.photo_count}</span>
-							</button>
-						</div>
-						{#if expanded && hasChildren}
-							{#each node.children as child}
-								{@render albumRow(child, depth + 1)}
-							{/each}
-						{/if}
-					</div>
-				{/snippet}
-				{#each albums as album}
-					{@render albumRow(album, 0)}
-				{/each}
-			</div>
+			{#if activeTab === 'albums'}
+				<AlbumsTab />
+			{:else if activeTab === 'tags'}
+				<TagsTab />
+			{:else if activeTab === 'timeline'}
+				<TimelineTab />
+			{:else if activeTab === 'search'}
+				<SearchTab />
+			{:else if activeTab === 'people'}
+				<PeopleTab />
+			{:else if activeTab === 'labels'}
+				<LabelsTab />
+			{:else}
+				<div class="flex-1 flex items-center justify-center text-xs text-zinc-600 text-center px-4">
+					{TABS.find(t => t.key === activeTab)?.label} tab coming soon
+				</div>
+			{/if}
 		</aside>
 	{/if}
 
@@ -363,21 +291,25 @@
 		<!-- Header / breadcrumb -->
 		<div class="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50 shrink-0">
 			{#if !treeOpen}
-				<button onclick={() => treeOpen = true} class="text-zinc-600 hover:text-zinc-300 transition-colors mr-1" title="Show albums">
+				<button onclick={() => treeOpen = true} class="text-zinc-600 hover:text-zinc-300 transition-colors mr-1" title="Show sidebar">
 					<PanelLeftOpen size={14} />
 				</button>
 			{/if}
-			<!-- Breadcrumb -->
-			<div class="flex items-center gap-1 text-xs text-zinc-400 flex-1 min-w-0">
-				<button class="hover:text-zinc-200 transition-colors shrink-0" onclick={() => selectAlbum('')}>Albums</button>
-				{#each breadcrumbParts(albumPath) as crumb, i}
-					<span class="text-zinc-700 shrink-0">/</span>
-					<button
-						class="hover:text-zinc-200 transition-colors truncate {i === breadcrumbParts(albumPath).length - 1 ? 'text-amber-400' : ''}"
-						onclick={() => selectAlbum(crumb.path)}
-					>{crumb.label}</button>
-				{/each}
-			</div>
+			<!-- Breadcrumb (Albums tab) -->
+			{#if activeTab === 'albums'}
+				<div class="flex items-center gap-1 text-xs text-zinc-400 flex-1 min-w-0">
+					<button class="hover:text-zinc-200 transition-colors shrink-0" onclick={() => selectAlbumFromBreadcrumb('')}>Albums</button>
+					{#each breadcrumbParts(albumPath) as crumb, i}
+						<span class="text-zinc-700 shrink-0">/</span>
+						<button
+							class="hover:text-zinc-200 transition-colors truncate {i === breadcrumbParts(albumPath).length - 1 ? 'text-amber-400' : ''}"
+							onclick={() => selectAlbumFromBreadcrumb(crumb.path)}
+						>{crumb.label}</button>
+					{/each}
+				</div>
+			{:else}
+				<div class="flex-1"></div>
+			{/if}
 			<span class="text-xs text-zinc-600 shrink-0">{total.toLocaleString()} items</span>
 
 			<!-- Right panel toggle -->
@@ -390,7 +322,7 @@
 			</button>
 
 			<!-- Review Mode button -->
-			{#if albumPath && photos.length > 0}
+			{#if !mapMode && activeTab === 'albums' && albumPath && photos.length > 0}
 				<button
 					onclick={enterReview}
 					class="text-xs px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white flex items-center gap-1 transition-colors shrink-0"
@@ -399,6 +331,16 @@
 					<Clapperboard size={12} /> Review
 				</button>
 			{/if}
+
+			<!-- Map toggle -->
+			<button
+				onclick={toggleMapMode}
+				class="text-xs px-2 py-1 rounded flex items-center gap-1 transition-colors shrink-0
+					{mapMode ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'}"
+				title="{mapMode ? 'Back to grid' : 'Browse by location'}"
+			>
+				<MapIcon size={12} /> Map
+			</button>
 
 			<!-- Toolbar right -->
 			<div class="flex items-center gap-2 shrink-0">
@@ -433,52 +375,56 @@
 			</div>
 		</div>
 
-		<!-- Grid -->
-		<div class="flex-1 overflow-y-auto">
-			{#if loading}
-				<div class="flex items-center justify-center h-40 text-zinc-500 text-sm gap-2">
-					<div class="w-5 h-5 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div>
-					Loading…
-				</div>
-			{:else if photos.length === 0}
-				<div class="flex items-center justify-center h-40 text-zinc-500 text-sm">No photos found</div>
-			{:else}
-				<PhotoGrid {photos} onSelect={openPhoto} bind:selectedIds={selectedIds} />
-			{/if}
-		</div>
-
-		<!-- Pagination -->
-		{#if totalPages > 1}
-			<div class="shrink-0 flex items-center justify-center gap-3 px-4 py-2 border-t border-zinc-800 text-sm">
-				<button
-					class="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30"
-					disabled={currentPage <= 1}
-					onclick={() => setPage(currentPage - 1)}
-				><ChevronLeft size={16} /></button>
-				<span class="text-zinc-400 text-xs">Page {currentPage} / {totalPages}</span>
-				<button
-					class="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30"
-					disabled={currentPage >= totalPages}
-					onclick={() => setPage(currentPage + 1)}
-				><ChevronRight size={16} /></button>
+		{#if mapMode}
+			<MapView albumPath={albumPath || undefined} tagId={tagIdParam} />
+		{:else}
+			<!-- Grid -->
+			<div class="flex-1 overflow-y-auto">
+				{#if loading}
+					<div class="flex items-center justify-center h-40 text-zinc-500 text-sm gap-2">
+						<div class="w-5 h-5 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div>
+						Loading…
+					</div>
+				{:else if photos.length === 0}
+					<div class="flex items-center justify-center h-40 text-zinc-500 text-sm">No photos found</div>
+				{:else}
+					<PhotoGrid {photos} onSelect={openPhoto} bind:selectedIds={selectedIds} />
+				{/if}
 			</div>
+
+			<!-- Pagination -->
+			{#if totalPages > 1}
+				<div class="shrink-0 flex items-center justify-center gap-3 px-4 py-2 border-t border-zinc-800 text-sm">
+					<button
+						class="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30"
+						disabled={currentPage <= 1}
+						onclick={() => setPage(currentPage - 1)}
+					><ChevronLeft size={16} /></button>
+					<span class="text-zinc-400 text-xs">Page {currentPage} / {totalPages}</span>
+					<button
+						class="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30"
+						disabled={currentPage >= totalPages}
+						onclick={() => setPage(currentPage + 1)}
+					><ChevronRight size={16} /></button>
+				</div>
+			{/if}
 		{/if}
 	</div><!-- end center column -->
 
 	<!-- Right properties panel -->
-	{#if rightPanelOpen}
+	{#if !mapMode && rightPanelOpen}
 		<RightPanel photoId={rightPanelPhotoId} onClose={() => rightPanelOpen = false} />
 	{/if}
 	</div><!-- end main area + right panel -->
 </div>
 
-{#if selectedId !== null}
+{#if lightbox.selectedId !== null}
 	<PhotoLightbox
-		photoId={selectedId}
-		photo={standalonePhoto}
+		photoId={lightbox.selectedId}
+		photo={lightbox.standalonePhoto}
 		onClose={closeLightbox}
-		onPrev={selectedIdx > 0 ? prevPhoto : undefined}
-		onNext={selectedIdx < photos.length - 1 ? nextPhoto : undefined}
+		onPrev={lightbox.selectedIdx > 0 ? () => lightbox.prev(photos) : undefined}
+		onNext={lightbox.selectedIdx >= 0 && lightbox.selectedIdx < photos.length - 1 ? () => lightbox.next(photos) : undefined}
 	/>
 {/if}
 

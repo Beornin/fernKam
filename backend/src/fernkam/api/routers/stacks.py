@@ -25,6 +25,7 @@ async def list_stacks(
 ) -> dict:
     q = select(PhotoStack)
     if album_path:
+        album_path = album_path.lstrip("/")
         q = q.where(PhotoStack.album_path.like(f"{album_path}%"))
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows = (
@@ -106,6 +107,8 @@ async def get_stack(stack_id: int, db: DB) -> dict:
 async def detect(db: DB, album_path: Optional[str] = Body(None, embed=True)) -> dict:
     from fernkam.services.stacks import detect_stacks
 
+    if album_path:
+        album_path = album_path.lstrip("/")
     result = await detect_stacks(db, album_path=album_path)
     return result
 

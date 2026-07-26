@@ -91,7 +91,7 @@
 		<div class="px-3 py-3 border-b border-zinc-800 flex items-center gap-2">
 			<span class="text-xs font-semibold text-zinc-300 flex-1">Smart Albums</span>
 			<button
-				onclick={() => goto('/search')}
+				onclick={() => goto('/photos?tab=search')}
 				class="p-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
 				title="Go to Search to create a new smart album"
 			><Plus size={14} /></button>
@@ -145,7 +145,7 @@
 			<div class="flex-1 flex flex-col items-center justify-center text-zinc-600 gap-3">
 				<Bookmark size={48} />
 				<p class="text-sm">Select a smart album to view its photos</p>
-				<button onclick={() => goto('/search')} class="flex items-center gap-2 text-xs px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+				<button onclick={() => goto('/photos?tab=search')} class="flex items-center gap-2 text-xs px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
 					<Search size={13} /> Go to Search
 				</button>
 			</div>

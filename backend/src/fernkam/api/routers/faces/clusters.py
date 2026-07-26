@@ -103,11 +103,15 @@ async def list_clusters(
     for cid, fid, phid in mem_rows:
         members[cid].append({"id": str(fid), "photo_id": phid})
 
-    # 3. Suggestion per cluster: sample up to 5 faces, k-NN vs confirmed pool.
+    # 3. Suggestion per cluster: sample up to 8 faces, k-NN vs confirmed pool.
+    # 8 (not 5) so the rapid-triage view's representative thumbnail grid has a
+    # per-face score for every tile it actually shows, not just enough for the
+    # cluster-level aggregate.
+    SAMPLE_K = 8
     sample_ids: list = []
     sample_to_cid: dict = {}
     for cid in cids:
-        for m in members[cid][:5]:
+        for m in members[cid][:SAMPLE_K]:
             sample_ids.append(m["id"])
             sample_to_cid[m["id"]] = cid
 
@@ -135,6 +139,9 @@ async def list_clusters(
 
         # cid -> {person_id -> best_score}
         cluster_person: dict = defaultdict(lambda: defaultdict(float))
+        # face_id -> best score across all candidate persons — per-face badge
+        # for the sampled (i.e. actually displayed) thumbnails in the triage view.
+        face_best_score: dict = {}
         for fid, pid, score in knn_rows:
             if pid is None:
                 continue
@@ -144,6 +151,14 @@ async def list_clusters(
             s = float(score)
             if s > cluster_person[cid][pid]:
                 cluster_person[cid][pid] = s
+            fid_s = str(fid)
+            if s > face_best_score.get(fid_s, 0.0):
+                face_best_score[fid_s] = s
+
+        for face_list in members.values():
+            for face_dict in face_list:
+                if face_dict["id"] in face_best_score:
+                    face_dict["score"] = round(face_best_score[face_dict["id"]], 2)
 
         all_pids = {pid for d in cluster_person.values() for pid in d}
         names: dict = {}
@@ -317,7 +332,7 @@ async def auto_assign_clusters(
                     if not dry_run and to_assign:
                         for cid, pid, face_ids in to_assign:
                             await bg_db.execute(_sql("""
-                                UPDATE faces SET status='confirmed', person_tag_id=:pid
+                                UPDATE faces SET status='confirmed', person_tag_id=:pid, confirmed_by='auto'
                                 WHERE id = ANY(CAST(:ids AS uuid[]))
                                   AND status = 'unconfirmed'
                             """), {"pid": pid, "ids": face_ids})

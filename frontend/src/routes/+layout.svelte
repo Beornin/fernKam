@@ -1,9 +1,10 @@
 ﻿<script lang="ts">
 import '../app.css';
 import { page } from '$app/stores';
-import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers } from '@lucide/svelte';
+import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers, Star, Wrench, Settings, ChevronDown, Database } from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
 import { thumbSizeStore, statusCountStore } from '$lib/stores';
+import { inferTab } from '$lib/shellFilters';
 
 let { children } = $props();
 
@@ -43,24 +44,47 @@ async function shutdown() {
 
 const navItems = [
 	{ href: '/', label: 'Home', icon: Activity, exact: true },
-	{ href: '/photos', label: 'Albums', icon: FolderOpen, exact: false },
-	{ href: '/tags', label: 'Tags', icon: Tag, exact: false },
-	{ href: '/search', label: 'Search', icon: Search, exact: false },
+	{ href: '/photos?tab=albums', label: 'Albums', icon: FolderOpen, tab: 'albums' },
+	{ href: '/photos?tab=tags', label: 'Tags', icon: Tag, tab: 'tags' },
+	{ href: '/photos?tab=search', label: 'Search', icon: Search, tab: 'search' },
 	{ href: '/smart-albums', label: 'Smart Albums', icon: Bookmark, exact: false },
-	{ href: '/timeline', label: 'Timeline', icon: CalendarDays, exact: false },
-	{ href: '/date-inference', label: 'Date Inference', icon: CalendarClock, exact: false },
-	{ href: '/duplicates', label: 'Duplicates', icon: Copy, exact: false },
-	{ href: '/people', label: 'People', icon: Users, exact: false },
+	{ href: '/photos?tab=timeline', label: 'Timeline', icon: CalendarDays, tab: 'timeline' },
+	{ href: '/photos?tab=people', label: 'People', icon: Users, tab: 'people' },
+	{ href: '/photos?tab=labels', label: 'Labels', icon: Star, tab: 'labels' },
 	{ href: '/review', label: 'Face Review', icon: ScanFace, exact: false },
-	{ href: '/map', label: 'Map', icon: MapPin, exact: false },
-	{ href: '/tasks', label: 'Tasks', icon: RefreshCw, exact: false },
-	{ href: '/logs', label: 'Logs', icon: Bug, exact: false },
-	{ href: '/stacks', label: 'Stacks', icon: Layers, exact: false },
-	{ href: '/workflows', label: 'Workflows', icon: Workflow, exact: false },
+	{ href: '/photos?view=map', label: 'Map', icon: MapPin, view: 'map' },
 ];
+
+// Less-frequent, tool-like destinations — grouped under the header's Tools
+// menu instead of the left rail so the rail stays focused on daily browsing.
+const toolsItems = [
+	{ href: '/maintenance', label: 'Maintenance', icon: Database },
+	{ href: '/duplicates', label: 'Duplicates', icon: Copy },
+	{ href: '/date-inference', label: 'Date Inference', icon: CalendarClock },
+	{ href: '/stacks', label: 'Stacks', icon: Layers },
+	{ href: '/workflows', label: 'Workflows', icon: Workflow },
+	{ href: '/tasks', label: 'Tasks', icon: RefreshCw },
+	{ href: '/logs', label: 'Logs', icon: Bug },
+];
+
+let toolsOpen = $state(false);
+
+function closeToolsMenu(e: MouseEvent) {
+	if (!toolsOpen) return;
+	const target = e.target as HTMLElement;
+	if (!target.closest('[data-tools-menu]')) toolsOpen = false;
+}
 
 function isActive(item: typeof navItems[0]) {
 	if (item.exact) return $page.url.pathname === item.href;
+	if ('view' in item && item.view) {
+		return $page.url.pathname === '/photos' && $page.url.searchParams.get('view') === item.view;
+	}
+	if ('tab' in item && item.tab) {
+		return $page.url.pathname === '/photos'
+			&& $page.url.searchParams.get('view') !== 'map'
+			&& inferTab($page.url.searchParams) === item.tab;
+	}
 	return $page.url.pathname.startsWith(item.href);
 }
 </script>
@@ -105,7 +129,40 @@ function isActive(item: typeof navItems[0]) {
 
 	<!-- Content + status bar -->
 	<div class="flex flex-col flex-1 overflow-hidden">
-		<main class="flex-1 overflow-hidden bg-zinc-950">
+		<!-- Top header bar: Tools / Settings (digiKam-style menu, separate from the browsing rail) -->
+		<div class="shrink-0 h-9 bg-zinc-900 border-b border-zinc-800 flex items-center justify-end px-2 gap-1 relative z-20">
+			<div class="relative" data-tools-menu>
+				<button
+					onclick={() => toolsOpen = !toolsOpen}
+					class="flex items-center gap-1 px-2 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+				>
+					<Wrench size={13} /> Tools <ChevronDown size={12} class={toolsOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+				</button>
+				{#if toolsOpen}
+					<div class="absolute right-0 top-full mt-1 w-48 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl py-1 z-30">
+						{#each toolsItems as item}
+							{@const Icon = item.icon}
+							<a
+								href={item.href}
+								onclick={() => toolsOpen = false}
+								class="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-amber-300 transition-colors"
+							>
+								<Icon size={14} /> {item.label}
+							</a>
+						{/each}
+					</div>
+				{/if}
+			</div>
+			<a
+				href="/settings"
+				title="Settings"
+				class="flex items-center gap-1 px-2 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+			>
+				<Settings size={13} /> Settings
+			</a>
+		</div>
+
+		<main class="flex-1 overflow-y-auto bg-zinc-950">
 			{@render children()}
 		</main>
 
@@ -139,3 +196,5 @@ function isActive(item: typeof navItems[0]) {
 		</div>
 	</div>
 </div>
+
+<svelte:window onclick={closeToolsMenu} />

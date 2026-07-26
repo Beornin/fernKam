@@ -37,7 +37,7 @@ async def sync_db_to_file(
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
     q = q.limit(limit)
 
     photos = (await db.execute(q)).scalars().all()
@@ -72,7 +72,7 @@ async def sync_file_to_db(
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
     q = q.limit(limit)
 
     photos = (await db.execute(q)).scalars().all()
@@ -142,7 +142,7 @@ async def refresh_metadata_from_files(
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
     q = q.order_by(Photo.id.asc())
 
     rows = (await db.execute(q)).fetchall()
@@ -253,7 +253,7 @@ async def write_metadata_all(
     if dirty_only:
         q = q.where(Photo.file_sync_dirty == True)  # noqa: E712
     if album_path:
-        q = q.where(Photo.album_path.like(f"{album_path}%"))
+        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
 
     photo_ids = [r[0] for r in (await db.execute(q)).fetchall()]
     if not photo_ids:

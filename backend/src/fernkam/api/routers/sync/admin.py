@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from sqlalchemy import func, select, update
 
 from fernkam.api.deps import DB
@@ -58,10 +58,13 @@ async def sync_status(db: DB) -> dict:
 
 
 @router.post("/backfill-thumbnails")
-async def backfill_thumbnails(db: DB, limit: int = Query(500)) -> dict:
-    """Generate DB thumbnails for photos that don't have them yet."""
+async def backfill_thumbnails(db: DB) -> dict:
+    """Generate DB thumbnails for every photo that doesn't have them yet.
+
+    Runs as a cancellable background task over the full backlog. Progress via /sync/tasks.
+    """
     import asyncio
-    from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db, photo_disk_path
+    from fernkam.task_manager import task_manager
     from sqlalchemy import text
 
     rows = (await db.execute(
@@ -73,72 +76,150 @@ async def backfill_thumbnails(db: DB, limit: int = Query(500)) -> dict:
               AND NOT EXISTS (
                   SELECT 1 FROM photo_thumbnails t WHERE t.photo_id = p.id
               )
-            LIMIT :lim
         """),
-        {"lim": limit},
     )).fetchall()
+    if not rows:
+        return {"task_id": None, "queued": 0, "message": "No photos missing thumbnails"}
 
-    ok = errors = 0
-    loop = asyncio.get_event_loop()
-    for row in rows:
-        src = photo_disk_path(row.album_path, row.filename)
-        try:
-            for size in ("sm", "md", "lg", "xl"):
-                data = await loop.run_in_executor(None, generate_thumbnail_bytes, src, size)
-                if data:
-                    await store_thumbnail_to_db(row.id, size, data, db)
-            await db.commit()
-            ok += 1
-        except Exception as exc:
-            logger.warning("backfill thumb error photo %d: %s", row.id, exc)
-            errors += 1
+    task_id = await task_manager.create_task(
+        "backfill_thumbnails", f"Queued {len(rows):,} photos for thumbnail backfill…"
+    )
 
-    return {"processed": ok, "errors": errors, "remaining": max(0, len(rows) - ok)}
+    async def run_backfill() -> None:
+        import time as _time
+        from fernkam.db.session import async_session_factory
+        from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db, photo_disk_path
+
+        t_start = _time.time()
+        total = len(rows)
+        ok = errors = 0
+        loop = asyncio.get_event_loop()
+        BATCH = 50
+
+        async with async_session_factory() as bdb:
+            for batch_start in range(0, total, BATCH):
+                task = await task_manager.get_task(task_id)
+                if task and task.status == "cancelled":
+                    break
+                for row in rows[batch_start: batch_start + BATCH]:
+                    src = photo_disk_path(row.album_path, row.filename)
+                    try:
+                        for size in ("sm", "md", "lg", "xl"):
+                            data = await loop.run_in_executor(None, generate_thumbnail_bytes, src, size)
+                            if data:
+                                await store_thumbnail_to_db(row.id, size, data, bdb)
+                        ok += 1
+                    except Exception as exc:
+                        logger.warning("backfill thumb error photo %d: %s", row.id, exc)
+                        errors += 1
+                await bdb.commit()
+                done = min(batch_start + BATCH, total)
+                elapsed = _time.time() - t_start
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = int((total - done) / rate) if rate > 0 else 0
+                await task_manager.update_task(
+                    task_id,
+                    message=f"Backfilling thumbnails… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {eta}s)",
+                    progress={"done": done, "total": total, "ok": ok, "errors": errors},
+                )
+
+        t_total = _time.time() - t_start
+        await task_manager.update_task(
+            task_id, status="completed",
+            message=f"Done: {ok:,} thumbnailed, {errors} errors ({t_total:.0f}s)",
+            progress={"done": total, "total": total, "ok": ok, "errors": errors},
+        )
+
+    asyncio.create_task(run_backfill(), name=f"fernkam-backfill-thumbs-{task_id}")
+    return {"task_id": task_id, "queued": len(rows), "message": "running"}
 
 
 @router.post("/backfill-crops")
-async def backfill_crops(db: DB, limit: int = Query(500)) -> dict:
-    """Generate DB face crops for faces that don't have crop_data yet."""
+async def backfill_crops(db: DB) -> dict:
+    """Generate DB face crops for every face that doesn't have crop_data yet.
+
+    Runs as a cancellable background task over the full backlog. Progress via /sync/tasks.
+    """
     import asyncio
-    import cv2
-    from fernkam.thumbnails import photo_disk_path
+    from fernkam.task_manager import task_manager
 
     rows = (await db.execute(
         select(Face.id, Face.photo_id, Face.x, Face.y, Face.w, Face.h)
         .where(Face.crop_data.is_(None))
         .where(Face.x.isnot(None))
-        .limit(limit)
     )).fetchall()
+    if not rows:
+        return {"task_id": None, "queued": 0, "message": "No faces missing crops"}
 
-    photo_cache: dict[int, Photo] = {}
-    ok = errors = 0
+    task_id = await task_manager.create_task(
+        "backfill_crops", f"Queued {len(rows):,} faces for crop backfill…"
+    )
 
-    for row in rows:
-        try:
-            if row.photo_id not in photo_cache:
-                photo = (await db.execute(select(Photo).where(Photo.id == row.photo_id))).scalar_one_or_none()
-                if not photo:
-                    continue
-                photo_cache[row.photo_id] = photo
-            photo = photo_cache[row.photo_id]
-            src = photo_disk_path(photo.album_path, photo.filename)
-            img = cv2.imread(str(src))
+    async def run_backfill() -> None:
+        import time as _time
+        import cv2
+        from fernkam.db.session import async_session_factory
+        from fernkam.thumbnails import photo_disk_path
+
+        t_start = _time.time()
+        total = len(rows)
+        ok = errors = 0
+        photo_cache: dict[int, Photo] = {}
+        BATCH = 50
+        loop = asyncio.get_event_loop()
+
+        def _make_crop(src_path, x, y, w, h) -> bytes | None:
+            img = cv2.imread(str(src_path))
             if img is None:
-                continue
+                return None
             h_img, w_img = img.shape[:2]
-            pad = int(max(row.w, row.h) * 0.2)
-            x1 = max(0, row.x - pad)
-            y1 = max(0, row.y - pad)
-            x2 = min(w_img, row.x + row.w + pad)
-            y2 = min(h_img, row.y + row.h + pad)
+            pad = int(max(w, h) * 0.2)
+            x1, y1 = max(0, x - pad), max(0, y - pad)
+            x2, y2 = min(w_img, x + w + pad), min(h_img, y + h + pad)
             crop = cv2.resize(img[y1:y2, x1:x2], (200, 200), interpolation=cv2.INTER_AREA)
             enc_ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 85])
-            if enc_ok:
-                await db.execute(update(Face).where(Face.id == row.id).values(crop_data=bytes(buf)))
-                ok += 1
-        except Exception as exc:
-            logger.warning("backfill crop error face %s: %s", row.id, exc)
-            errors += 1
+            return bytes(buf) if enc_ok else None
 
-    await db.commit()
-    return {"processed": ok, "errors": errors}
+        async with async_session_factory() as bdb:
+            for batch_start in range(0, total, BATCH):
+                task = await task_manager.get_task(task_id)
+                if task and task.status == "cancelled":
+                    break
+                for row in rows[batch_start: batch_start + BATCH]:
+                    try:
+                        if row.photo_id not in photo_cache:
+                            photo = (await bdb.execute(
+                                select(Photo).where(Photo.id == row.photo_id)
+                            )).scalar_one_or_none()
+                            if not photo:
+                                continue
+                            photo_cache[row.photo_id] = photo
+                        photo = photo_cache[row.photo_id]
+                        src = photo_disk_path(photo.album_path, photo.filename)
+                        crop_bytes = await loop.run_in_executor(None, _make_crop, src, row.x, row.y, row.w, row.h)
+                        if crop_bytes:
+                            await bdb.execute(update(Face).where(Face.id == row.id).values(crop_data=crop_bytes))
+                            ok += 1
+                    except Exception as exc:
+                        logger.warning("backfill crop error face %s: %s", row.id, exc)
+                        errors += 1
+                await bdb.commit()
+                done = min(batch_start + BATCH, total)
+                elapsed = _time.time() - t_start
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = int((total - done) / rate) if rate > 0 else 0
+                await task_manager.update_task(
+                    task_id,
+                    message=f"Backfilling face crops… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {eta}s)",
+                    progress={"done": done, "total": total, "ok": ok, "errors": errors},
+                )
+
+        t_total = _time.time() - t_start
+        await task_manager.update_task(
+            task_id, status="completed",
+            message=f"Done: {ok:,} crops generated, {errors} errors ({t_total:.0f}s)",
+            progress={"done": total, "total": total, "ok": ok, "errors": errors},
+        )
+
+    asyncio.create_task(run_backfill(), name=f"fernkam-backfill-crops-{task_id}")
+    return {"task_id": task_id, "queued": len(rows), "message": "running"}

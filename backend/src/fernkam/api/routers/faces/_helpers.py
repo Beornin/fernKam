@@ -39,14 +39,89 @@ async def _already_confirmed_in_photo(
     return (await db.execute(q)).first() is not None
 
 
-def _thresholds():
+# Single 0-1 "sensitivity" knob the UI exposes, replacing what used to be two
+# disconnected, differently-scaled confidence sliders. Persisted in app_settings
+# so it survives restarts without an env-var edit; the sweep, similarity
+# propagation, and cluster auto-assign all read the same value. 1.0 = maximally
+# aggressive auto-confirm; the margin/vote checks stay the real guardrail
+# against false positives, so leaning aggressive here is meant to be safe to
+# undo (see the "recently auto-confirmed" audit queue) rather than risky.
+FACE_SENSITIVITY_KEY = "face_sensitivity"
+DEFAULT_SENSITIVITY = 0.65
+
+
+async def _resolve_sensitivity(db) -> float:
+    from fernkam.db.app_settings import get_setting
+    raw = await get_setting(db, FACE_SENSITIVITY_KEY)
+    if raw is None:
+        return DEFAULT_SENSITIVITY
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return DEFAULT_SENSITIVITY
+
+
+def _sensitivity_to_thresholds(sensitivity: float) -> tuple[float, float, float]:
+    """Map 0-1 sensitivity to (auto_confirm_thresh, knn_margin, adaptive_floor)."""
+    sensitivity = max(0.0, min(1.0, sensitivity))
+    thresh = 0.90 - 0.20 * sensitivity   # 0.90 (cautious) .. 0.70 (aggressive)
+    margin = 0.08 - 0.05 * sensitivity   # 0.08 .. 0.03
+    floor = 0.85 - 0.20 * sensitivity    # 0.85 .. 0.65
+    return round(thresh, 4), round(margin, 4), round(floor, 4)
+
+
+async def _thresholds(db):
     from fernkam.config import get_settings
     s = get_settings()
+    sensitivity = await _resolve_sensitivity(db)
+    auto_thresh, margin, floor = _sensitivity_to_thresholds(sensitivity)
     return (
-        s.auto_confirm_thresh, s.suggest_thresh,
-        s.knn_k, s.knn_min_votes, s.knn_margin, s.min_ref_score,
+        auto_thresh, s.suggest_thresh,
+        s.knn_k, s.knn_min_votes, margin, s.min_ref_score,
         s.min_det_score, s.min_face_px, s.min_blur_score,
+        floor,
     )
+
+
+def _adaptive_auto_confirm_thresh(base: float, face_count: int, floor: float = 0.80) -> float:
+    """Loosen auto-confirm score for people with many confirmed examples.
+
+    A person with only a few confirmed faces keeps the strict base threshold,
+    while someone with hundreds of examples can auto-confirm at a lower score
+    because their centroid is well-anchored.  The margin/vote checks are the
+    real guardrails against false positives.
+    """
+    if face_count < 20:
+        return base
+    # linearly relax down to `floor` as the pool grows from 20 to ~300 faces
+    ratio = min(1.0, (face_count - 20) / 280.0)
+    return max(floor, base - (base - floor) * ratio)
+
+
+async def _resolve_person_min_dates(db) -> "dict[int, object]":
+    """Return {person_tag_id: datetime.date} from FERNKAM_PERSON_MIN_DATES config.
+
+    Looks up person names in the Tag table so callers work with integer IDs.
+    Returns an empty dict if the config is unset or unparseable.
+    """
+    import json
+    from datetime import date as _date
+    from fernkam.config import get_settings
+    try:
+        raw: dict = json.loads(get_settings().person_min_dates or "{}")
+        if not raw:
+            return {}
+        name_rows = (await db.execute(
+            select(Tag.id, Tag.name).where(Tag.name.in_(list(raw.keys())))
+        )).fetchall()
+        return {
+            int(tid): _date.fromisoformat(raw[name])
+            for tid, name in name_rows
+            if name in raw
+        }
+    except Exception as exc:
+        logger.warning("[BIRTH-DATE] config parse error: %s", exc)
+        return {}
 
 
 def _make_face_out(f: Face) -> FaceOut:
@@ -73,7 +148,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
     For each unconfirmed/suggested face:
     1. Find the nearest K confirmed faces via HNSW LATERAL.
     2. Aggregate per-person: vote count + best cosine score.
-    3. Auto-confirm if: best_score >= auto_thresh AND votes >= min_votes AND
+    3. Auto-confirm if: best_score >= adaptive_thresh AND votes >= min_votes AND
        (best_score - 2nd_place_score) >= margin.
     4. Promote to 'suggested' if best_score >= suggest_thresh (review queue).
 
@@ -83,7 +158,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
     """
     from sqlalchemy import text as _sql
 
-    auto_thresh, suggest_thresh, knn_k, min_votes, margin, min_ref_score, min_det, min_px, min_blur = _thresholds()
+    auto_thresh, suggest_thresh, knn_k, min_votes, margin, min_ref_score, min_det, min_px, min_blur, adaptive_floor = await _thresholds(db)
 
     since_filter = "AND created_at > :since_dt" if since_dt else ""
     since_params: dict = {"since_dt": since_dt} if since_dt else {}
@@ -199,6 +274,18 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
     face_votes: dict = defaultdict(lambda: defaultdict(lambda: [0, 0.0]))
     face_unc_ptid: dict = {}
 
+    # Confidence scaling: how many confirmed examples each person has
+    fc_rows = (await db.execute(_sql(
+        "SELECT person_tag_id, count(*) FROM faces "
+        "WHERE status = 'confirmed' AND person_tag_id IS NOT NULL "
+        "GROUP BY person_tag_id"
+    ))).fetchall()
+    person_face_counts = {int(ptid): int(cnt) for ptid, cnt in fc_rows}
+
+    # ── 3.5 Resolve person birth dates for assignment filtering ──
+    person_min_dates: dict = await _resolve_person_min_dates(db)
+    face_photo_dates: dict = {}  # face_id -> datetime.date | None  (populated after vote loop)
+
     for face_id, unc_ptid, nbr_ptid, score in rows:
         if nbr_ptid is None:
             continue
@@ -208,6 +295,15 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
         if s > entry[1]:
             entry[1] = s
         face_unc_ptid[face_id] = unc_ptid
+
+    if person_min_dates and face_votes:
+        ph_date_rows = (await db.execute(_sql(
+            "SELECT f.id, p.taken_at FROM faces f "
+            "JOIN photos p ON p.id = f.photo_id "
+            "WHERE f.id = ANY(CAST(:fids AS uuid[]))"
+        ), {"fids": [str(f) for f in face_votes.keys()]})).fetchall()
+        for fid, taken in ph_date_rows:
+            face_photo_dates[fid] = taken.date() if taken else None
 
     # ── 4. Apply decision rules ──
     pending: dict = {}
@@ -231,9 +327,21 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
 
         target = unc_ptid if (unc_ptid is not None and unc_ptid == p1_ptid) else p1_ptid
 
+        # Birth-date guard: nullify target if photo predates person's birth
+        if target is not None and person_min_dates:
+            min_date = person_min_dates.get(int(target))
+            if min_date:
+                photo_date = face_photo_dates.get(face_id)
+                if photo_date is not None and photo_date < min_date:
+                    target = None
+
         margin_ok = (p1_score - p2_score) >= margin
         votes_ok = p1_votes >= min_votes
-        score_ok = round(p1_score, 2) >= auto_thresh
+        effective_thresh = _adaptive_auto_confirm_thresh(
+            auto_thresh, person_face_counts.get(int(target), 0) if target is not None else 0,
+            floor=adaptive_floor,
+        )
+        score_ok = round(p1_score, 2) >= effective_thresh
 
         if score_ok and votes_ok and margin_ok and target is not None:
             pending[face_id] = target
@@ -312,7 +420,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
             ids = [fid for fid, p in clean.items() if p == ptid]
             await db.execute(
                 update(Face).where(Face.id.in_(ids))
-                .values(person_tag_id=ptid, status="confirmed")
+                .values(person_tag_id=ptid, status="confirmed", confirmed_by="auto")
             )
 
     # ── 8. Persist: promote uncertain faces to suggested ──
@@ -334,7 +442,119 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
         "ignored": len(auto_ignore),
         "suggested": len(to_suggest),
         "scored": len(score_updates),
+        "confirmed_person_ids": sorted(set(clean.values())),
     }
+
+
+async def _rebuild_person_centroids(
+    db, n_clusters: int = 3, person_ids: "Optional[set[int]]" = None
+) -> dict:
+    """Recompute per-person centroid embeddings using k-means sub-clustering.
+
+    Mirrors the /build-centroids endpoint but usable as a helper from the sweep
+    loop so newly-confirmed faces can immediately influence the next pass.
+
+    person_ids: if provided, only rebuild centroids for these person_tag_ids
+                (e.g. the people confirmed in the previous sweep pass) instead
+                of recomputing k-means for every person — keeps interleaved
+                rebuilds cheap during a multi-pass sweep.
+    """
+    import numpy as np
+    from collections import defaultdict as _dd
+    from sqlalchemy import text as _sql
+    from fernkam.face_processor import _pgvector_literal
+
+    if person_ids:
+        rows = (await db.execute(_sql("""
+            SELECT person_tag_id, embedding_v::text AS emb_text
+            FROM   faces
+            WHERE  status = 'confirmed'
+              AND  person_tag_id = ANY(:pids)
+              AND  embedding_v   IS NOT NULL
+        """), {"pids": list(person_ids)})).fetchall()
+    else:
+        rows = (await db.execute(_sql("""
+            SELECT person_tag_id, embedding_v::text AS emb_text
+            FROM   faces
+            WHERE  status = 'confirmed'
+              AND  person_tag_id IS NOT NULL
+              AND  embedding_v   IS NOT NULL
+        """))).fetchall()
+
+    if not rows:
+        return {"updated": 0, "n_clusters": n_clusters}
+
+    person_embs: dict = _dd(list)
+    for ptid, emb_text in rows:
+        arr = np.array([float(x) for x in emb_text.strip("[]").split(",")], dtype=np.float32)
+        person_embs[int(ptid)].append(arr)
+
+    total_updated = 0
+    for ptid, embs in person_embs.items():
+        mat = np.array(embs, dtype=np.float32)
+        k = max(1, min(n_clusters, len(embs) // 2))
+
+        centers, assignments = _kmeans_np(mat, k)
+
+        for label in range(len(centers)):
+            c = centers[label]
+            norm = float(np.linalg.norm(c))
+            if norm > 0:
+                c = c / norm
+            lit = _pgvector_literal(c)
+            face_cnt = int((assignments == label).sum())
+            await db.execute(_sql(f"""
+                INSERT INTO person_centroids (person_tag_id, label, embedding_v, face_count, built_at)
+                VALUES ({ptid}, {label}, '{lit}'::vector(512), {face_cnt}, now())
+                ON CONFLICT (person_tag_id, label)
+                DO UPDATE SET embedding_v = EXCLUDED.embedding_v,
+                              face_count  = EXCLUDED.face_count,
+                              built_at    = EXCLUDED.built_at
+            """))
+
+        await db.execute(_sql(f"""
+            DELETE FROM person_centroids
+            WHERE person_tag_id = {ptid} AND label >= {len(centers)}
+        """))
+
+        total_updated += 1
+
+    await db.commit()
+    return {"updated": total_updated, "n_clusters": n_clusters}
+
+
+def _kmeans_np(X, k: int, n_iter: int = 25):
+    """Minimal Lloyd's k-means++ on a numpy float32 matrix.
+
+    Returns (centroids_array shape [k, d], assignments array shape [n]).
+    Falls back to single centroid when k >= len(X).
+    """
+    import numpy as np
+
+    n = len(X)
+    if k >= n:
+        return X.mean(axis=0, keepdims=True), np.zeros(n, dtype=int)
+
+    rng = np.random.default_rng(42)
+    idxs = [int(rng.integers(n))]
+    for _ in range(k - 1):
+        dists = np.min(np.sum((X[:, None, :] - X[idxs, :][None, :, :]) ** 2, axis=2), axis=1)
+        probs = dists / dists.sum()
+        idxs.append(int(rng.choice(n, p=probs)))
+    centers = X[idxs].copy()
+
+    assignments = np.zeros(n, dtype=int)
+    for _ in range(n_iter):
+        dists = np.sum((X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+        new_asgn = np.argmin(dists, axis=1)
+        if np.array_equal(new_asgn, assignments):
+            break
+        assignments = new_asgn
+        for j in range(k):
+            mask = assignments == j
+            if mask.any():
+                centers[j] = X[mask].mean(axis=0)
+    return centers, assignments
 
 
 async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> None:
@@ -368,7 +588,7 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
         WHERE 1 - (u.embedding_v <=> s.embedding_v) >= :thresh
         """
     )
-    thresholds = _thresholds()
+    thresholds = await _thresholds(db)
     auto_thresh, min_ref_score = thresholds[0], thresholds[5]
     rows = (await db.execute(q, {"seeds": seed_str, "thresh": auto_thresh - 0.005, "ref_min": min_ref_score})).fetchall()
     auto_ids = [r[0] for r in rows]
@@ -407,7 +627,7 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
     if auto_ids:
         await db.execute(
             update(Face).where(Face.id.in_(auto_ids))
-            .values(person_tag_id=person_tag_id, status="confirmed")
+            .values(person_tag_id=person_tag_id, status="confirmed", confirmed_by="auto")
         )
         await db.commit()
 

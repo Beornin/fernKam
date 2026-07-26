@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Add CUDA paths to PATH so onnxruntime-gpu can find CUDA/cuDNN DLLs.
 # DaVinci Resolve includes cuDNN 9, which works with onnxruntime-gpu.
@@ -22,7 +23,7 @@ for _p in _CUDA_PATHS:
 from fernkam import stderr_capture as _stderr_capture
 _stderr_capture.install()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -310,3 +311,39 @@ async def shutdown() -> dict:
     thread = threading.Thread(target=force_shutdown, daemon=True)
     thread.start()
     return {"status": "shutting down"}
+
+
+def _frontend_dist_dir() -> Path:
+    """Resolve the built SvelteKit static bundle.
+
+    The backend always runs unfrozen from backend/.venv (only launcher.py is
+    packaged with PyInstaller — see launcher.spec), so this is always a plain
+    on-disk path relative to the repo root, never a PyInstaller _MEIPASS path.
+    """
+    repo_root = Path(__file__).resolve().parents[4]  # …/api/app.py -> repo root
+    return repo_root / "frontend" / "build"
+
+
+_FRONTEND_DIR = _frontend_dist_dir()
+if _FRONTEND_DIR.is_dir():
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa(full_path: str):
+        """Serve the built frontend, falling back to index.html for client-side routes.
+
+        Must not swallow unmatched /api or /media requests into a 200 HTML
+        response — that masks real 404s (e.g. a removed/misspelled endpoint)
+        behind a confusing "JSON.parse failed on '<!doctype html>...'" error.
+        """
+        if full_path.startswith("api/") or full_path.startswith("media/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = _FRONTEND_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIR / "index.html")
+else:
+    logging.getLogger("fernkam").warning(
+        "Frontend build not found at %s — run `npm run build` in frontend/ to serve the UI from this server.",
+        _FRONTEND_DIR,
+    )

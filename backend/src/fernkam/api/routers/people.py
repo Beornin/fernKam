@@ -148,6 +148,12 @@ async def merge_person(
     await db.delete(src)
     await db.commit()
 
+    # The docstring above has always promised this; it was never actually
+    # wired up — into_id kept its pre-merge centroids, so k-NN matching
+    # against the merged-in faces silently went stale until the next full sweep.
+    from fernkam.api.routers.faces._helpers import _rebuild_person_centroids
+    await _rebuild_person_centroids(db, person_ids={into_id})
+
     new_count = (await db.execute(
         select(func.count()).where(Face.person_tag_id == into_id)
     )).scalar_one()

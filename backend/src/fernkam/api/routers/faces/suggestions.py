@@ -2,19 +2,77 @@
 from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID
 
-from fastapi import APIRouter, Query
-from sqlalchemy import case, select, update
+from fastapi import APIRouter, Body, Query
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
-from fernkam.api.schemas import FaceOut
 from fernkam.db.models.photos import Face, Photo, Tag
 
-from ._helpers import _auto_confirm_sweep, _make_face_out
+from ._helpers import (
+    FACE_SENSITIVITY_KEY,
+    _auto_confirm_sweep,
+    _make_face_out,
+    _rebuild_person_centroids,
+    _resolve_person_min_dates,
+    _resolve_sensitivity,
+    _sensitivity_to_thresholds,
+)
 
 router = APIRouter()
+
+
+@router.get("/sensitivity")
+async def get_sensitivity(db: DB) -> dict:
+    """The single auto-confirm aggressiveness knob (0=cautious, 1=aggressive),
+    shared by the background sweep and every bulk-confirm UI so there's one
+    consistent notion of 'confidence' instead of several disconnected sliders."""
+    sensitivity = await _resolve_sensitivity(db)
+    thresh, margin, floor = _sensitivity_to_thresholds(sensitivity)
+    return {"sensitivity": sensitivity, "auto_confirm_thresh": thresh, "knn_margin": margin, "adaptive_floor": floor}
+
+
+@router.put("/sensitivity")
+async def set_sensitivity(db: DB, sensitivity: float = Body(..., embed=True, ge=0.0, le=1.0)) -> dict:
+    from fernkam.db.app_settings import set_setting
+    await set_setting(db, FACE_SENSITIVITY_KEY, str(sensitivity))
+    thresh, margin, floor = _sensitivity_to_thresholds(sensitivity)
+    return {"sensitivity": sensitivity, "auto_confirm_thresh": thresh, "knn_margin": margin, "adaptive_floor": floor}
+
+
+@router.get("/recent-auto")
+async def recent_auto_confirmed(
+    db: DB,
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict]:
+    """Faces the automation confirmed without a human looking at them, least-
+    confident-first — the audit queue for an aggressive auto-confirm sweep.
+    'Send back to review' just PATCHes status back to unconfirmed (crud.py),
+    which also clears confirmed_by."""
+    q = (
+        select(Face)
+        .options(selectinload(Face.person_tag))
+        .where(Face.status == "confirmed")
+        .where(Face.confirmed_by == "auto")
+        .order_by(Face.best_match_score.asc().nulls_first())
+        .offset(offset)
+        .limit(limit)
+    )
+    faces = (await db.execute(q)).scalars().all()
+    return [_make_face_out(f).model_dump() for f in faces]
+
+
+@router.get("/recent-auto/count")
+async def recent_auto_confirmed_count(db: DB) -> dict:
+    from sqlalchemy import func
+    n = (await db.execute(
+        select(func.count()).select_from(Face)
+        .where(Face.status == "confirmed")
+        .where(Face.confirmed_by == "auto")
+    )).scalar_one()
+    return {"count": n}
 
 
 @router.get("/unassigned/count")
@@ -29,256 +87,164 @@ async def unassigned_count(db: DB) -> dict:
 
 
 @router.get("/suggestions/people")
-async def suggestions_people_list(db: DB) -> list[dict]:
-    """People who have at least one face currently in 'suggested' status."""
-    from sqlalchemy import func
+async def suggestions_people_list(db: DB, min_score: float = Query(0.45, ge=0, le=1)) -> list[dict]:
+    """People with >=1 plausible candidate face among unconfirmed+suggested faces.
 
-    rows = (
-        await db.execute(
-            select(Tag.id, Tag.name, func.count(Face.id).label("cnt"))
-            .join(Face, Face.person_tag_id == Tag.id)
-            .where(Face.status == "suggested")
-            .group_by(Tag.id, Tag.name)
-            .order_by(Tag.name)
-        )
-    ).fetchall()
-    return [{"person_id": r.id, "person_name": r.name, "count": r.cnt} for r in rows]
+    Uses a single bulk k-NN pass (same LATERAL pattern as the auto-confirm sweep)
+    against person_centroids, so a person shows up in the sidebar even if the
+    nightly sweep hasn't promoted any of their faces to 'suggested' yet. Falls
+    back to literal status='suggested' counts if no centroids have been built.
+    """
+    from sqlalchemy import func, text as _sql
 
+    centroid_count = (await db.execute(_sql(
+        "SELECT count(*) FROM person_centroids WHERE embedding_v IS NOT NULL"
+    ))).scalar_one()
 
-@router.get("/suggestions")
-async def face_suggestions(
-    db: DB,
-    limit: int = Query(200, le=2000),
-    offset: int = Query(0, ge=0),
-    sort: str = Query("score_desc"),
-    status_filter: str = Query("all"),
-    person_tag_id: Optional[int] = Query(None),
-) -> list[dict]:
-    """Unassigned faces with top-3 person suggestions from embedding similarity (pgvector)."""
-    from sqlalchemy import text as _sql
-
-    # When filtering by a specific person, only 'suggested' faces make sense
-    if person_tag_id is not None:
-        status_clause = Face.status == "suggested"
-    elif status_filter == "suggested":
-        status_clause = Face.status == "suggested"
-    elif status_filter == "unconfirmed":
-        status_clause = Face.status == "unconfirmed"
+    counts: dict = {}
+    if centroid_count > 0:
+        rows = (await db.execute(_sql("""
+            WITH cand AS (
+                SELECT id, embedding_v FROM faces
+                WHERE status IN ('unconfirmed', 'suggested') AND embedding_v IS NOT NULL
+            )
+            SELECT nn.person_tag_id AS pid, count(*) AS cnt
+            FROM cand c
+            CROSS JOIN LATERAL (
+                SELECT person_tag_id, 1 - (embedding_v <=> c.embedding_v) AS score
+                FROM person_centroids
+                WHERE embedding_v IS NOT NULL
+                ORDER BY embedding_v <=> c.embedding_v
+                LIMIT 1
+            ) nn
+            WHERE nn.score >= :min_score
+            GROUP BY nn.person_tag_id
+        """), {"min_score": min_score})).fetchall()
+        counts = {int(r[0]): int(r[1]) for r in rows}
     else:
-        status_clause = Face.status.in_(["unconfirmed", "suggested"])
+        rows = (
+            await db.execute(
+                select(Face.person_tag_id, func.count(Face.id))
+                .where(Face.status == "suggested")
+                .where(Face.person_tag_id.is_not(None))
+                .group_by(Face.person_tag_id)
+            )
+        ).fetchall()
+        counts = {int(r[0]): int(r[1]) for r in rows}
 
-    if sort == "score_asc":
-        order_clauses = [Face.best_match_score.asc().nullsfirst(), Face.created_at.desc()]
-    elif sort == "newest":
-        order_clauses = [Face.created_at.desc()]
-    elif sort == "status":
-        order_clauses = [
-            case((Face.status == "suggested", 0), else_=1),
-            Face.best_match_score.desc().nullslast(),
-        ]
-    else:
-        order_clauses = [Face.best_match_score.desc().nullslast(), Face.created_at.desc()]
-
-    q = (
-        select(Face)
-        .options(selectinload(Face.person_tag))
-        .where(status_clause)
-        .where(Face.embedding_v.is_not(None))
-    )
-    if person_tag_id is not None:
-        q = q.where(Face.person_tag_id == person_tag_id)
-    unassigned = (await db.execute(
-        q.order_by(*order_clauses).offset(offset).limit(limit)
-    )).scalars().all()
-
-    if not unassigned:
+    if not counts:
         return []
 
-    # Single SQL: for each unassigned face, find top-10 confirmed neighbors via HNSW.
-    unc_ids = [str(f.id) for f in unassigned]
-    top_q = _sql(
-        """
-        WITH unc AS (
-            SELECT id, embedding_v
-            FROM faces
-            WHERE id = ANY(CAST(:ids AS uuid[]))
-        )
-        SELECT u.id AS unc_id,
-               c.person_tag_id AS person_id,
-               1 - (u.embedding_v <=> c.embedding_v) AS score
-        FROM unc u
-        CROSS JOIN LATERAL (
-            SELECT person_tag_id, embedding_v
-            FROM faces
-            WHERE status = 'confirmed'
-              AND person_tag_id IS NOT NULL
-              AND embedding_v IS NOT NULL
-            ORDER BY embedding_v <=> u.embedding_v
-            LIMIT 10
-        ) c
-        """
+    tag_rows = (await db.execute(select(Tag.id, Tag.name).where(Tag.id.in_(counts.keys())))).fetchall()
+    names = {r.id: r.name for r in tag_rows}
+    return sorted(
+        [{"person_id": pid, "person_name": names.get(pid, "?"), "count": cnt} for pid, cnt in counts.items()],
+        key=lambda x: -x["count"],
     )
-    rows = (await db.execute(top_q, {"ids": unc_ids})).fetchall()
 
-    # Group by unc_id; keep top match per person_id, then keep top-3 persons.
-    per_face: dict = {}  # unc_id -> {person_id -> best_score}
-    for unc_id, person_id, score in rows:
-        if person_id is None:
-            continue
-        d = per_face.setdefault(unc_id, {})
-        s = float(score)
-        if person_id not in d or s > d[person_id]:
-            d[person_id] = s
 
-    # Resolve person names in one query.
-    all_pids = {pid for d in per_face.values() for pid in d.keys()}
-    tag_names: dict = {}
-    if all_pids:
-        tag_rows = (await db.execute(select(Tag).where(Tag.id.in_(all_pids)))).scalars().all()
-        tag_names = {t.id: t.name for t in tag_rows}
+@router.get("/candidates")
+async def person_candidates(
+    db: DB,
+    person_tag_id: int = Query(...),
+    limit: int = Query(300, le=2000),
+    min_score: float = Query(0.4, ge=0, le=1),
+) -> list[dict]:
+    """Live k-NN candidate search for one person across the full unconfirmed+suggested
+    pool — not limited to faces the nightly sweep already promoted to 'suggested'.
+    Powers the person-centric Face Review grid (pick a person, see every plausible
+    match ranked by score, in one shot).
+    """
+    from sqlalchemy import text as _sql
 
-    # Pre-fetch confirmed person_tag_ids per photo so we can flag conflicts.
-    photo_ids_uniq = list({f.photo_id for f in unassigned})
-    confirmed_by_photo: dict = {}  # photo_id -> set of person_tag_ids
-    if photo_ids_uniq:
-        from sqlalchemy import text as _sql
-        conf_rows = (await db.execute(
-            _sql(
-                "SELECT photo_id, person_tag_id FROM faces "
-                "WHERE photo_id = ANY(CAST(:pids AS int[])) AND status = 'confirmed' "
-                "AND person_tag_id IS NOT NULL"
+    centroid_count = (await db.execute(_sql(
+        "SELECT count(*) FROM person_centroids WHERE person_tag_id = :ptid AND embedding_v IS NOT NULL"
+    ), {"ptid": person_tag_id})).scalar_one()
+
+    params = {"ptid": person_tag_id, "min_score": min_score, "limit": limit}
+    if centroid_count > 0:
+        q = _sql("""
+            WITH cand AS (
+                SELECT id, photo_id, status, embedding_v FROM faces
+                WHERE status IN ('unconfirmed', 'suggested') AND embedding_v IS NOT NULL
+            )
+            SELECT c.id, c.photo_id, c.status,
+                   MAX(1 - (c.embedding_v <=> pc.embedding_v)) AS score
+            FROM cand c
+            CROSS JOIN (
+                SELECT embedding_v FROM person_centroids
+                WHERE person_tag_id = :ptid AND embedding_v IS NOT NULL
+            ) pc
+            GROUP BY c.id, c.photo_id, c.status
+            HAVING MAX(1 - (c.embedding_v <=> pc.embedding_v)) >= :min_score
+            ORDER BY score DESC
+            LIMIT :limit
+        """)
+    else:
+        q = _sql("""
+            WITH cand AS (
+                SELECT id, photo_id, status, embedding_v FROM faces
+                WHERE status IN ('unconfirmed', 'suggested') AND embedding_v IS NOT NULL
             ),
-            {"pids": photo_ids_uniq},
+            ref AS (
+                SELECT embedding_v FROM faces
+                WHERE status = 'confirmed' AND person_tag_id = :ptid AND embedding_v IS NOT NULL
+                LIMIT 50
+            )
+            SELECT c.id, c.photo_id, c.status,
+                   MAX(1 - (c.embedding_v <=> ref.embedding_v)) AS score
+            FROM cand c
+            CROSS JOIN ref
+            GROUP BY c.id, c.photo_id, c.status
+            HAVING MAX(1 - (c.embedding_v <=> ref.embedding_v)) >= :min_score
+            ORDER BY score DESC
+            LIMIT :limit
+        """)
+    rows = (await db.execute(q, params)).fetchall()
+    if not rows:
+        return []
+
+    photo_ids = list({r[1] for r in rows})
+
+    # Birth-date filtering — drop suggestions on photos taken before a configured person's birth date.
+    person_min_dates = await _resolve_person_min_dates(db)
+    photo_dates: dict = {}
+    if person_min_dates and person_tag_id in person_min_dates:
+        pd_rows = (await db.execute(
+            select(Photo.id, Photo.taken_at).where(Photo.id.in_(photo_ids))
         )).fetchall()
-        for ph_id, pt_id in conf_rows:
-            confirmed_by_photo.setdefault(ph_id, set()).add(pt_id)
+        photo_dates = {r[0]: (r[1].date() if r[1] else None) for r in pd_rows}
+
+    # Conflict: this person already confirmed elsewhere in the same photo (skip for TWINS).
+    tag_name = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
+    is_twins = tag_name is not None and "- TWINS" in tag_name
+    confirmed_photos: set = set()
+    if photo_ids and not is_twins:
+        conf_rows = (await db.execute(_sql(
+            "SELECT photo_id FROM faces WHERE photo_id = ANY(CAST(:pids AS int[])) "
+            "AND status = 'confirmed' AND person_tag_id = :ptid"
+        ), {"pids": photo_ids, "ptid": person_tag_id})).fetchall()
+        confirmed_photos = {r[0] for r in conf_rows}
 
     results: list[dict] = []
-    for face in unassigned:
-        per = per_face.get(face.id, {})
-        ranked = sorted(per.items(), key=lambda kv: kv[1], reverse=True)[:3]
-        confirmed_here = confirmed_by_photo.get(face.photo_id, set())
-        suggestions = [
-            {
-                "person_id": pid,
-                "person_name": tag_names.get(pid),
-                "score": round(s, 2),
-                "conflict": pid in confirmed_here and "- TWINS" not in (tag_names.get(pid) or ""),
-            }
-            for pid, s in ranked
-        ]
-        results.append({"face": _make_face_out(face), "suggestions": suggestions})
+    for fid, photo_id, status, score in rows:
+        if person_min_dates and person_tag_id in person_min_dates:
+            pdate = photo_dates.get(photo_id)
+            if pdate is not None and pdate < person_min_dates[person_tag_id]:
+                continue
+        results.append({
+            "face_id": str(fid),
+            "photo_id": photo_id,
+            "status": status,
+            "score": round(float(score), 2),
+            "conflict": photo_id in confirmed_photos,
+        })
     return results
 
 
-@router.get("/unassigned", response_model=list[FaceOut])
-async def unassigned_faces(
-    db: DB,
-    photo_id: Optional[int] = Query(None),
-    limit: int = Query(100, le=500),
-    offset: int = Query(0, ge=0),
-    has_embedding: Optional[bool] = Query(None),
-) -> list[FaceOut]:
-    """Faces without a person assignment, newest first."""
-    q = (
-        select(Face)
-        .options(selectinload(Face.person_tag))
-        .where(Face.person_tag_id.is_(None))
-        .where(Face.status != "ignored")
-        .order_by(Face.created_at.desc())
-        .offset(offset).limit(limit)
-    )
-    if photo_id is not None:
-        q = q.where(Face.photo_id == photo_id)
-    if has_embedding is True:
-        q = q.where(Face.embedding.is_not(None))
-    elif has_embedding is False:
-        q = q.where(Face.embedding.is_(None))
-    rows = (await db.execute(q)).scalars().all()
-    return [_make_face_out(f) for f in rows]
-
-
-@router.get("/{face_id}/similar")
-async def similar_faces(
-    face_id: UUID,
-    db: DB,
-    k: int = Query(10, le=50),
-    confirmed_only: bool = Query(True),
-) -> list[dict]:
-    """Top-K most similar faces by cosine similarity of InsightFace embeddings (pgvector HNSW)."""
-    from fastapi import HTTPException
-    from fernkam.face_processor import bytes_to_embedding, find_similar_pg
-
-    face = (await db.execute(select(Face).where(Face.id == face_id))).scalar_one_or_none()
-    if not face:
-        raise HTTPException(404, "Face not found")
-    if not face.embedding:
-        raise HTTPException(422, "Face has no embedding — run detect-faces first")
-
-    try:
-        query_emb = bytes_to_embedding(face.embedding)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-    matches = await find_similar_pg(
-        db, query_emb,
-        confirmed_only=confirmed_only,
-        exclude_face_id=face_id,
-        k=k,
-    )
-
-    ptids = {m["person_tag_id"] for m in matches if m.get("person_tag_id")}
-    tag_names = {}
-    if ptids:
-        tag_rows = (await db.execute(select(Tag).where(Tag.id.in_(ptids)))).scalars().all()
-        tag_names = {t.id: t.name for t in tag_rows}
-
-    return [
-        {
-            "face_id": str(m["face_id"]),
-            "person_tag_id": m["person_tag_id"],
-            "person_name": tag_names.get(m["person_tag_id"]),
-            "score": round(m["score"], 2),
-        }
-        for m in matches
-    ]
-
-
-def _kmeans_np(X, k: int, n_iter: int = 25):
-    """Minimal Lloyd's k-means++ on a numpy float32 matrix.
-
-    Returns (centroids_array shape [k, d], assignments array shape [n]).
-    Falls back to single centroid when k >= len(X).
-    """
-    import numpy as np
-
-    n = len(X)
-    if k >= n:
-        return X.mean(axis=0, keepdims=True), np.zeros(n, dtype=int)
-
-    # k-means++ initialisation
-    rng = np.random.default_rng(42)
-    idxs = [int(rng.integers(n))]
-    for _ in range(k - 1):
-        dists = np.min(np.sum((X[:, None, :] - X[idxs, :][None, :, :]) ** 2, axis=2), axis=1)
-        probs = dists / dists.sum()
-        idxs.append(int(rng.choice(n, p=probs)))
-    centers = X[idxs].copy()
-
-    assignments = np.zeros(n, dtype=int)
-    for _ in range(n_iter):
-        # assign
-        dists = np.sum((X[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-        new_asgn = np.argmin(dists, axis=1)
-        if np.array_equal(new_asgn, assignments):
-            break
-        assignments = new_asgn
-        # update
-        for j in range(k):
-            mask = assignments == j
-            if mask.any():
-                centers[j] = X[mask].mean(axis=0)
-    return centers, assignments
+# /suggestions and /unassigned (top-3-ranked-suggestions-per-face endpoints) were
+# removed here — confirmed dead by cross-referencing every frontend call site.
+# The live UX uses /candidates (person-first) and /clusters (cluster-first) instead.
 
 
 @router.post("/build-centroids", response_model=dict)
@@ -287,65 +253,8 @@ async def build_person_centroids(
     n_clusters: int = Query(3, ge=1, le=10, description="Max sub-centroids per person (k-means). Falls back to 1 for small pools."),
 ) -> dict:
     """Recompute per-person centroid embeddings using k-means sub-clustering.
-
-    For persons with >= 2*n_clusters confirmed faces, computes n_clusters
-    sub-centroids capturing appearance variation (age, glasses, pose).
-    Smaller pools fall back to a single mean centroid (label=0).
-    Deletes stale labels on shrink (e.g. after faces are removed).
     """
-    import numpy as np
-    from collections import defaultdict as _dd
-    from sqlalchemy import text as _sql
-    from fernkam.face_processor import _pgvector_literal
-
-    rows = (await db.execute(_sql("""
-        SELECT person_tag_id, embedding_v::text AS emb_text
-        FROM   faces
-        WHERE  status = 'confirmed'
-          AND  person_tag_id IS NOT NULL
-          AND  embedding_v   IS NOT NULL
-    """))).fetchall()
-
-    if not rows:
-        return {"updated": 0, "n_clusters": n_clusters}
-
-    person_embs: dict = _dd(list)
-    for ptid, emb_text in rows:
-        arr = np.array([float(x) for x in emb_text.strip("[]").split(",")], dtype=np.float32)
-        person_embs[int(ptid)].append(arr)
-
-    total_updated = 0
-    for ptid, embs in person_embs.items():
-        mat = np.array(embs, dtype=np.float32)
-        k = max(1, min(n_clusters, len(embs) // 2))
-
-        centers, assignments = _kmeans_np(mat, k)
-
-        for label in range(len(centers)):
-            c = centers[label]
-            norm = float(np.linalg.norm(c))
-            if norm > 0:
-                c = c / norm
-            lit = _pgvector_literal(c)
-            face_cnt = int((assignments == label).sum())
-            await db.execute(_sql(f"""
-                INSERT INTO person_centroids (person_tag_id, label, embedding_v, face_count, built_at)
-                VALUES ({ptid}, {label}, '{lit}'::vector(512), {face_cnt}, now())
-                ON CONFLICT (person_tag_id, label)
-                DO UPDATE SET embedding_v = EXCLUDED.embedding_v,
-                              face_count  = EXCLUDED.face_count,
-                              built_at    = EXCLUDED.built_at
-            """))
-
-        await db.execute(_sql(f"""
-            DELETE FROM person_centroids
-            WHERE person_tag_id = {ptid} AND label >= {len(centers)}
-        """))
-
-        total_updated += 1
-
-    await db.commit()
-    return {"updated": total_updated, "n_clusters": n_clusters}
+    return await _rebuild_person_centroids(db, n_clusters=n_clusters)
 
 
 @router.post("/auto-confirm-all", response_model=dict)
@@ -380,9 +289,13 @@ async def auto_confirm_all_faces(
             try:
                 pass_num = 0
                 totals = {"confirmed": 0, "ignored": 0, "suggested": 0, "scored": 0}
+                rebuild_person_ids: set = set()
                 while True:
                     pass_num += 1
+                    if rebuild_person_ids:
+                        await _rebuild_person_centroids(bg_db, person_ids=rebuild_person_ids)
                     r = await _auto_confirm_sweep(bg_db, since_dt=since_dt)
+                    rebuild_person_ids = set(r.get("confirmed_person_ids") or [])
                     for k in totals:
                         totals[k] += r.get(k, 0)
                     await task_manager.update_task(
@@ -418,51 +331,35 @@ async def auto_confirm_all_faces(
     return {"task_id": task_id, "status": "started"}
 
 
-@router.get("/suggestions/count")
-async def suggestions_count(
-    db: DB,
-    status_filter: str = Query("all"),
-    person_tag_id: Optional[int] = Query(None),
-) -> dict:
-    """Total count of unassigned faces with embeddings (matches /suggestions filter)."""
-    from sqlalchemy import func
-    if person_tag_id is not None:
-        status_clause = Face.status == "suggested"
-    elif status_filter == "suggested":
-        status_clause = Face.status == "suggested"
-    elif status_filter == "unconfirmed":
-        status_clause = Face.status == "unconfirmed"
-    else:
-        status_clause = Face.status.in_(["unconfirmed", "suggested"])
-    q = (
-        select(func.count()).select_from(Face)
-        .where(status_clause)
-        .where(Face.embedding_v.is_not(None))
-    )
-    if person_tag_id is not None:
-        q = q.where(Face.person_tag_id == person_tag_id)
-    n = (await db.execute(q)).scalar_one()
-    return {"count": n}
+@router.post("/drop-pre-birth-suggestions")
+async def drop_pre_birth_suggestions(db: DB) -> dict:
+    """Reset suggested faces that violate person birth-date constraints.
 
-
-@router.post("/purge-weak-suggestions")
-async def purge_weak_suggestions(db: DB) -> dict:
-    """Reset suggested faces below suggest_thresh back to unconfirmed.
-
-    Cleans the review queue of low-confidence suggestions produced before
-    the threshold was raised.
+    For each person in FERNKAM_PERSON_MIN_DATES, any face with status='suggested'
+    pointing to that person on a photo whose taken_at is BEFORE the birth date is
+    reset to status='unconfirmed' with person_tag_id cleared.
     """
-    from fernkam.config import get_settings
+    from sqlalchemy import text as _sql
 
-    thresh = get_settings().suggest_thresh
-    result = await db.execute(
-        update(Face)
-        .where(Face.status == "suggested")
-        .where(Face.best_match_score < thresh)
-        .values(status="unconfirmed", person_tag_id=None)
-    )
+    person_min_dates = await _resolve_person_min_dates(db)
+    if not person_min_dates:
+        return {"cleared": 0, "reason": "No person_min_dates configured"}
+
+    total_cleared = 0
+    for ptid, min_date in person_min_dates.items():
+        result = await db.execute(_sql(
+            "UPDATE faces SET status = 'unconfirmed', person_tag_id = NULL, best_match_score = NULL "
+            "FROM photos "
+            "WHERE faces.photo_id = photos.id "
+            "  AND faces.status = 'suggested' "
+            "  AND faces.person_tag_id = :ptid "
+            "  AND photos.taken_at IS NOT NULL "
+            "  AND photos.taken_at::date < :min_date"
+        ), {"ptid": ptid, "min_date": min_date})
+        total_cleared += result.rowcount
+
     await db.commit()
-    return {"cleared": result.rowcount, "threshold": thresh}
+    return {"cleared": total_cleared}
 
 
 @router.post("/archive-low-quality")
@@ -529,8 +426,8 @@ async def auto_confirm_incremental(db: DB) -> dict:
     from fernkam.db.session import async_session_factory as _session_factory
 
     last_row = (await db.execute(_sql(
-        "SELECT created_at FROM tasks WHERE task_type = 'auto_confirm' AND status = 'completed' "
-        "ORDER BY created_at DESC LIMIT 1"
+        "SELECT completed_at FROM tasks WHERE task_type = 'auto_confirm' AND status = 'completed' "
+        "ORDER BY completed_at DESC LIMIT 1"
     ))).fetchone()
     since_dt: Optional[datetime] = last_row[0] if last_row else None
 
@@ -568,23 +465,3 @@ async def auto_confirm_incremental(db: DB) -> dict:
     return {"task_id": task_id, "status": "started", "since": since_dt.isoformat() if since_dt else None}
 
 
-@router.post("/demote-low-confidence-confirmed")
-async def demote_low_confidence_confirmed(db: DB) -> dict:
-    """Demote confirmed faces that look suspicious back to 'suggested' for review.
-
-    Targets faces where:
-    - det_score IS NULL  (processed via buggy overlap path — quality gate was never applied)
-    - best_match_score < 0.65  (well below auto-confirm threshold)
-
-    These are moved to 'suggested' (keeping person_tag_id) so they appear in the
-    face review queue for manual confirmation or rejection.
-    """
-    result = await db.execute(
-        update(Face)
-        .where(Face.status == "confirmed")
-        .where(Face.det_score.is_(None))
-        .where(Face.best_match_score < 0.65)
-        .values(status="suggested")
-    )
-    await db.commit()
-    return {"demoted": result.rowcount}

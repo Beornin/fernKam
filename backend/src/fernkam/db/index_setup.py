@@ -49,7 +49,8 @@ async def ensure_indexes(engine: AsyncEngine) -> None:
     # Must be outside a transaction block; wrap separately and swallow errors.
     try:
         async with engine.connect() as conn:
-            await conn.execution_options(isolation_level="AUTOCOMMIT").execute(text("""
+            ac = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await ac.execute(text("""
                 CREATE INDEX IF NOT EXISTS ix_faces_emb_unconfirmed_hnsw
                 ON faces USING hnsw (embedding_v vector_cosine_ops)
                 WHERE status = 'unconfirmed' AND embedding_v IS NOT NULL
