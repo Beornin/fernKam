@@ -10,9 +10,9 @@ Only groups containing >=1 RAW photo are considered stacks.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.db.models.photos import Photo, PhotoStack
@@ -50,8 +50,12 @@ def _derivative_matches(raw_stem: str, derivative_stem: str) -> bool:
     return False
 
 
-def _pick_cover(raw_photo: Photo, derivatives: list[Photo]) -> Photo:
-    """Prefer the best derivative: highest rating, then largest file, else the RAW."""
+def _pick_cover(raw_photo: Any, derivatives: list[Any]) -> Any:
+    """Prefer the best derivative: highest rating, then largest file, else the RAW.
+
+    Takes lightweight Row objects (id/filename/rating/file_size), not full
+    Photo ORM entities — see the column-only select in detect_stacks().
+    """
     if not derivatives:
         return raw_photo
     return max(
@@ -66,14 +70,19 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     Idempotent: safe to re-run; re-syncs membership, cover, and counts.
     Returns summary stats.
     """
-    photo_q = select(Photo).where(Photo.status == 1)
+    # Column-only select (not full Photo ORM entities): the matching pass below
+    # only needs these 5 fields, and pulling every column for up to ~120k rows
+    # into the ORM identity map was the dominant memory cost of a full rebuild.
+    photo_q = select(
+        Photo.id, Photo.filename, Photo.album_path, Photo.rating, Photo.file_size,
+    ).where(Photo.status == 1)
     if album_path:
         clean_album_path = album_path.lstrip("/")
         photo_q = photo_q.where(Photo.album_path.like(f"{clean_album_path}%"))
-    all_photos = (await db.execute(photo_q)).scalars().all()
+    all_photos = (await db.execute(photo_q)).all()
 
     # Index photos by album_path for fast derivative lookup.
-    by_album: dict[str, list[Photo]] = {}
+    by_album: dict[str, list[Any]] = {}
     for p in all_photos:
         by_album.setdefault(p.album_path, []).append(p)
 
@@ -85,6 +94,21 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     now = datetime.now(timezone.utc)
 
     seen_stack_keys: set[tuple[str, str]] = set()
+    # Collected and applied as one batched UPDATE at the end, instead of
+    # mutating up to ~120k tracked ORM Photo objects (which is what made the
+    # full-entity select above necessary in the first place).
+    member_updates: list[dict] = []
+
+    # Preload every existing stack in scope once — used both to avoid a
+    # per-RAW-photo SELECT below and for the stale-stack cleanup further down
+    # (previously fetched twice: once per RAW photo, once again at cleanup).
+    all_stacks_q = select(PhotoStack)
+    if album_path:
+        all_stacks_q = all_stacks_q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
+    all_stacks = (await db.execute(all_stacks_q)).scalars().all()
+    stacks_by_key: dict[tuple[str, str], PhotoStack] = {
+        (s.album_path, s.stem_key): s for s in all_stacks
+    }
 
     for raw in raw_photos:
         parent_album = _parent_album(raw.album_path)
@@ -107,12 +131,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
         cover = _pick_cover(raw, derivatives)
         members = [raw, *derivatives]
 
-        existing = (await db.execute(
-            select(PhotoStack).where(
-                PhotoStack.album_path == parent_album,
-                PhotoStack.stem_key == raw_stem,
-            )
-        )).scalar_one_or_none()
+        existing = stacks_by_key.get((parent_album, raw_stem))
 
         if existing is None:
             existing = PhotoStack(
@@ -126,6 +145,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
             )
             db.add(existing)
             await db.flush()
+            stacks_by_key[(parent_album, raw_stem)] = existing
             stacks_created += 1
         else:
             existing.cover_photo_id = cover.id
@@ -135,15 +155,22 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
             stacks_updated += 1
 
         for m in members:
-            m.stack_id = existing.id
-            m.stack_role = "raw" if is_raw(m.filename) else "derivative"
+            member_updates.append({
+                "id": m.id,
+                "stack_id": existing.id,
+                "stack_role": "raw" if is_raw(m.filename) else "derivative",
+            })
             photos_grouped += 1
 
+    if member_updates:
+        await db.execute(text(
+            "UPDATE photos SET stack_id=:stack_id, stack_role=:stack_role WHERE id=:id"
+        ), member_updates)
+
     # Clean up stacks that no longer have any matching RAW (e.g. RAW moved/deleted).
-    all_stacks_q = select(PhotoStack)
-    if album_path:
-        all_stacks_q = all_stacks_q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
-    all_stacks = (await db.execute(all_stacks_q)).scalars().all()
+    # Reuses the `all_stacks` snapshot preloaded above — note newly-created
+    # stacks from this run are also in `stacks_by_key`/seen_stack_keys, so they
+    # won't be misidentified as stale even though they weren't in that snapshot.
     stale_ids = [s.id for s in all_stacks if (s.album_path, s.stem_key) not in seen_stack_keys]
     if stale_ids:
         await db.execute(update(Photo).where(Photo.stack_id.in_(stale_ids)).values(stack_id=None, stack_role=None))

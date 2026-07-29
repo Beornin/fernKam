@@ -15,7 +15,6 @@ from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
 from fernkam.media_types import MIME_MAP, RAW_EXTENSIONS, VIDEO_EXTENSIONS
 from fernkam.thumbnails import (
-    _open_raw_as_pil,
     generate_thumbnail_bytes,
     get_thumbnail_from_db,
     store_thumbnail_to_db,
@@ -60,6 +59,36 @@ async def serve_thumbnail(
 STORED_CROP_SIZE = 200  # matches the fixed size backfill_crops()/auto-generation store at
 
 
+def _generate_face_crop(src: Path, x: int, y: int, w: int, h: int, size: int, pad: int) -> bytes | None:
+    """Blocking: decode the source photo, crop/resize/encode. Call via run_in_executor."""
+    import cv2
+
+    try:
+        img = cv2.imread(str(src))
+    except Exception:
+        img = None
+    if img is None:
+        try:
+            from PIL import Image
+            import numpy as np
+            pil_img = Image.open(src)
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+
+    h_img, w_img = img.shape[:2]
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(w_img, x + w + pad)
+    y2 = min(h_img, y + h + pad)
+    crop = img[y1:y2, x1:x2]
+    crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 90 if size > STORED_CROP_SIZE else 85])
+    return bytes(buf) if ok else None
+
+
 @router.get("/face/{face_id}")
 async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, le=800)) -> Response:
     """Return a square-cropped thumbnail of a face region.
@@ -84,7 +113,6 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
     if row.x is None:
         raise HTTPException(422, "Face has no bounding box")
 
-    import cv2
     photo = (await db.execute(
         select(Photo).where(Photo.id == row.photo_id)
     )).scalar_one_or_none()
@@ -95,37 +123,21 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
     if not src.exists():
         raise HTTPException(404, "Source file not found")
 
-    try:
-        img = cv2.imread(str(src))
-    except Exception:
-        img = None
-    if img is None:
-        try:
-            from PIL import Image
-            import numpy as np
-            pil_img = Image.open(src)
-            if pil_img.mode != "RGB":
-                pil_img = pil_img.convert("RGB")
-            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        except Exception:
-            raise HTTPException(422, "Could not read image")
-
-    h_img, w_img = img.shape[:2]
     fw, fh = row.w or 0, row.h or 0
     # A little padding for larger requests so a close-up isn't an ultra-tight
     # crop of just the face — matches the padding backfill_crops() already
     # uses for the stored 200px version.
     pad = int(max(fw, fh) * 0.2) if size > STORED_CROP_SIZE else 0
-    x1 = max(0, (row.x or 0) - pad)
-    y1 = max(0, (row.y or 0) - pad)
-    x2 = min(w_img, (row.x or 0) + fw + pad)
-    y2 = min(h_img, (row.y or 0) + fh + pad)
-    crop = img[y1:y2, x1:x2]
-    crop = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 90 if size > STORED_CROP_SIZE else 85])
-    if not ok:
-        raise HTTPException(500, "Encoding failed")
-    crop_bytes = bytes(buf)
+
+    # Decode/crop/encode is CPU-bound (a full-resolution photo, up to a 60 MP
+    # TIFF, gets decoded) — run off the event loop so one close-up request
+    # doesn't stall every other in-flight request.
+    loop = asyncio.get_event_loop()
+    crop_bytes = await loop.run_in_executor(
+        None, _generate_face_crop, src, row.x or 0, row.y or 0, fw, fh, size, pad
+    )
+    if crop_bytes is None:
+        raise HTTPException(422, "Could not read image")
 
     # Only cache the standard small size — an oversized close-up crop would
     # clobber the cache every grid tile elsewhere on the site relies on.
@@ -136,30 +148,6 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
 
     return Response(content=crop_bytes, media_type="image/webp",
                     headers={"Cache-Control": "public, max-age=86400"})
-
-
-@router.get("/raw-preview/{photo_id}")
-async def serve_raw_preview(photo_id: int, db: DB) -> Response:
-    """Return JPEG preview extracted from a RAW camera file (NEF, CR2, ARW, etc.)."""
-    photo = await _get_photo(photo_id, db)
-    src = photo_disk_path(photo.album_path, photo.filename)
-    if not src.exists():
-        raise HTTPException(404, "Source file not found on disk")
-    if src.suffix.lower() not in RAW_EXTENSIONS:
-        raise HTTPException(400, "Not a RAW file")
-    try:
-        loop = asyncio.get_event_loop()
-        img = await loop.run_in_executor(None, _open_raw_as_pil, src)
-        from io import BytesIO
-        buf = BytesIO()
-        img.convert("RGB").save(buf, "JPEG", quality=90)
-        return Response(
-            content=buf.getvalue(),
-            media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-    except Exception as exc:
-        raise HTTPException(500, f"RAW preview failed: {exc}")
 
 
 @router.get("/original/{photo_id}", response_model=None)

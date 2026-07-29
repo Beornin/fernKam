@@ -3,19 +3,10 @@
 	import { goto } from '$app/navigation';
 	import { Star, X } from '@lucide/svelte';
 	import { buildFilterUrl } from '$lib/shellFilters';
+	import { COLOR_LABELS } from '$lib/colorLabels';
 
 	let ratingMin = $derived(Number($page.url.searchParams.get('rating_min')) || null);
 	let colorLabel = $derived(Number($page.url.searchParams.get('color_label')) || null);
-
-	const COLOR_LABELS = [
-		{ value: 1, name: 'Red',    cls: 'bg-red-500' },
-		{ value: 2, name: 'Orange', cls: 'bg-orange-500' },
-		{ value: 3, name: 'Yellow', cls: 'bg-yellow-400' },
-		{ value: 4, name: 'Green',  cls: 'bg-green-500' },
-		{ value: 5, name: 'Blue',   cls: 'bg-blue-500' },
-		{ value: 6, name: 'Purple', cls: 'bg-purple-500' },
-		{ value: 7, name: 'Gray',   cls: 'bg-zinc-400' },
-	];
 
 	function setRating(n: number) {
 		const next = ratingMin === n ? undefined : n;

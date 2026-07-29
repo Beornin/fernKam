@@ -7,7 +7,6 @@ jpg/ subfolder. Matching is a substring check: the RAW stem must appear
 inside a picture stem.
 """
 
-import os
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -20,7 +19,7 @@ except ImportError:
     print("Warning: send2trash not installed. Run: pip install send2trash")
 
 from fernkam.media_types import ALL_EXTENSIONS, PICTURE_EXTENSIONS, RAW_EXTENSIONS
-from fernkam.workflows.shared import format_elapsed
+from fernkam.workflows.shared import format_elapsed, gather_files
 
 DEFAULT_STARTING_FOLDER = r"D:\Pictures and Videos\AA_RAW"
 
@@ -29,7 +28,7 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
     start = time.perf_counter()
     print(f"Loading files from: {starting_folder}")
 
-    all_files = _gather_files(starting_folder)
+    all_files = gather_files(starting_folder, ALL_EXTENSIONS)
 
     # Build per-directory index of picture base names.
     jpg_by_dir: dict = defaultdict(set)
@@ -60,20 +59,6 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
             print(f"Failed to trash {f.name}: {e}")
 
     print(f"Process took: {format_elapsed(start)}")
-
-
-def _gather_files(directory: str) -> list:
-    result = []
-    for root, _, filenames in os.walk(directory):
-        for name in filenames:
-            p = Path(root) / name
-            if p.suffix.lower() in ALL_EXTENSIONS:
-                try:
-                    if p.stat().st_size > 0:
-                        result.append(p)
-                except OSError:
-                    pass
-    return result
 
 
 def _base_name(filename: str) -> str:

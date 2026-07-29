@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api, type LogEntry } from '$lib/api';
 	import { RefreshCw, Search, Bug, AlertTriangle, X, ChevronDown, ChevronRight, Trash2, Pause, Play } from '@lucide/svelte';
 
@@ -61,11 +62,17 @@
 	}
 
 	$effect(() => {
-		// re-run on filter change
-		offset = 0;
-		load();
-		loadMeta();
-		schedulePoll();
+		// Track only the filters — reading offset here (even transitively via
+		// load()) would make Next/Prev re-trigger this effect and snap back to
+		// page 1, since load() reads offset internally. untrack() keeps the
+		// reset-and-reload below from registering offset as a dependency.
+		void level; void source; void q; void tail;
+		untrack(() => {
+			offset = 0;
+			load();
+			loadMeta();
+			schedulePoll();
+		});
 		return () => { if (pollHandle) clearTimeout(pollHandle); };
 	});
 

@@ -12,10 +12,16 @@ def get_async_engine():
     global _async_engine
     if _async_engine is None:
         settings = get_settings()
+        # pool_size=50 + max_overflow=100 = 150 possible connections, against
+        # Postgres's default max_connections=100 (verified live) — reachable
+        # under a real scan, since it opens a fresh session per photo under a
+        # CPU-count-sized semaphore. Sized here to leave real headroom for
+        # Postgres's own reserved connections and any other client (psql,
+        # pgAdmin, the sync engine below).
         _async_engine = create_async_engine(
             settings.pg_url,
-            pool_size=50,
-            max_overflow=100,
+            pool_size=20,
+            max_overflow=30,
             pool_pre_ping=True,
             echo=settings.debug,
         )
@@ -26,10 +32,11 @@ def get_sync_engine():
     global _sync_engine
     if _sync_engine is None:
         settings = get_settings()
+        # Only used by one occasional workflow script — small pool is plenty.
         _sync_engine = create_engine(
             settings.pg_url_sync,
-            pool_size=25,
-            max_overflow=50,
+            pool_size=5,
+            max_overflow=10,
             pool_pre_ping=True,
             echo=settings.debug,
         )

@@ -7,6 +7,7 @@ import Histogram from './Histogram.svelte';
 import MiniMap from './MiniMap.svelte';
 import PersonPicker from './PersonPicker.svelte';
 import { scoreBadgeClass } from '$lib/faceConfidence';
+import { formatBytes, formatDuration, formatShutter, formatAperture } from '$lib/format';
 
 let {
 photoId,
@@ -46,8 +47,17 @@ let panStartX = $state(0);
 let panStartY = $state(0);
 let personPickerOpen = $state(false);
 
+// Aborts the in-flight fetches when photoId changes again before they
+// resolve (rapid prev/next navigation) — without this, a slow earlier
+// response could land after a newer one and show the wrong photo's detail,
+// and a failed request would leave the loading spinner stuck forever.
+let detailAbort: AbortController | null = null;
 $effect(() => {
 if (photoId) {
+detailAbort?.abort();
+const controller = new AbortController();
+detailAbort = controller;
+
 loading = true;
 detail = null;
 selectedFace = null;
@@ -60,16 +70,23 @@ liveTags = initialPhoto.tags;
 liveFaces = initialPhoto.faces;
 loading = false;
 } else {
-api.photos.get(photoId).then(d => {
+api.photos.get(photoId, controller.signal).then(d => {
+if (controller.signal.aborted) return;
 detail = d;
 liveTags = d.tags;
 liveFaces = d.faces;
 loading = false;
+}).catch((e: any) => {
+if (e?.name === 'AbortError' || controller.signal.aborted) return;
+loading = false;
 });
 }
 
-api.tags.list({ flat: true }).then(tags => {
+api.tags.list({ flat: true }, controller.signal).then(tags => {
+if (controller.signal.aborted) return;
 allPersonTags = tags.filter(t => t.is_person).sort((a, b) => a.name.localeCompare(b.name));
+}).catch((e: any) => {
+if (e?.name === 'AbortError' || controller.signal.aborted) return;
 });
 }
 });
@@ -135,7 +152,6 @@ imgNaturalH = imgEl.naturalHeight;
 
 function onImgLoad() {
 updateImgDims();
-console.log(`[PhotoLightbox] Image loaded: rendered=${imgRenderedW}x${imgRenderedH} natural=${imgNaturalW}x${imgNaturalH} faces=${liveFaces.length}`);
 }
 
 $effect(() => {
@@ -147,13 +163,11 @@ return () => ro.disconnect();
 
 // Compute face rect in rendered-image coordinates (uses natural image dims, not DB dims)
 function faceRect(f: FaceOut) {
-if (!imgNaturalW || !imgNaturalH) { console.log('[face] no natural dims', imgNaturalW, imgNaturalH); return null; }
-if (f.x == null || f.y == null || f.w == null || f.h == null) { console.log('[face] null coords', f); return null; }
+if (!imgNaturalW || !imgNaturalH) return null;
+if (f.x == null || f.y == null || f.w == null || f.h == null) return null;
 const scaleX = imgRenderedW / imgNaturalW;
 const scaleY = imgRenderedH / imgNaturalH;
-const rect = { left: f.x * scaleX, top: f.y * scaleY, width: f.w * scaleX, height: f.h * scaleY };
-console.log(`[face] rect for ${f.person_name}:`, rect);
-return rect;
+return { left: f.x * scaleX, top: f.y * scaleY, width: f.w * scaleX, height: f.h * scaleY };
 }
 
 async function assignFaceName(face: FaceOut, tagId: number | null) {
@@ -237,33 +251,6 @@ detail = { ...detail, rating: newRating };
 function fmtDate(s: string | null) {
 if (!s) return '—';
 return new Date(s).toLocaleString();
-}
-
-function fmtSize(bytes: number | null) {
-if (!bytes) return '—';
-return bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${(bytes / 1e3).toFixed(0)} KB`;
-}
-
-function fmtDuration(secs: number | null | undefined): string {
-if (!secs) return '—';
-const h = Math.floor(secs / 3600);
-const m = Math.floor((secs % 3600) / 60);
-const s = Math.floor(secs % 60);
-if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-return `${m}:${String(s).padStart(2,'0')}`;
-}
-
-function fmtShutter(v: unknown): string {
-const n = Number(v);
-if (isNaN(n) || n <= 0) return '—';
-if (n >= 1) return n % 1 === 0 ? `${n}s` : `${n.toFixed(1)}s`;
-return `1/${Math.round(1 / n)}`;
-}
-
-function fmtAperture(v: unknown): string {
-const n = Number(v);
-if (isNaN(n)) return '—';
-return `f/${n % 1 === 0 ? n : n.toFixed(1)}`;
 }
 
 const WB_NAMES: Record<number, string> = {
@@ -458,12 +445,12 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 </div>
 <div class="flex justify-between">
 <dt class="text-zinc-500">Size</dt>
-<dd class="text-zinc-200">{fmtSize(detail.file_size)}</dd>
+<dd class="text-zinc-200">{formatBytes(detail.file_size)}</dd>
 </div>
 {#if detail.duration_secs}
 <div class="flex justify-between">
 <dt class="text-zinc-500">Duration</dt>
-<dd class="text-zinc-200 font-mono">{fmtDuration(detail.duration_secs)}</dd>
+<dd class="text-zinc-200 font-mono">{formatDuration(detail.duration_secs) ?? '—'}</dd>
 </div>
 {/if}
 {#if detail.width && detail.height}
@@ -487,13 +474,13 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 {#if detail.exif?.ExposureTime !== undefined}
 <div class="flex justify-between">
 <dt class="text-zinc-500">Shutter</dt>
-<dd class="text-zinc-200">{fmtShutter(detail.exif.ExposureTime)}</dd>
+<dd class="text-zinc-200">{formatShutter(detail.exif.ExposureTime)}</dd>
 </div>
 {/if}
 {#if detail.exif?.FNumber !== undefined}
 <div class="flex justify-between">
 <dt class="text-zinc-500">Aperture</dt>
-<dd class="text-zinc-200">{fmtAperture(detail.exif.FNumber)}</dd>
+<dd class="text-zinc-200">{formatAperture(detail.exif.FNumber)}</dd>
 </div>
 {/if}
 {#if detail.exif?.ISO !== undefined}

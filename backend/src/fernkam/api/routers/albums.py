@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 
 from fastapi import APIRouter
 from fernkam.api.deps import DB
@@ -84,17 +84,3 @@ async def list_albums(db: DB) -> list[AlbumNode]:
     for r in rows:
         print(f"[ALBUMS] Path: '{r.album_path}', Count: {r.cnt}", flush=True)
     return _build_tree([(r.album_path, r.cnt) for r in rows])
-
-
-@router.get("/debug")
-async def debug_albums(db: DB) -> dict:
-    """Debug endpoint to show all photos."""
-    result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename, Photo.status))
-    photos = result.fetchall()
-    return {
-        "total_photos": len(photos),
-        "photos": [
-            {"id": p.id, "album_path": p.album_path, "filename": p.filename, "status": p.status}
-            for p in photos
-        ]
-    }

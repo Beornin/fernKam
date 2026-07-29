@@ -300,12 +300,12 @@ async def shutdown() -> dict:
         # Try multiple methods
         try:
             os.kill(os.getpid(), signal.SIGINT)
-        except:
+        except Exception:
             pass
         try:
             time.sleep(0.5)
             os._exit(0)
-        except:
+        except Exception:
             pass
     
     thread = threading.Thread(target=force_shutdown, daemon=True)

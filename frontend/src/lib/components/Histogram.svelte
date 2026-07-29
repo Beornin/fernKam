@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-
 	let { photoId, showClipping = true }: { photoId: number; showClipping?: boolean } = $props();
 
 	let canvas: HTMLCanvasElement;
@@ -11,8 +9,8 @@
 	let shadowPct = $state(0);
 	let highlightPct = $state(0);
 
-	onMount(() => drawHistogram());
-
+	// The $effect below already fires once on mount (it reads photoId), so a
+	// separate onMount(drawHistogram) here would double the initial decode.
 	$effect(() => {
 		photoId;
 		if (canvas) {
@@ -30,7 +28,7 @@
 			await new Promise<void>((resolve, reject) => {
 				img.onload = () => resolve();
 				img.onerror = () => reject();
-				img.src = `http://localhost:8000/media/thumbnail/${photoId}?size=sm&_t=${Date.now()}`;
+				img.src = `/media/thumbnail/${photoId}?size=sm`;
 			});
 
 			const off = document.createElement('canvas');

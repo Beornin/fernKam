@@ -22,6 +22,9 @@ class Task:
     progress: Optional[dict] = None
 
 
+_MAX_CACHED_TERMINAL_TASKS = 300
+
+
 class TaskManager:
     """DB-backed task manager with in-memory cache."""
 
@@ -31,6 +34,22 @@ class TaskManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _prune_cache(self) -> None:
+        """Cap the cache: keep every running task plus the most recent
+        completed/failed/cancelled ones, evicting the rest.
+
+        Every create_task()/get_task()/get_all_tasks() call adds an entry
+        that was otherwise never removed — a long-running server accumulates
+        one permanent Task object per background operation ever run (scans,
+        syncs, geocodes, ...) for the life of the process.
+        """
+        terminal = [t for t in self._cache.values() if t.status != "running"]
+        if len(terminal) <= _MAX_CACHED_TERMINAL_TASKS:
+            return
+        terminal.sort(key=lambda t: t.completed_at or t.started_at)
+        for t in terminal[: len(terminal) - _MAX_CACHED_TERMINAL_TASKS]:
+            self._cache.pop(t.id, None)
 
     def _to_task(self, row) -> Task:
         return Task(
@@ -74,6 +93,7 @@ class TaskManager:
         except Exception:
             pass  # cache still valid; DB write best-effort
 
+        self._prune_cache()
         return task_id
 
     async def update_task(self, task_id: str, status: Optional[str] = None,
@@ -113,6 +133,9 @@ class TaskManager:
         except Exception:
             pass
 
+        if status in ("completed", "failed", "cancelled"):
+            self._prune_cache()
+
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Return from cache; fall back to DB."""
         if task_id in self._cache:
@@ -149,6 +172,7 @@ class TaskManager:
                 tasks = [self._to_task(r) for r in rows]
                 for t in tasks:
                     self._cache[t.id] = t
+                self._prune_cache()
                 return tasks
         except Exception:
             return list(self._cache.values())

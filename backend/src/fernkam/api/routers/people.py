@@ -11,19 +11,9 @@ from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, PersonOut
 from fernkam.db.models.photos import Face, Photo, Tag
 
+from .faces._helpers import _make_face_out
+
 router = APIRouter()
-
-
-def _make_face_out(f: Face) -> FaceOut:
-    return FaceOut(
-        id=f.id,
-        photo_id=f.photo_id,
-        person_tag_id=f.person_tag_id,
-        person_name=f.person_tag.name if f.person_tag else None,
-        x=f.x, y=f.y, w=f.w, h=f.h,
-        status=f.status,
-        region_name=f.region_name,
-    )
 
 
 @router.get("", response_model=list[PersonOut])

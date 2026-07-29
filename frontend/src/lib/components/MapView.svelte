@@ -44,13 +44,32 @@
 
 	onDestroy(() => { leafletMap?.remove(); });
 
+	// Aborts the in-flight points fetch when filters change again before it
+	// resolves — without this, a slow earlier response could land after a
+	// newer one and redraw the map with stale points.
+	let pointsAbort: AbortController | null = null;
+
 	async function loadAndDrawPoints(isInitial: boolean) {
 		const L = leafletLib;
 		const map = leafletMap;
 		if (!L || !map) return;
 
+		pointsAbort?.abort();
+		const controller = new AbortController();
+		pointsAbort = controller;
+
 		loading = true;
-		const points = await api.map.points({ album_path: albumPath, tag_id: tagId, limit: 50000 });
+		let points: Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>;
+		try {
+			points = await api.map.points({ album_path: albumPath, tag_id: tagId, limit: 50000 }, controller.signal);
+		} catch (e: any) {
+			if (e?.name === 'AbortError') return; // superseded by a newer filter change
+			loading = false;
+			pointCount = 0;
+			statusCountStore.set('Failed to load map points');
+			return;
+		}
+		if (controller.signal.aborted) return; // superseded while awaiting
 		pointCount = points.length;
 		loading = false;
 		statusCountStore.set(`${pointCount.toLocaleString()} geotagged photos`);
@@ -99,8 +118,9 @@
 				panelLoading = true;
 				clusterPhotos = [];
 				try {
-					const fetched = await Promise.all(ids.slice(0, 50).map(id => api.photos.get(id)));
-					clusterPhotos = fetched as unknown as PhotoSummary[];
+					// One batched request instead of up to 50 individual
+					// GET /api/photos/{id} calls per click.
+					clusterPhotos = await api.photos.batch(ids.slice(0, 50));
 				} catch {
 					clusterPhotos = [];
 				}
@@ -212,7 +232,7 @@
 				<span class="text-xs text-amber-400 font-medium">{clusterLabel}</span>
 			</div>
 		{/if}
-		<div class="flex-1 overflow-y-auto">
+		<div class="flex-1 overflow-hidden">
 			{#if panelLoading}
 				<div class="flex items-center justify-center h-40 text-zinc-500 text-sm gap-2">
 					<div class="w-5 h-5 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div>

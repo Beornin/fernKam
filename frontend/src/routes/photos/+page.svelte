@@ -61,14 +61,24 @@
 
 	const lightbox = createLightboxNav();
 
+	// Aborts the in-flight list request when filters/page/sort change again
+	// before it resolves — without this, a slow earlier response could land
+	// after a newer one and show stale photos. The .catch() also stops a
+	// failed request from leaving the loading spinner stuck forever.
+	let listAbort: AbortController | null = null;
 	$effect(() => {
+		listAbort?.abort();
+		const controller = new AbortController();
+		listAbort = controller;
+
 		loading = true;
 		api.photos.list({
 			...readListFilterParams($page.url.searchParams),
 			sort,
 			page: currentPage,
 			page_size: PAGE_SIZE,
-		}).then(data => {
+		}, controller.signal).then(data => {
+			if (controller.signal.aborted) return;
 			photos = data.items;
 			total = data.total;
 			loading = false;
@@ -81,6 +91,10 @@
 					goto(u.toString(), { replaceState: true });
 				});
 			}
+		}).catch((e: any) => {
+			if (e?.name === 'AbortError' || controller.signal.aborted) return;
+			loading = false;
+			statusCountStore.set('Failed to load photos');
 		});
 	});
 
@@ -379,7 +393,7 @@
 			<MapView albumPath={albumPath || undefined} tagId={tagIdParam} />
 		{:else}
 			<!-- Grid -->
-			<div class="flex-1 overflow-y-auto">
+			<div class="flex-1 overflow-hidden">
 				{#if loading}
 					<div class="flex items-center justify-center h-40 text-zinc-500 text-sm gap-2">
 						<div class="w-5 h-5 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div>
@@ -474,7 +488,7 @@
 	>
 		{#if reviewPhotos.length > 0}
 			<img
-				src="http://localhost:8000/media/original/{reviewPhotos[reviewIdx].id}"
+				src="/media/original/{reviewPhotos[reviewIdx].id}"
 				alt={reviewPhotos[reviewIdx].filename}
 				draggable="false"
 				onload={onImgLoad}
@@ -501,7 +515,7 @@
 				title={fp.filename}
 			>
 				<img
-					src="http://localhost:8000/media/thumbnail/{fp.id}?size=sm"
+					src="/media/thumbnail/{fp.id}?size=sm"
 					alt={fp.filename}
 					class="w-full h-full object-cover"
 					loading="lazy"

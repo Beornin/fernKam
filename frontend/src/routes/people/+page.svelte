@@ -7,8 +7,7 @@
 	import { statusCountStore, thumbSizeStore } from '$lib/stores';
 	import PersonPicker from '$lib/components/PersonPicker.svelte';
 
-	let thumbSize = $state(180);
-	const unsubThumb = thumbSizeStore.subscribe(v => { thumbSize = v; });
+	const thumbSize = $derived($thumbSizeStore);
 
 	let people = $state<PersonOut[]>([]);
 	let faces = $state<FaceOut[]>([]);
@@ -138,7 +137,7 @@
 
 	async function selectIgnored() {
 		await _restoreIgnored();
-		api.faces.list({ status: 'ignored', limit: 500 }).then(r => { ignoredCount = r.length; });
+		api.faces.ignoredCount().then(r => { ignoredCount = r.count; }).catch(() => {});
 		goto('/people?ignored=1', { replaceState: true });
 	}
 
@@ -257,8 +256,10 @@
 		const ignoredParam = params.get('ignored');
 
 		const ppl = await loadPeople();
-		api.faces.list({ status: 'ignored', limit: 500 }).then(r => {
-			ignoredCount = r.length;
+		api.faces.ignoredCount().then(r => {
+			ignoredCount = r.count;
+			statusCountStore.set(`${ppl.length} people`);
+		}).catch(() => {
 			statusCountStore.set(`${ppl.length} people`);
 		});
 
@@ -437,7 +438,7 @@
 					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each ignoredFaces as face (face.id)}
 							<div class="group relative aspect-square bg-zinc-900 rounded overflow-hidden">
-								<img src="http://localhost:8000/media/face/{face.id}?size=200" alt="" class="w-full h-full object-cover" loading="lazy" />
+								<img src="/media/face/{face.id}?size=200" alt="" class="w-full h-full object-cover" loading="lazy" />
 								<div class="absolute inset-0 bg-black/0 group-hover:bg-black/60 transition-colors flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
 									<button onclick={() => goto(`/photos?photo_id=${face.photo_id}&back=${encodeURIComponent(pageStore.url.href)}`)}
 										class="p-1.5 rounded bg-white/10 hover:bg-white/20 text-white" title="Open photo">
@@ -562,7 +563,7 @@
 								onclick={() => splitMode && toggleSplitFace(face.id)}
 							>
 								<img
-									src="http://localhost:8000/media/face/{face.id}?size=200"
+									src="/media/face/{face.id}?size=200"
 									alt=""
 									class="w-full h-full object-cover"
 									loading="lazy"

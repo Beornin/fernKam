@@ -130,7 +130,8 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                 # ── Phase 4: single end-of-scan auto-confirm sweep ────────────
                 try:
                     await task_manager.update_task(task_id, message="Auto-confirming faces…")
-                    confirmed_n = await _auto_confirm_sweep(bg_db)
+                    sweep_result = await _auto_confirm_sweep(bg_db)
+                    confirmed_n = sweep_result.get("confirmed", 0)
                     if confirmed_n:
                         print(f"[SCAN-LIBRARY] Sweep auto-confirmed {confirmed_n} faces", flush=True)
                 except Exception as se:
@@ -242,7 +243,7 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
         .where(Photo.faces_scanned_at.is_(None))
     )
     if request.album_path:
-        q = q.where(Photo.album_path.like(f"{request.album_path}%"))
+        q = q.where(Photo.album_path.like(f"{request.album_path.lstrip('/')}%"))
     q = q.order_by(Photo.id.asc())
     if request.limit and request.limit > 0:
         q = q.limit(request.limit)

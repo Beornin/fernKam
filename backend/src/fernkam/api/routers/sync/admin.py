@@ -164,7 +164,10 @@ async def backfill_crops(db: DB) -> dict:
         t_start = _time.time()
         total = len(rows)
         ok = errors = 0
-        photo_cache: dict[int, Photo] = {}
+        # Cache only the two fields actually used (album_path, filename), not
+        # full Photo ORM entities — this backlog can span tens of thousands of
+        # distinct photos, held for the whole (potentially hours-long) run.
+        photo_cache: dict[int, tuple[str, str]] = {}
         BATCH = 50
         loop = asyncio.get_event_loop()
 
@@ -189,13 +192,13 @@ async def backfill_crops(db: DB) -> dict:
                     try:
                         if row.photo_id not in photo_cache:
                             photo = (await bdb.execute(
-                                select(Photo).where(Photo.id == row.photo_id)
-                            )).scalar_one_or_none()
+                                select(Photo.album_path, Photo.filename).where(Photo.id == row.photo_id)
+                            )).first()
                             if not photo:
                                 continue
-                            photo_cache[row.photo_id] = photo
-                        photo = photo_cache[row.photo_id]
-                        src = photo_disk_path(photo.album_path, photo.filename)
+                            photo_cache[row.photo_id] = (photo.album_path, photo.filename)
+                        album_path, filename = photo_cache[row.photo_id]
+                        src = photo_disk_path(album_path, filename)
                         crop_bytes = await loop.run_in_executor(None, _make_crop, src, row.x, row.y, row.w, row.h)
                         if crop_bytes:
                             await bdb.execute(update(Face).where(Face.id == row.id).values(crop_data=crop_bytes))

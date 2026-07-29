@@ -86,51 +86,46 @@ async def unassigned_count(db: DB) -> dict:
     return {"count": n}
 
 
+@router.get("/ignored/count")
+async def ignored_count(db: DB) -> dict:
+    """Count of ignored faces — the People page badge used to fetch up to 500
+    full face rows just to read len(), which also silently capped the count
+    at 500 for libraries with more ignored faces than that."""
+    from sqlalchemy import func
+    n = (await db.execute(
+        select(func.count()).select_from(Face)
+        .where(Face.status == "ignored")
+    )).scalar_one()
+    return {"count": n}
+
+
 @router.get("/suggestions/people")
 async def suggestions_people_list(db: DB, min_score: float = Query(0.45, ge=0, le=1)) -> list[dict]:
-    """People with >=1 plausible candidate face among unconfirmed+suggested faces.
+    """People with >=1 candidate face already promoted to 'suggested' by the sweep.
 
-    Uses a single bulk k-NN pass (same LATERAL pattern as the auto-confirm sweep)
-    against person_centroids, so a person shows up in the sidebar even if the
-    nightly sweep hasn't promoted any of their faces to 'suggested' yet. Falls
-    back to literal status='suggested' counts if no centroids have been built.
+    This used to run a live bulk k-NN pass (the same LATERAL pattern as the
+    auto-confirm sweep) against the full unconfirmed+suggested pool on every
+    page load, so a person would show up here even before the sweep had
+    promoted any of their faces — but at ~78k candidate faces that was
+    ~47 million 512-dim distance computations per request (measured 90+
+    seconds). The sweep already runs automatically after every scan and
+    persists exactly this data via `status='suggested'`, so read that
+    instead of recomputing it live. Freshness now follows the sweep
+    schedule rather than the page load — trigger "Auto Sweep" for an
+    immediate refresh.
     """
-    from sqlalchemy import func, text as _sql
+    from sqlalchemy import func
 
-    centroid_count = (await db.execute(_sql(
-        "SELECT count(*) FROM person_centroids WHERE embedding_v IS NOT NULL"
-    ))).scalar_one()
-
-    counts: dict = {}
-    if centroid_count > 0:
-        rows = (await db.execute(_sql("""
-            WITH cand AS (
-                SELECT id, embedding_v FROM faces
-                WHERE status IN ('unconfirmed', 'suggested') AND embedding_v IS NOT NULL
-            )
-            SELECT nn.person_tag_id AS pid, count(*) AS cnt
-            FROM cand c
-            CROSS JOIN LATERAL (
-                SELECT person_tag_id, 1 - (embedding_v <=> c.embedding_v) AS score
-                FROM person_centroids
-                WHERE embedding_v IS NOT NULL
-                ORDER BY embedding_v <=> c.embedding_v
-                LIMIT 1
-            ) nn
-            WHERE nn.score >= :min_score
-            GROUP BY nn.person_tag_id
-        """), {"min_score": min_score})).fetchall()
-        counts = {int(r[0]): int(r[1]) for r in rows}
-    else:
-        rows = (
-            await db.execute(
-                select(Face.person_tag_id, func.count(Face.id))
-                .where(Face.status == "suggested")
-                .where(Face.person_tag_id.is_not(None))
-                .group_by(Face.person_tag_id)
-            )
-        ).fetchall()
-        counts = {int(r[0]): int(r[1]) for r in rows}
+    rows = (
+        await db.execute(
+            select(Face.person_tag_id, func.count(Face.id))
+            .where(Face.status == "suggested")
+            .where(Face.person_tag_id.is_not(None))
+            .where(Face.best_match_score >= min_score)
+            .group_by(Face.person_tag_id)
+        )
+    ).fetchall()
+    counts: dict = {int(r[0]): int(r[1]) for r in rows}
 
     if not counts:
         return []

@@ -81,6 +81,50 @@ async def _gen_thumbs_for_photo(
     return photo_id, size_bytes
 
 
+def _stat_walk_batch(
+    root: str,
+    files: list[str],
+    main_library: Path,
+    library_root: Path,
+    existing_photos: dict[tuple[str, str], int],
+) -> tuple[list, list, set]:
+    """Blocking: stat() every candidate file in one directory. Call via run_in_executor.
+
+    Returns (new_files, existing_to_update, disk_keys) for just this directory,
+    in the same tuple shapes scan_library() accumulates across the whole walk.
+    """
+    new_files: list[tuple[Path, str, str, datetime]] = []
+    existing_to_update: list[tuple[Path, str, str, datetime, int]] = []
+    disk_keys: set[tuple[str, str]] = set()
+
+    for filename in files:
+        ext = Path(filename).suffix.lower()
+        if ext not in ALL_EXTENSIONS:
+            continue
+        full_path = Path(root) / filename
+        try:
+            rel_path = full_path.relative_to(main_library)
+        except ValueError:
+            rel_path = full_path.relative_to(library_root)
+        album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
+        key = (album_path, filename)
+        disk_keys.add(key)
+        if key in existing_photos:
+            try:
+                mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                mtime = datetime.now(timezone.utc)
+            existing_to_update.append((full_path, album_path, filename, mtime, existing_photos[key]))
+        else:
+            try:
+                mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                mtime = datetime.now(timezone.utc)
+            new_files.append((full_path, album_path, filename, mtime))
+
+    return new_files, existing_to_update, disk_keys
+
+
 async def scan_library(
     db: AsyncSession,
     custom_path: Optional[str] = None,
@@ -125,35 +169,24 @@ async def scan_library(
 
     walk_scanned = 0
     walk_last_report = time.monotonic()
+    loop = asyncio.get_event_loop()
 
     for scan_dir in scan_dirs:
         for root, dirs, files in os.walk(scan_dir):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for filename in files:
-                ext = Path(filename).suffix.lower()
-                if ext not in ALL_EXTENSIONS:
-                    continue
-                full_path = Path(root) / filename
-                try:
-                    rel_path = full_path.relative_to(main_library)
-                except ValueError:
-                    rel_path = full_path.relative_to(library_root)
-                album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
-                key = (album_path, filename)
-                disk_keys.add(key)
-                walk_scanned += 1
-                if key in existing_photos:
-                    try:
-                        mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-                    except OSError:
-                        mtime = datetime.now(timezone.utc)
-                    existing_to_update.append((full_path, album_path, filename, mtime, existing_photos[key]))
-                else:
-                    try:
-                        mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-                    except OSError:
-                        mtime = datetime.now(timezone.utc)
-                    new_files.append((full_path, album_path, filename, mtime))
+
+            # The per-file stat() calls (up to 120k on a full library) are the
+            # slow part on large/HDD libraries — run each directory's batch in
+            # a thread so a cold-cache walk doesn't stall every other request
+            # for its whole duration. os.walk() itself (just listing directory
+            # entries) stays on the main thread; that part is comparatively cheap.
+            new_batch, existing_batch, keys_batch = await loop.run_in_executor(
+                None, _stat_walk_batch, root, files, main_library, library_root, existing_photos
+            )
+            new_files.extend(new_batch)
+            existing_to_update.extend(existing_batch)
+            disk_keys.update(keys_batch)
+            walk_scanned += len(new_batch) + len(existing_batch)
 
             # Throttled progress report — the disk walk (esp. the per-file stat()
             # calls on existing photos) is the slow part on large/HDD libraries,
@@ -212,8 +245,11 @@ async def scan_library(
                 for size, data in size_bytes.items():
                     try:
                         await store_thumbnail_to_db(photo_id, size, data, db)
-                    except Exception:
-                        pass
+                    except Exception as thumb_exc:
+                        # Silently dropping this left the batch reporting
+                        # "0 errors" even though the photo ends up with no
+                        # thumbnail for this size.
+                        log.warning("thumbnail store failed for photo %d (%s): %s", photo_id, size, thumb_exc)
 
         await db.commit()
         log.info("[SCAN] batch %d-%d committed (%d added, %d errors)",
@@ -255,16 +291,14 @@ async def scan_library(
                             upd[field] = val
                     if metadata.get("camera"):
                         try:
-                            cam = await _get_or_create_camera(db, metadata["camera"])
-                            upd["camera_id"] = cam.id
-                        except Exception:
-                            pass
+                            upd["camera_id"] = await _get_or_create_camera(db, metadata["camera"])
+                        except Exception as cam_exc:
+                            log.warning("camera lookup/create failed for %s: %s", full_path, cam_exc)
                     if metadata.get("lens"):
                         try:
-                            lens = await _get_or_create_lens(db, metadata["lens"])
-                            upd["lens_id"] = lens.id
-                        except Exception:
-                            pass
+                            upd["lens_id"] = await _get_or_create_lens(db, metadata["lens"])
+                        except Exception as lens_exc:
+                            log.warning("lens lookup/create failed for %s: %s", full_path, lens_exc)
                     await db.execute(update(Photo).where(Photo.id == photo_id).values(**upd))
                 stats["updated"] += 1
             except Exception as exc:
@@ -297,17 +331,29 @@ async def scan_library(
     return stats
 
 
-async def _get_or_create_camera(db: AsyncSession, camera_info: dict):
-    """Find or create a Camera record using a savepoint to isolate failures."""
+# Process-level cache: camera/lens tables stay tiny (~20 rows) but scans issue
+# a lookup per photo, so caching ids by (make, model[, serial]) turns tens of
+# thousands of redundant SELECTs into (at most) one per distinct camera/lens.
+_camera_id_cache: dict[tuple, int] = {}
+_lens_id_cache: dict[tuple, int] = {}
+
+
+async def _get_or_create_camera(db: AsyncSession, camera_info: dict) -> int:
+    """Find or create a Camera record using a savepoint to isolate failures. Returns its id."""
     from fernkam.db.models.photos import Camera
     make = camera_info.get("make")
     model = camera_info.get("model")
     serial = camera_info.get("serial")
+    key = (make, model, serial)
+    cached = _camera_id_cache.get(key)
+    if cached is not None:
+        return cached
     # Try read first (no savepoint needed)
     existing = (await db.execute(
-        select(Camera).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
+        select(Camera.id).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
     )).scalar_one_or_none()
-    if existing:
+    if existing is not None:
+        _camera_id_cache[key] = existing
         return existing
     # Use savepoint so a constraint violation doesn't kill the parent transaction
     async with db.begin_nested():
@@ -315,28 +361,37 @@ async def _get_or_create_camera(db: AsyncSession, camera_info: dict):
         db.add(cam)
         await db.flush()
     # Re-fetch in case of concurrent insert
-    return (await db.execute(
-        select(Camera).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
+    cam_id = (await db.execute(
+        select(Camera.id).where(Camera.make == make, Camera.model == model, Camera.serial == serial)
     )).scalar_one()
+    _camera_id_cache[key] = cam_id
+    return cam_id
 
 
-async def _get_or_create_lens(db: AsyncSession, lens_info: dict):
-    """Find or create a Lens record using a savepoint to isolate failures."""
+async def _get_or_create_lens(db: AsyncSession, lens_info: dict) -> int:
+    """Find or create a Lens record using a savepoint to isolate failures. Returns its id."""
     from fernkam.db.models.photos import Lens
     make = lens_info.get("make")
     model = lens_info.get("model")
+    key = (make, model)
+    cached = _lens_id_cache.get(key)
+    if cached is not None:
+        return cached
     existing = (await db.execute(
-        select(Lens).where(Lens.make == make, Lens.model == model)
+        select(Lens.id).where(Lens.make == make, Lens.model == model)
     )).scalar_one_or_none()
-    if existing:
+    if existing is not None:
+        _lens_id_cache[key] = existing
         return existing
     async with db.begin_nested():
         lens = Lens(make=make, model=model)
         db.add(lens)
         await db.flush()
-    return (await db.execute(
-        select(Lens).where(Lens.make == make, Lens.model == model)
+    lens_id = (await db.execute(
+        select(Lens.id).where(Lens.make == make, Lens.model == model)
     )).scalar_one()
+    _lens_id_cache[key] = lens_id
+    return lens_id
 
 
 def _ltree_label(name: str) -> str:
@@ -400,19 +455,19 @@ async def import_new_photo(
     media_type = media_type_for(file_path)
 
     # Resolve camera/lens records
-    camera_obj = None
+    camera_id = None
     if metadata.get("camera"):
         try:
-            camera_obj = await _get_or_create_camera(db, metadata["camera"])
-        except Exception:
-            pass
+            camera_id = await _get_or_create_camera(db, metadata["camera"])
+        except Exception as cam_exc:
+            log.warning("camera lookup/create failed for %s: %s", file_path, cam_exc)
 
-    lens_obj = None
+    lens_id = None
     if metadata.get("lens"):
         try:
-            lens_obj = await _get_or_create_lens(db, metadata["lens"])
-        except Exception:
-            pass
+            lens_id = await _get_or_create_lens(db, metadata["lens"])
+        except Exception as lens_exc:
+            log.warning("lens lookup/create failed for %s: %s", file_path, lens_exc)
 
     # Compute sha256 in a thread so we don't block the event loop
     sha256 = await asyncio.get_event_loop().run_in_executor(None, _sha256_path, file_path)
@@ -438,8 +493,8 @@ async def import_new_photo(
         file_size=metadata.get("file_size"),
         taken_at=metadata.get("taken_at"),
         imported_at=datetime.now(timezone.utc),
-        camera_id=camera_obj.id if camera_obj else None,
-        lens_id=lens_obj.id if lens_obj else None,
+        camera_id=camera_id,
+        lens_id=lens_id,
         rating=metadata.get("rating", 0),
         color_label=metadata.get("color_label"),
         title=metadata.get("title"),
@@ -564,17 +619,15 @@ async def update_photo_metadata(
     # Handle camera/lens record creation
     if metadata.get("camera"):
         try:
-            cam = await _get_or_create_camera(db, metadata["camera"])
-            updates["camera_id"] = cam.id
-        except Exception:
-            pass
+            updates["camera_id"] = await _get_or_create_camera(db, metadata["camera"])
+        except Exception as cam_exc:
+            log.warning("camera lookup/create failed for photo %d: %s", photo_id, cam_exc)
 
     if metadata.get("lens"):
         try:
-            lens = await _get_or_create_lens(db, metadata["lens"])
-            updates["lens_id"] = lens.id
-        except Exception:
-            pass
+            updates["lens_id"] = await _get_or_create_lens(db, metadata["lens"])
+        except Exception as lens_exc:
+            log.warning("lens lookup/create failed for photo %d: %s", photo_id, lens_exc)
     
     await db.execute(
         update(Photo).where(Photo.id == photo_id).values(**updates)

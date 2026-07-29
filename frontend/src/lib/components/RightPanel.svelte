@@ -2,6 +2,7 @@
 	import { api, type PhotoDetail } from '$lib/api';
 	import { Info, Tag, X, ChevronRight, Star, MapPin } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
+	import { formatBytes, formatShutter, formatAperture } from '$lib/format';
 
 	let { photoId, onClose }: {
 		photoId: number | null;
@@ -12,11 +13,28 @@
 	let loading = $state(false);
 	let activeTab = $state<'info' | 'tags'>('info');
 
+	// Aborts the in-flight detail fetch when photoId changes again before it
+	// resolves (rapid grid navigation) — without this, a slow earlier
+	// response could land after a newer one and show the wrong photo's info.
+	let detailAbort: AbortController | null = null;
 	$effect(() => {
+		detailAbort?.abort();
 		if (photoId === null) { detail = null; return; }
+		const controller = new AbortController();
+		detailAbort = controller;
+
 		loading = true;
 		detail = null;
-		api.photos.get(photoId).then(d => { detail = d; loading = false; });
+		api.photos.get(photoId, controller.signal)
+			.then(d => {
+				if (controller.signal.aborted) return;
+				detail = d;
+				loading = false;
+			})
+			.catch((e: any) => {
+				if (e?.name === 'AbortError' || controller.signal.aborted) return;
+				loading = false;
+			});
 	});
 
 	function fmt(v: unknown, unit = '') {
@@ -32,13 +50,6 @@
 		});
 	}
 
-	function fmtSize(bytes: number | null) {
-		if (!bytes) return '—';
-		if (bytes >= 1_048_576) return (bytes / 1_048_576).toFixed(2) + ' MB';
-		if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
-		return bytes + ' B';
-	}
-
 	const EXIF_LABELS: Record<string, string> = {
 		ExposureTime: 'Shutter',
 		FNumber: 'Aperture',
@@ -50,20 +61,6 @@
 		MeteringMode: 'Metering',
 		Flash: 'Flash',
 	};
-
-	function fmtShutter(v: unknown): string {
-		const n = Number(v);
-		if (isNaN(n) || n <= 0) return '—';
-		if (n >= 1) return n % 1 === 0 ? `${n}s` : `${n.toFixed(1)}s`;
-		const denom = Math.round(1 / n);
-		return `1/${denom}`;
-	}
-
-	function fmtAperture(v: unknown): string {
-		const n = Number(v);
-		if (isNaN(n)) return '—';
-		return `f/${n % 1 === 0 ? n : n.toFixed(1)}`;
-	}
 
 	const WB_NAMES: Record<number, string> = {
 		0: 'Auto', 1: 'Manual', 3: 'Incandescent',
@@ -85,8 +82,8 @@
 	function fmtExif(key: string, value: unknown): string {
 		if (value === null || value === undefined) return '—';
 		switch (key) {
-			case 'ExposureTime': return fmtShutter(value);
-			case 'FNumber': return fmtAperture(value);
+			case 'ExposureTime': return formatShutter(value);
+			case 'FNumber': return formatAperture(value);
 			case 'WhiteBalance': return fmtWB(value);
 			case 'FocalLength':
 			case 'FocalLengthIn35mmFormat': return fmtFocal(value);
@@ -136,7 +133,7 @@
 				<!-- Thumbnail preview -->
 				<div class="p-2 border-b border-zinc-800">
 					<img
-						src="http://localhost:8000/media/thumbnail/{detail.id}?size=lg"
+						src="/media/thumbnail/{detail.id}?size=lg"
 						alt={detail.filename}
 						class="w-full rounded object-cover max-h-40"
 					/>
@@ -155,7 +152,7 @@
 					<table class="w-full text-xs text-zinc-400">
 						<tbody>
 							<tr><td class="text-zinc-600 py-0.5 pr-3 w-1/2">Name</td><td class="truncate text-zinc-300 max-w-0 w-1/2" title={detail.filename}>{detail.filename}</td></tr>
-							<tr><td class="text-zinc-600 py-0.5 pr-3">Size</td><td class="text-zinc-300">{fmtSize(detail.file_size)}</td></tr>
+							<tr><td class="text-zinc-600 py-0.5 pr-3">Size</td><td class="text-zinc-300">{formatBytes(detail.file_size)}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Dimensions</td><td class="text-zinc-300">{detail.width && detail.height ? `${detail.width} × ${detail.height}` : '—'}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Type</td><td class="text-zinc-300 uppercase">{detail.filename.split('.').pop()}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Taken</td><td class="text-zinc-300">{fmtDate(detail.taken_at)}</td></tr>
@@ -241,7 +238,7 @@
 							{#each detail.faces as face}
 								{#if face.person_name}
 									<a href="/people?person_id={face.person_tag_id}" class="flex items-center gap-1.5 text-xs text-zinc-300 hover:text-amber-300 transition-colors">
-										<img src="http://localhost:8000/media/face/{face.id}?size=sm" alt={face.person_name} class="w-7 h-7 rounded-full object-cover bg-zinc-800" />
+										<img src="/media/face/{face.id}?size=sm" alt={face.person_name} class="w-7 h-7 rounded-full object-cover bg-zinc-800" />
 										{face.person_name}
 									</a>
 								{/if}

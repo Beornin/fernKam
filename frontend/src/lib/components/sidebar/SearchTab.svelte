@@ -5,6 +5,7 @@
 	import { api, type TagOut } from '$lib/api';
 	import { Search, X, Bookmark } from '@lucide/svelte';
 	import { buildFilterUrl } from '$lib/shellFilters';
+	import { COLOR_LABELS } from '$lib/colorLabels';
 
 	// ── filter state (initialized from the URL on mount, see below) ──────────
 	let query = $state('');
@@ -49,15 +50,6 @@
 		cameraId || lensId || dateFrom || dateTo || hasGps || hasFaces || noDate
 	));
 
-	const COLOR_LABELS = [
-		{ value: 1, name: 'Red',    cls: 'bg-red-500' },
-		{ value: 2, name: 'Orange', cls: 'bg-orange-500' },
-		{ value: 3, name: 'Yellow', cls: 'bg-yellow-400' },
-		{ value: 4, name: 'Green',  cls: 'bg-green-500' },
-		{ value: 5, name: 'Blue',   cls: 'bg-blue-500' },
-		{ value: 6, name: 'Purple', cls: 'bg-purple-500' },
-		{ value: 7, name: 'Gray',   cls: 'bg-zinc-400' },
-	];
 
 	onMount(async () => {
 		const sp = $page.url.searchParams;

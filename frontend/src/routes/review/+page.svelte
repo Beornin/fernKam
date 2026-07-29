@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { api, type PersonOut, type FaceCluster, type FaceOut } from '$lib/api';
 	import {
 		ScanFace, Check, X, User, RefreshCw, Scan, AlertCircle, AlertTriangle,
@@ -551,7 +552,7 @@
 		else if (typeof selectedPersonId === 'number') candidateKeydown(e);
 	}
 
-	$effect(() => {
+	onMount(() => {
 		loadCounts();
 		loadSidebar();
 		loadAutoConfirmedCount();

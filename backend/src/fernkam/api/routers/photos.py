@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time as _time
 from datetime import date, datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
@@ -111,36 +112,77 @@ async def timeline(db: DB) -> dict:
     return {"years": list(years_dict.values())}
 
 
+# Dropdown lists change only when a new camera/lens is imported, so a short
+# TTL cache (single entry each, can't leak like a per-filter cache) avoids
+# re-running the query on every filter-panel open.
+_dropdown_cache: dict[str, tuple[list[dict], float]] = {}
+_DROPDOWN_TTL = 60.0
+
+
 @router.get("/cameras")
 async def list_cameras(db: DB) -> list[dict]:
     """All cameras that have at least one photo, for filter dropdowns."""
+    cached = _dropdown_cache.get("cameras")
+    if cached and _time.monotonic() < cached[1]:
+        return cached[0]
     from fernkam.db.models.photos import Camera
+    # EXISTS (index-seekable per candidate camera) instead of
+    # IN (SELECT DISTINCT camera_id FROM photos) — the latter forces a full
+    # scan+dedup over the whole photos table just to populate a ~20-row list.
     rows = (await db.execute(
         select(Camera.id, Camera.make, Camera.model)
-        .where(Camera.id.in_(select(Photo.camera_id).where(Photo.camera_id.is_not(None)).distinct()))
+        .where(exists(select(1).where(Photo.camera_id == Camera.id)))
         .order_by(Camera.make.asc(), Camera.model.asc())
     )).fetchall()
-    return [{"id": r[0], "make": r[1], "model": r[2],
-             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+    result = [{"id": r[0], "make": r[1], "model": r[2],
+               "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+    _dropdown_cache["cameras"] = (result, _time.monotonic() + _DROPDOWN_TTL)
+    return result
 
 
 @router.get("/lenses")
 async def list_lenses(db: DB) -> list[dict]:
     """All lenses that have at least one photo, for filter dropdowns."""
+    cached = _dropdown_cache.get("lenses")
+    if cached and _time.monotonic() < cached[1]:
+        return cached[0]
     from fernkam.db.models.photos import Lens
     rows = (await db.execute(
         select(Lens.id, Lens.make, Lens.model)
-        .where(Lens.id.in_(select(Photo.lens_id).where(Photo.lens_id.is_not(None)).distinct()))
+        .where(exists(select(1).where(Photo.lens_id == Lens.id)))
         .order_by(Lens.make.asc(), Lens.model.asc())
     )).fetchall()
-    return [{"id": r[0], "make": r[1], "model": r[2],
-             "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+    result = [{"id": r[0], "make": r[1], "model": r[2],
+               "label": f"{r[1] or ''} {r[2] or ''}".strip()} for r in rows]
+    _dropdown_cache["lenses"] = (result, _time.monotonic() + _DROPDOWN_TTL)
+    return result
+
+
+@router.get("/batch", response_model=list[PhotoSummary])
+async def get_photos_batch(
+    db: DB,
+    ids: str = Query(..., description="Comma-separated photo ids"),
+) -> list[PhotoSummary]:
+    """Batch fetch by id in one round-trip — e.g. the map view's per-pin photo
+    panel used to fire one GET /{photo_id} per photo (up to 50 per click)."""
+    try:
+        id_list = [int(x) for x in ids.split(",") if x.strip()][:200]
+    except ValueError:
+        raise HTTPException(400, "ids must be a comma-separated list of integers")
+    if not id_list:
+        return []
+    rows = (await db.execute(
+        select(Photo).where(Photo.id.in_(id_list)).where(Photo.status == 1)
+    )).scalars().all()
+    by_id = {r.id: r for r in rows}
+    # Preserve the requested order — callers (e.g. the map panel) rely on it.
+    return [PhotoSummary.model_validate(by_id[i]) for i in id_list if i in by_id]
 
 
 # NOTE: /{photo_id} must stay below every literal single-segment GET route
-# above (timeline/cameras/lenses) — FastAPI matches routes in registration
-# order, so a literal route registered after this would be shadowed (any
-# GET to e.g. /api/photos/timeline would 422 trying to parse "timeline" as
+# above (timeline/cameras/lenses/batch) — FastAPI matches routes in
+# registration order, so a literal route registered after this would be
+# shadowed (any GET to e.g. /api/photos/timeline would 422 trying to parse "timeline" as
 # photo_id). Multi-segment routes like /{photo_id}/tags are unaffected.
 @router.get("/{photo_id}", response_model=PhotoDetail)
 async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
@@ -331,14 +373,6 @@ async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
     return {"updated": applied, "skipped": len(rows) - applied}
 
 
-@router.get("/{photo_id}/tags", response_model=list[TagOut])
-async def get_photo_tags(photo_id: int, db: DB) -> list[TagOut]:
-    rows = (await db.execute(
-        select(Tag).join(PhotoTag, PhotoTag.tag_id == Tag.id).where(PhotoTag.photo_id == photo_id)
-    )).scalars().all()
-    return rows
-
-
 @router.post("/{photo_id}/tags/{tag_id}", status_code=204)
 async def add_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
     existing = (await db.execute(
@@ -388,6 +422,14 @@ async def map_points(
     ]
 
 
+def _encode_face_crop(region) -> bytes | None:
+    """Blocking: resize an already-cropped face region to 200x200 WebP. Call via run_in_executor."""
+    import cv2
+    crop = cv2.resize(region, (200, 200), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".webp", crop, [cv2.IMWRITE_WEBP_QUALITY, 85])
+    return bytes(buf) if ok else None
+
+
 async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int]:
     """Core detect + similarity-suggest logic. Returns (face_outs, suggested_count).
 
@@ -405,7 +447,6 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
     )
     from fernkam.thumbnails import photo_disk_path, RAW_EXTENSIONS
     from fernkam.config import get_settings
-    import cv2 as _cv2
     from datetime import datetime, timezone
 
     settings = get_settings()
@@ -491,7 +532,8 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             new_dets.append(det)
 
     if not new_dets:
-        await db.commit()
+        # matched.* changes on existing faces were already flushed in the loop
+        # above — one commit here covers those plus this update.
         await db.execute(update(Photo).where(Photo.id == photo_id).values(faces_scanned_at=datetime.now(timezone.utc)))
         await db.commit()
         return [], 0
@@ -534,18 +576,19 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
             person_tag_id = None
             score = round(float(det["score"]), 2)
 
-        crop_bytes: bytes | None = None
         h_img, w_img = img_bgr.shape[:2]
         pad = int(max(det["w"], det["h"]) * 0.2)
         x1 = max(0, det["x"] - pad)
         y1 = max(0, det["y"] - pad)
         x2 = min(w_img, det["x"] + det["w"] + pad)
         y2 = min(h_img, det["y"] + det["h"] + pad)
+        crop_bytes: bytes | None = None
         if x2 > x1 and y2 > y1:
-            crop = _cv2.resize(img_bgr[y1:y2, x1:x2], (200, 200), interpolation=_cv2.INTER_AREA)
-            ok, buf = _cv2.imencode(".webp", crop, [_cv2.IMWRITE_WEBP_QUALITY, 85])
-            if ok:
-                crop_bytes = bytes(buf)
+            # Resize+encode is CPU-bound; the decode/inference above are
+            # already offloaded — this was the one step still on the loop.
+            crop_bytes = await loop.run_in_executor(
+                None, _encode_face_crop, img_bgr[y1:y2, x1:x2]
+            )
 
         face = Face(
             photo_id=photo_id,
@@ -563,14 +606,24 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
         db.add(face)
         new_faces.append((face, score))
 
-    await db.commit()
+    # flush (not commit) — makes the new rows visible to this session's own
+    # queries below without ending the transaction, so the faces_scanned_at
+    # update can land in the same commit instead of a second round-trip.
+    await db.flush()
+
+    # Single batched reload (with person_tag eager-loaded) instead of two
+    # queries per face — flush() above already populated ids/columns on the
+    # `new_faces` objects, so db.refresh() per-face was redundant too.
+    face_ids = [face.id for face, _ in new_faces]
+    reloaded_by_id = {
+        f.id: f for f in (await db.execute(
+            select(Face).options(selectinload(Face.person_tag)).where(Face.id.in_(face_ids))
+        )).scalars().all()
+    }
 
     results: list[FaceOut] = []
     for face, score in new_faces:
-        await db.refresh(face)
-        reloaded = (await db.execute(
-            select(Face).options(selectinload(Face.person_tag)).where(Face.id == face.id)
-        )).scalar_one()
+        reloaded = reloaded_by_id[face.id]
         person_name = reloaded.person_tag.name if reloaded.person_tag else None
         results.append(FaceOut(
             id=reloaded.id,

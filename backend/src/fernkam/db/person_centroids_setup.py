@@ -1,6 +1,10 @@
 """Idempotent startup setup: person_centroids table + det_score column on faces."""
+import logging
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_person_centroids(engine: AsyncEngine) -> None:
@@ -28,7 +32,14 @@ async def ensure_person_centroids(engine: AsyncEngine) -> None:
                 WITH (m = 16, ef_construction = 64)
             """))
         except Exception:
-            pass
+            # Face-matching similarity search silently degrades to a full
+            # sequential scan without this index — worth a loud warning since
+            # nothing else would otherwise indicate why matching got slow.
+            logger.warning(
+                "Failed to create HNSW index on person_centroids.embedding_v — "
+                "face similarity search will fall back to a sequential scan.",
+                exc_info=True,
+            )
 
 
 async def ensure_det_score_column(engine: AsyncEngine) -> None:

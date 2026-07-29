@@ -14,6 +14,24 @@ from ._helpers import _rebuild_face_clusters
 router = APIRouter()
 
 
+async def _count_unconfirmed_clusters(db) -> int:
+    """Total clusters (size>=2) of currently-unconfirmed faces.
+
+    Factored out so the two call sites in list_clusters() (empty-page early
+    return, and the normal end-of-request total) can't drift apart — they
+    were previously identical SQL duplicated in two places.
+    """
+    from sqlalchemy import text as _sql
+    return (await db.execute(_sql("""
+        SELECT COUNT(*) FROM (
+            SELECT fc.cluster_id
+            FROM face_clusters fc
+            JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
+            GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
+        ) t
+    """))).scalar_one()
+
+
 @router.post("/clusters/rebuild", response_model=dict)
 async def rebuild_clusters(
     min_size: int = Query(0, ge=0),
@@ -76,14 +94,7 @@ async def list_clusters(
     page_rows = (await db.execute(page_q, {"offset": offset, "limit": limit})).fetchall()
     if not page_rows:
         # total remaining cluster count for UI progress
-        total = (await db.execute(_sql("""
-            SELECT COUNT(*) FROM (
-                SELECT fc.cluster_id
-                FROM face_clusters fc
-                JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
-                GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
-            ) t
-        """))).scalar_one()
+        total = await _count_unconfirmed_clusters(db)
         return {"clusters": [], "total": total}
 
     cids = [r[0] for r in page_rows]
@@ -176,14 +187,7 @@ async def list_clusters(
                 "score": round(best_score, 2),
             }
 
-    total = (await db.execute(_sql("""
-        SELECT COUNT(*) FROM (
-            SELECT fc.cluster_id
-            FROM face_clusters fc
-            JOIN faces f ON f.id = fc.face_id AND f.status = 'unconfirmed'
-            GROUP BY fc.cluster_id HAVING COUNT(*) >= 2
-        ) t
-    """))).scalar_one()
+    total = await _count_unconfirmed_clusters(db)
 
     clusters = [
         {

@@ -25,7 +25,7 @@ except ImportError:
     print("Warning: exifread not installed. EXIF date extraction unavailable. "
           "Run: pip install exifread")
 
-from fernkam.workflows.shared import ALL_EXTENSIONS, PICTURE_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS, format_elapsed
+from fernkam.workflows.shared import ALL_EXTENSIONS, PICTURE_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS, format_elapsed, gather_files
 
 DEFAULT_RAW_DIR     = r"D:\Pictures and Videos\AA_RAW"
 DEFAULT_SORT_ME_DIR = r"D:\Pictures and Videos\AB_TO_SORT\SORT ME"
@@ -38,7 +38,7 @@ def run(raw_dir: str = DEFAULT_RAW_DIR,
     _video_moving(raw_dir, sort_me_dir)
 
     start = time.perf_counter()
-    files = _gather_files(sort_me_dir, ALL_EXTENSIONS)
+    files = gather_files(sort_me_dir, ALL_EXTENSIONS)
     print(f"Sorting {len(files)} items...")
 
     for i, file_path in enumerate(files):
@@ -56,26 +56,12 @@ def run(raw_dir: str = DEFAULT_RAW_DIR,
 
 def _video_moving(raw_dir: str, sort_me_dir: str) -> None:
     start = time.perf_counter()
-    files = _gather_files(raw_dir, VIDEO_EXTENSIONS)
+    files = gather_files(raw_dir, VIDEO_EXTENSIONS)
     staging = Path(sort_me_dir)
     staging.mkdir(parents=True, exist_ok=True)
     for f in files:
         _safe_copy(f, staging / f.name)
     print(f"Video move took: {format_elapsed(start)} ({len(files)} files)")
-
-
-def _gather_files(directory: str, extensions: set) -> list:
-    result = []
-    for root, _, filenames in os.walk(directory):
-        for name in filenames:
-            p = Path(root) / name
-            if p.suffix.lower() in extensions:
-                try:
-                    if p.stat().st_size > 0:
-                        result.append(p)
-                except OSError:
-                    pass
-    return result
 
 
 def _resolve_destination(file_path: Path, export_root: str) -> Path:

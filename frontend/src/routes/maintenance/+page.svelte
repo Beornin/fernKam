@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { Database, HardDrive, RefreshCw, ArrowRight, CheckCircle, AlertCircle, Loader2, FolderSearch, Gauge, Wrench } from '@lucide/svelte';
 	import { api } from '$lib/api';
+	import { formatBytes } from '$lib/format';
 
 	let status = $state<{
 		dirty_count: number;
@@ -61,13 +62,6 @@
 		} finally {
 			loadingDbStats = false;
 		}
-	}
-
-	function formatBytes(n: number): string {
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		let v = n, i = 0;
-		while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-		return `${v.toFixed(1)} ${units[i]}`;
 	}
 
 	async function pollBgTask(taskId: string, onDone: (message: string) => void) {
@@ -147,7 +141,7 @@
 	async function loadStatus() {
 		loadingStatus = true;
 		try {
-			const res = await fetch('http://localhost:8000/api/sync/status');
+			const res = await fetch('/api/sync/status');
 			status = await res.json();
 		} catch (e) {
 			console.error('Failed to load status', e);

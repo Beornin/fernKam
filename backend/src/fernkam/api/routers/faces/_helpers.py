@@ -142,7 +142,7 @@ def _make_face_out(f: Face) -> FaceOut:
 
 # ──────────────────────────── auto-confirm sweep ──────────────────────────────
 
-async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
+async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
     """k-NN voting + margin test sweep against confirmed/ignored pools.
 
     For each unconfirmed/suggested face:
@@ -361,15 +361,14 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> int:
         )
 
     # ── 6. Persist: bulk score update ──
+    # Chunked, parameterized executemany instead of a single UPDATE ... FROM
+    # (VALUES ...) built by string concatenation — over a full sweep (tens of
+    # thousands of faces) that string could reach multiple MB of SQL text.
     if score_updates:
-        await db.execute(
-            _sql(
-                "UPDATE faces SET best_match_score = v.s "
-                "FROM (VALUES " + ",".join(
-                    f"('{u['id']}'::uuid, {u['s']})" for u in score_updates
-                ) + ") AS v(id, s) WHERE faces.id = v.id"
-            )
-        )
+        stmt = _sql("UPDATE faces SET best_match_score = :s WHERE id = :id")
+        CHUNK = 5000
+        for i in range(0, len(score_updates), CHUNK):
+            await db.execute(stmt, score_updates[i:i + CHUNK])
 
     # ── 7. Persist: auto-confirm (with duplicate guard, TWINS-aware) ──
     clean: dict = {}
@@ -459,10 +458,7 @@ async def _rebuild_person_centroids(
                 of recomputing k-means for every person — keeps interleaved
                 rebuilds cheap during a multi-pass sweep.
     """
-    import numpy as np
-    from collections import defaultdict as _dd
     from sqlalchemy import text as _sql
-    from fernkam.face_processor import _pgvector_literal
 
     if person_ids:
         rows = (await db.execute(_sql("""
@@ -484,25 +480,18 @@ async def _rebuild_person_centroids(
     if not rows:
         return {"updated": 0, "n_clusters": n_clusters}
 
-    person_embs: dict = _dd(list)
-    for ptid, emb_text in rows:
-        arr = np.array([float(x) for x in emb_text.strip("[]").split(",")], dtype=np.float32)
-        person_embs[int(ptid)].append(arr)
+    # Parsing every embedding (pure-Python float() per dimension, ~20M calls
+    # over the full confirmed pool) and the k-means passes are CPU-bound with
+    # no DB access — run off the event loop so this doesn't stall the server
+    # for its whole duration. It's awaited directly from two request handlers
+    # (POST /build-centroids and POST /people/{id}/merge).
+    import asyncio
+    loop = asyncio.get_event_loop()
+    person_centroids = await loop.run_in_executor(None, _compute_person_centroids, rows, n_clusters)
 
     total_updated = 0
-    for ptid, embs in person_embs.items():
-        mat = np.array(embs, dtype=np.float32)
-        k = max(1, min(n_clusters, len(embs) // 2))
-
-        centers, assignments = _kmeans_np(mat, k)
-
-        for label in range(len(centers)):
-            c = centers[label]
-            norm = float(np.linalg.norm(c))
-            if norm > 0:
-                c = c / norm
-            lit = _pgvector_literal(c)
-            face_cnt = int((assignments == label).sum())
+    for ptid, label_data in person_centroids.items():
+        for label, lit, face_cnt in label_data:
             await db.execute(_sql(f"""
                 INSERT INTO person_centroids (person_tag_id, label, embedding_v, face_count, built_at)
                 VALUES ({ptid}, {label}, '{lit}'::vector(512), {face_cnt}, now())
@@ -514,13 +503,46 @@ async def _rebuild_person_centroids(
 
         await db.execute(_sql(f"""
             DELETE FROM person_centroids
-            WHERE person_tag_id = {ptid} AND label >= {len(centers)}
+            WHERE person_tag_id = {ptid} AND label >= {len(label_data)}
         """))
 
         total_updated += 1
 
     await db.commit()
     return {"updated": total_updated, "n_clusters": n_clusters}
+
+
+def _compute_person_centroids(rows, n_clusters: int) -> dict:
+    """Blocking: parse embeddings and run k-means per person. Call via run_in_executor.
+
+    Returns {person_tag_id: [(label, pgvector_literal, face_count), ...]}.
+    """
+    import numpy as np
+    from fernkam.face_processor import _pgvector_literal
+
+    person_embs: dict = defaultdict(list)
+    for ptid, emb_text in rows:
+        arr = np.array([float(x) for x in emb_text.strip("[]").split(",")], dtype=np.float32)
+        person_embs[int(ptid)].append(arr)
+
+    result: dict = {}
+    for ptid, embs in person_embs.items():
+        mat = np.array(embs, dtype=np.float32)
+        k = max(1, min(n_clusters, len(embs) // 2))
+        centers, assignments = _kmeans_np(mat, k)
+
+        labels_out = []
+        for label in range(len(centers)):
+            c = centers[label]
+            norm = float(np.linalg.norm(c))
+            if norm > 0:
+                c = c / norm
+            lit = _pgvector_literal(c)
+            face_cnt = int((assignments == label).sum())
+            labels_out.append((label, lit, face_cnt))
+        result[ptid] = labels_out
+
+    return result
 
 
 def _kmeans_np(X, k: int, n_iter: int = 25):
@@ -713,14 +735,14 @@ async def _rebuild_face_clusters(
         cid += 1
 
     # ── Persist: truncate + bulk insert ──
+    # Chunked, parameterized executemany instead of one INSERT built by string
+    # concatenation over every clustered face (can be tens of thousands of
+    # rows for a full unconfirmed-pool rebuild).
     await db.execute(_sql("TRUNCATE TABLE face_clusters"))
     if cluster_rows:
-        ins = _sql(
-            "INSERT INTO face_clusters (face_id, cluster_id) VALUES "
-            + ",".join(
-                f"('{r['fid']}'::uuid, {r['cid']})" for r in cluster_rows
-            )
-        )
-        await db.execute(ins)
+        ins = _sql("INSERT INTO face_clusters (face_id, cluster_id) VALUES (:fid, :cid)")
+        CHUNK = 5000
+        for i in range(0, len(cluster_rows), CHUNK):
+            await db.execute(ins, cluster_rows[i:i + CHUNK])
     await db.commit()
     return cid

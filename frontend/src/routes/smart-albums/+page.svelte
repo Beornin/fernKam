@@ -3,7 +3,11 @@
 	import { Bookmark, Plus, Pencil, Trash2, Play, X, Check, Pin, Search } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { statusCountStore } from '$lib/stores';
+	import { statusCountStore, thumbSizeStore } from '$lib/stores';
+	import { throttle } from '$lib/throttle';
+	import { getThumbSize } from '$lib/thumbUtils';
+
+	const thumbSize = $derived($thumbSizeStore);
 
 	let savedSearches = $state<SavedSearchOut[]>([]);
 	let loading = $state(true);
@@ -58,6 +62,13 @@
 			loadingMore = false;
 		}
 	}
+
+	// Throttle the scroll-threshold check itself (not just loadMore, which is
+	// already re-entrancy-guarded) — a fast scroll/fling fires onscroll dozens
+	// of times per second, all doing pointless comparison work.
+	const onPhotosScroll = throttle((el: HTMLElement) => {
+		if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) loadMore();
+	}, 150);
 
 	async function deleteSearch(ss: SavedSearchOut) {
 		if (!confirm(`Delete smart album "${ss.name}"?`)) return;
@@ -161,7 +172,7 @@
 				<span class="ml-auto text-xs text-zinc-500">{total.toLocaleString()} photo{total === 1 ? '' : 's'}</span>
 			</div>
 
-			<div class="flex-1 overflow-y-auto p-4" onscroll={(e) => { const el = e.currentTarget; if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) loadMore(); }}>
+			<div class="flex-1 overflow-y-auto p-4" onscroll={(e) => onPhotosScroll(e.currentTarget)}>
 				{#if loadingPhotos}
 					<div class="flex justify-center py-16"><div class="w-6 h-6 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div></div>
 				{:else if photos.length === 0}
@@ -170,13 +181,13 @@
 						<p class="text-sm">No photos match this filter</p>
 					</div>
 				{:else}
-					<div class="grid gap-1" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))">
+					<div class="grid gap-1" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each photos as photo (photo.id)}
 							<button
 								onclick={() => goto(`/photos?photo_id=${photo.id}&back=${encodeURIComponent('/smart-albums')}`)}
 								class="group relative aspect-square bg-zinc-900 rounded overflow-hidden"
 							>
-								<img src="http://localhost:8000/media/thumbnail/{photo.id}?size=sm" alt={photo.filename}
+								<img src="/media/thumbnail/{photo.id}?size={getThumbSize(thumbSize)}" alt={photo.filename}
 									class="w-full h-full object-cover" loading="lazy" />
 							</button>
 						{/each}

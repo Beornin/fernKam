@@ -77,9 +77,19 @@ async def batch_assign_faces(
                         seen_photos.add(phid)
 
             if conflict_ids:
+                # Can't confirm the same (non-TWINS) person twice in one photo,
+                # whether the clash is against a face confirmed earlier or
+                # another face in this very batch (e.g. two overlapping
+                # detections of the same person in one cluster). Reverting
+                # these to "unconfirmed" used to send them straight back into
+                # the review queue, where the next cluster rebuild grouped
+                # them right back together — the same cluster kept
+                # reappearing after being "approved". Mark them ignored
+                # instead so approving a cluster actually clears it out; the
+                # first face in each photo still gets confirmed normally.
                 await db.execute(
                     update(Face).where(Face.id.in_(conflict_ids))
-                    .values(status="unconfirmed", person_tag_id=None, confirmed_by=None)
+                    .values(status="ignored", person_tag_id=None, confirmed_by=None)
                 )
             if ok_ids:
                 await db.execute(

@@ -1,5 +1,3 @@
-const BASE = 'http://localhost:8000';  // direct to backend
-
 export interface PhotoSummary {
   id: number;
   digikam_id: number | null;
@@ -139,14 +137,14 @@ export interface PhotoPage {
   next_cursor?: string | null;
 }
 
-async function get<T>(path: string, params?: Record<string, string | number | boolean | null | undefined>): Promise<T> {
-  const url = new URL(BASE + path, window.location.origin);
+async function get<T>(path: string, params?: Record<string, string | number | boolean | null | undefined>, signal?: AbortSignal): Promise<T> {
+  const url = new URL(path, window.location.origin);
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     }
   }
-  const res = await fetch(url.toString());
+  const res = await fetch(url.toString(), signal ? { signal } : undefined);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return res.json();
 }
@@ -156,8 +154,8 @@ export const api = {
     list: () => get<AlbumNode[]>('/api/albums'),
   },
   map: {
-    points: (params?: { album_path?: string; tag_id?: number; limit?: number }) =>
-      get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params),
+    points: (params?: { album_path?: string; tag_id?: number; limit?: number }, signal?: AbortSignal) =>
+      get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params, signal),
   },
   photos: {
     list: (params: {
@@ -179,8 +177,9 @@ export const api = {
       page?: number;
       page_size?: number;
       cursor?: string;
-    }) => get<PhotoPage>('/api/photos', params),
-    get: (id: number) => get<PhotoDetail>(`/api/photos/${id}`),
+    }, signal?: AbortSignal) => get<PhotoPage>('/api/photos', params, signal),
+    get: (id: number, signal?: AbortSignal) => get<PhotoDetail>(`/api/photos/${id}`, undefined, signal),
+    batch: (ids: number[]) => get<PhotoSummary[]>('/api/photos/batch', { ids: ids.join(',') }),
     patch: (id: number, body: Partial<{ rating: number; color_label: number; title: string; caption: string }>) =>
       fetch(`/api/photos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()),
     detectFaces: (id: number) =>
@@ -203,10 +202,10 @@ export const api = {
       fetch('/api/photos/batch-detect-all', { method: 'POST' }).then(r => r.json() as Promise<BatchDetectResult>),
     unscannedCount: () => get<{ count: number }>('/api/photos/unscanned-count'),
     trash: (id: number) =>
-      fetch(`${BASE}/api/photos/${id}/trash`, { method: 'POST' }).then(r => r.json() as Promise<{ ok: boolean; filename: string }>),
+      fetch(`/api/photos/${id}/trash`, { method: 'POST' }).then(r => r.json() as Promise<{ ok: boolean; filename: string }>),
   },
   tags: {
-    list: (params?: { flat?: boolean; search?: string }) => get<TagOut[]>('/api/tags', params),
+    list: (params?: { flat?: boolean; search?: string }, signal?: AbortSignal) => get<TagOut[]>('/api/tags', params, signal),
     create: (body: { name: string; parent_id?: number | null; is_person?: boolean }) =>
       fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
     update: (id: number, body: { name?: string; parent_id?: number | null }) =>
@@ -225,6 +224,7 @@ export const api = {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string; limit?: number; offset?: number }) =>
       get<FaceOut[]>('/api/faces/', params),
     unassignedCount: () => get<{ count: number }>('/api/faces/unassigned/count'),
+    ignoredCount: () => get<{ count: number }>('/api/faces/ignored/count'),
     suggestionsPeople: (params?: { min_score?: number }) =>
       get<Array<{ person_id: number; person_name: string; count: number }>>('/api/faces/suggestions/people', params),
     candidates: (params: { person_tag_id: number; limit?: number; min_score?: number }) =>
@@ -398,16 +398,16 @@ export const api = {
     tree: () => get<AlbumNode[]>('/api/stacks/tree'),
     get: (id: number) => get<StackDetail>(`/api/stacks/${id}`),
     detect: (album_path?: string) =>
-      fetch(`${BASE}/api/stacks/detect`, {
+      fetch(`/api/stacks/detect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(album_path ? { album_path } : {}),
       }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ created: number; updated: number; removed: number }>; }),
     syncTags: (stackId: number) =>
-      fetch(`${BASE}/api/stacks/${stackId}/sync-tags`, { method: 'POST' })
+      fetch(`/api/stacks/${stackId}/sync-tags`, { method: 'POST' })
         .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ synced: number; errors: number; members: number }>; }),
     setCover: (stackId: number, photoId: number) =>
-      fetch(`${BASE}/api/stacks/${stackId}/set-cover`, {
+      fetch(`/api/stacks/${stackId}/set-cover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ photo_id: photoId }),

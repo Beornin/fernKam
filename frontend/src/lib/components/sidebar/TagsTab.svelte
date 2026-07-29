@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { api, type TagOut } from '$lib/api';
 	import { Tag, ChevronRight, ChevronDown, User, Edit2, Trash2, Move, Search, Plus } from '@lucide/svelte';
 	import { buildFilterUrl } from '$lib/shellFilters';
@@ -32,7 +33,16 @@
 		loading = false;
 	}
 
-	$effect(() => { loadTags(); });
+	onMount(() => { loadTags(); });
+
+	// The old version re-ran loadTags() from a $effect that read `search`
+	// synchronously, firing two full tag-tree requests (tree + allTags) per
+	// keystroke. Debounce so typing only triggers one request after a pause.
+	let searchDebounce: ReturnType<typeof setTimeout>;
+	function onSearchInput() {
+		clearTimeout(searchDebounce);
+		searchDebounce = setTimeout(() => loadTags(), 250);
+	}
 
 	function selectTag(tag: TagOut) {
 		goto(buildFilterUrl($page.url, 'tags', { tag_id: tag.id }));
@@ -137,6 +147,7 @@
 			placeholder="Filter…"
 			class="w-full pl-6 pr-2 py-1 text-xs bg-zinc-800 border border-zinc-700 rounded text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
 			bind:value={search}
+			oninput={onSearchInput}
 		/>
 	</div>
 </div>

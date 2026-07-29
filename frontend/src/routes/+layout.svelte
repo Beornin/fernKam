@@ -17,7 +17,7 @@ let taskInterval: ReturnType<typeof setInterval>;
 
 async function pollTasks() {
 	try {
-		const res = await fetch('http://localhost:8000/api/sync/tasks?running_only=1');
+		const res = await fetch('/api/sync/tasks?running_only=1');
 		if (!res.ok) return;
 		const data = await res.json();
 		const running = data.tasks ?? [];
@@ -38,7 +38,7 @@ onDestroy(() => {
 
 async function shutdown() {
 	if (confirm('Shutdown fernKam?')) {
-		try { await fetch('http://localhost:8000/api/shutdown', { method: 'POST' }); } catch { /* expected */ }
+		try { await fetch('/api/shutdown', { method: 'POST' }); } catch { /* expected */ }
 	}
 }
 

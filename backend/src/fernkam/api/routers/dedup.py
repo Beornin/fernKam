@@ -119,33 +119,53 @@ async def list_duplicate_groups(
     """
     offset = (page - 1) * page_size
 
-    total_groups_row = await db.execute(text("""
-        SELECT COUNT(*) FROM (
-            SELECT sha256 FROM photos
+    # Single GROUP BY pass instead of two — the previous version scanned/grouped
+    # the whole photos table twice per request (once for the total group count,
+    # once more for the page of rows). COUNT(*) OVER() gets both from one scan.
+    page_result = (await db.execute(text("""
+        WITH dup_groups AS (
+            SELECT sha256, COUNT(*) AS cnt
+            FROM photos
             WHERE sha256 IS NOT NULL AND status = 1
-            GROUP BY sha256 HAVING COUNT(*) >= :min_count
-        ) g
-    """), {"min_count": min_count})
-    total_groups = total_groups_row.scalar_one()
-
-    groups_rows = (await db.execute(text("""
-        SELECT sha256, COUNT(*) AS cnt
-        FROM photos
-        WHERE sha256 IS NOT NULL AND status = 1
-        GROUP BY sha256
-        HAVING COUNT(*) >= :min_count
+            GROUP BY sha256
+            HAVING COUNT(*) >= :min_count
+        )
+        SELECT sha256, cnt, COUNT(*) OVER() AS total_groups
+        FROM dup_groups
         ORDER BY cnt DESC, sha256
         LIMIT :lim OFFSET :off
     """), {"min_count": min_count, "lim": page_size, "off": offset})).fetchall()
 
+    groups_rows = [(r.sha256, r.cnt) for r in page_result]
+    total_groups = page_result[0].total_groups if page_result else 0
+    # COUNT(*) OVER() reflects only this page's window when the page is empty
+    # (e.g. requesting an offset past the end) — fall back to a real count.
+    if not page_result and offset > 0:
+        total_groups = (await db.execute(text("""
+            SELECT COUNT(*) FROM (
+                SELECT sha256 FROM photos
+                WHERE sha256 IS NOT NULL AND status = 1
+                GROUP BY sha256 HAVING COUNT(*) >= :min_count
+            ) g
+        """), {"min_count": min_count})).scalar_one()
+
+    # Single batched fetch for every group on this page instead of one SELECT
+    # per group (was up to `page_size` round-trips per request).
+    shas = [sha for sha, _cnt in groups_rows]
+    by_sha: dict[str, list] = {}
+    if shas:
+        photo_rows = (await db.execute(
+            select(Photo.sha256, Photo.id, Photo.filename, Photo.album_path,
+                   Photo.taken_at, Photo.file_size)
+            .where(Photo.sha256.in_(shas))
+            .where(Photo.status == 1)
+            .order_by(Photo.sha256, Photo.imported_at.asc())
+        )).fetchall()
+        for r in photo_rows:
+            by_sha.setdefault(r.sha256, []).append(r)
+
     groups = []
     for sha, cnt in groups_rows:
-        photo_rows = (await db.execute(
-            select(Photo.id, Photo.filename, Photo.album_path, Photo.taken_at, Photo.file_size)
-            .where(Photo.sha256 == sha)
-            .where(Photo.status == 1)
-            .order_by(Photo.imported_at.asc())
-        )).fetchall()
         groups.append({
             "sha256": sha,
             "count": cnt,
@@ -157,7 +177,7 @@ async def list_duplicate_groups(
                     "taken_at": r.taken_at.isoformat() if r.taken_at else None,
                     "file_size": r.file_size,
                 }
-                for r in photo_rows
+                for r in by_sha.get(sha, [])
             ],
         })
 

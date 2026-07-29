@@ -3,6 +3,8 @@
 	import { onMount } from 'svelte';
 	import { Copy, Trash2, RefreshCw, ChevronDown } from '@lucide/svelte';
 	import { statusCountStore } from '$lib/stores';
+	import { throttle } from '$lib/throttle';
+	import { formatBytes } from '$lib/format';
 
 	type DupPhoto = { id: number; filename: string; album_path: string; taken_at: string | null; file_size: number | null };
 	type DupGroup = { sha256: string; count: number; photos: DupPhoto[] };
@@ -18,16 +20,9 @@
 
 	const PAGE_SIZE = 50;
 
-	function fmt(bytes: number | null) {
-		if (!bytes) return '—';
-		if (bytes < 1024) return `${bytes} B`;
-		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-		return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-	}
-
 	async function loadStats() {
 		stats = await api.dedup.stats();
-		statusCountStore.set(`${stats.duplicate_groups} dup groups · ${fmt(stats.wasted_bytes)} wasted`);
+		statusCountStore.set(`${stats.duplicate_groups} dup groups · ${formatBytes(stats.wasted_bytes)} wasted`);
 	}
 
 	async function loadGroups(reset = true) {
@@ -53,6 +48,13 @@
 			loadingMore = false;
 		}
 	}
+
+	// The threshold check itself is cheap, but a fast scroll/fling fires the
+	// onscroll event dozens of times per second — throttle so it runs at most
+	// once per 150ms instead of on every tick.
+	const onGroupsScroll = throttle((el: HTMLElement) => {
+		if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) loadMore();
+	}, 150);
 
 	async function startCompute() {
 		computing = true;
@@ -117,12 +119,12 @@
 	{#if stats}
 		<div class="shrink-0 px-5 py-2 bg-zinc-900/30 border-b border-zinc-800/50 flex items-center gap-6 text-xs">
 			<span><span class="text-zinc-200 font-medium">{stats.duplicate_groups.toLocaleString()}</span> <span class="text-zinc-500">duplicate groups</span></span>
-			<span><span class="text-zinc-200 font-medium">{fmt(stats.wasted_bytes)}</span> <span class="text-zinc-500">potentially reclaimable</span></span>
+			<span><span class="text-zinc-200 font-medium">{formatBytes(stats.wasted_bytes)}</span> <span class="text-zinc-500">potentially reclaimable</span></span>
 		</div>
 	{/if}
 
 	<!-- Groups list -->
-	<div class="flex-1 overflow-y-auto p-5" onscroll={(e) => { const el = e.currentTarget; if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) loadMore(); }}>
+	<div class="flex-1 overflow-y-auto p-5" onscroll={(e) => onGroupsScroll(e.currentTarget)}>
 		{#if loading}
 			<div class="flex justify-center py-16">
 				<div class="w-6 h-6 border-2 border-zinc-700 border-t-amber-400 rounded-full animate-spin"></div>
@@ -152,7 +154,7 @@
 						<div class="divide-y divide-zinc-800/60">
 							{#each group.photos as photo, pi (photo.id)}
 								<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-zinc-800/30 transition-colors group">
-									<img src="http://localhost:8000/media/thumbnail/{photo.id}?size=sm" alt={photo.filename}
+									<img src="/media/thumbnail/{photo.id}?size=sm" alt={photo.filename}
 										class="w-10 h-10 object-cover rounded shrink-0 bg-zinc-800" loading="lazy" />
 									<div class="flex-1 min-w-0">
 										<p class="text-xs text-zinc-200 truncate font-medium">{photo.filename}</p>
@@ -160,7 +162,7 @@
 									</div>
 									<div class="shrink-0 text-right">
 										<p class="text-[11px] text-zinc-500">{photo.taken_at ? new Date(photo.taken_at).toLocaleDateString() : '—'}</p>
-										<p class="text-[11px] text-zinc-600">{fmt(photo.file_size)}</p>
+										<p class="text-[11px] text-zinc-600">{formatBytes(photo.file_size)}</p>
 									</div>
 									{#if pi > 0}
 										<button onclick={() => trashPhoto(gi, photo)}

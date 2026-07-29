@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import Select, and_, func, or_, select, text, union
+from sqlalchemy import Select, and_, bindparam, exists, func, or_, select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.db.models.photos import Camera, Face, Lens, Photo, PhotoTag, Tag
@@ -36,11 +36,22 @@ def _cache_key(filters: "PhotoFilters") -> str:
     return json.dumps(dataclasses.asdict(filters), default=str, sort_keys=True)
 
 
+def _evict_expired_count_cache() -> None:
+    """Drop expired entries — every distinct filter combination ever queried
+    got its own permanent key otherwise, since expiry was only checked on
+    read, never swept, so entries for filters nobody re-queries just pile up
+    for the life of the process."""
+    now = _time.monotonic()
+    for key in [k for k, (_n, exp) in _COUNT_CACHE.items() if now >= exp]:
+        del _COUNT_CACHE[key]
+
+
 async def count_photos(filters: "PhotoFilters", db: AsyncSession, base_q=None) -> int:
     """Return total matching photo count, using a 30-second in-process TTL cache.
 
     Pass `base_q` (already-built query) to avoid calling build_photo_query twice.
     """
+    _evict_expired_count_cache()
     key = _cache_key(filters)
     cached = _COUNT_CACHE.get(key)
     if cached and _time.monotonic() < cached[1]:
@@ -88,7 +99,11 @@ async def _tag_subtree_ids(db: AsyncSession, tag_id: int) -> list[int]:
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
     if not tag:
         return []
-    rows = await db.execute(select(Tag.id).where(text(f"path <@ '{tag.path}'")))
+    # Parameterized (not f-string interpolated) — tag.path is derived from a
+    # user-supplied tag name, so a raw string-interpolated query here would be
+    # SQL-injectable via a crafted tag name.
+    path_cond = text("path <@ CAST(:tpath AS ltree)").bindparams(bindparam("tpath", tag.path))
+    rows = await db.execute(select(Tag.id).where(path_cond))
     return [r[0] for r in rows]
 
 
@@ -167,10 +182,13 @@ async def build_photo_query(f: PhotoFilters, db: AsyncSession) -> Select:
     elif f.has_gps is False:
         q = q.where(or_(Photo.latitude.is_(None), Photo.longitude.is_(None)))
 
+    # EXISTS (correlated, index-seekable, short-circuits on first match) instead
+    # of IN/NOT IN (materializes the whole subquery result set before comparing).
+    has_face_row = exists(select(Face.photo_id).where(Face.photo_id == Photo.id))
     if f.has_faces is True:
-        q = q.where(Photo.id.in_(select(Face.photo_id)))
+        q = q.where(has_face_row)
     elif f.has_faces is False:
-        q = q.where(Photo.id.not_in(select(Face.photo_id)))
+        q = q.where(~has_face_row)
 
     if f.no_date is True:
         q = q.where(Photo.taken_at.is_(None))

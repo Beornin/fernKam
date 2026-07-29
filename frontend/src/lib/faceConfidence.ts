@@ -7,8 +7,3 @@ export function scoreBadgeClass(score: number): string {
 	return 'bg-zinc-600/90 text-zinc-100';
 }
 
-export function scoreDotClass(score: number): string {
-	if (score >= 0.75) return 'bg-emerald-500';
-	if (score >= 0.5) return 'bg-amber-400';
-	return 'bg-zinc-500';
-}

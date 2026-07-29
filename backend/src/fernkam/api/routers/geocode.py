@@ -77,12 +77,17 @@ async def run_geocoding(
                     coords = [(float(r.latitude), float(r.longitude)) for r in batch]
                     results = await asyncio.get_event_loop().run_in_executor(None, _lookup_batch, coords)
 
-                    for row, geo in zip(batch, results):
-                        await bg_db.execute(text(
-                            "UPDATE photos SET country_code=:cc, state=:state, city=:city WHERE id=:id"
-                        ), {"cc": geo.get("cc", ""), "state": geo.get("admin1", ""),
-                            "city": geo.get("name", ""), "id": row.id})
-                        done += 1
+                    # Single executemany-style call per batch (was one round-trip
+                    # per photo — up to 120k individual UPDATEs).
+                    params = [
+                        {"cc": geo.get("cc", ""), "state": geo.get("admin1", ""),
+                         "city": geo.get("name", ""), "id": row.id}
+                        for row, geo in zip(batch, results)
+                    ]
+                    await bg_db.execute(text(
+                        "UPDATE photos SET country_code=:cc, state=:state, city=:city WHERE id=:id"
+                    ), params)
+                    done += len(batch)
 
                     await bg_db.commit()
                     await task_manager.update_task(

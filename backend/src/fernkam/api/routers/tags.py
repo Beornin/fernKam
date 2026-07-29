@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import func, select, delete, text
+from sqlalchemy import select, delete, text
 
 from fernkam.api.deps import DB
 from fernkam.api.schemas import TagOut
@@ -53,16 +53,6 @@ async def list_tags(
             for t in tags
         ]
     return _build_tag_tree(list(tags))
-
-
-@router.get("/{tag_id}/photos/count")
-async def tag_photo_count(tag_id: int, db: DB) -> dict:
-    count = (
-        await db.execute(
-            select(func.count()).select_from(PhotoTag).where(PhotoTag.tag_id == tag_id)
-        )
-    ).scalar_one()
-    return {"tag_id": tag_id, "photo_count": count}
 
 
 @router.post("", response_model=TagOut, status_code=201)

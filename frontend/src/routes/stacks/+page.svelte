@@ -4,9 +4,12 @@
 	import { api } from '$lib/api';
 	import type { AlbumNode, StackSummary, StackDetail } from '$lib/api';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
+	import { thumbSizeStore } from '$lib/stores';
+	import { getThumbSize } from '$lib/thumbUtils';
 
+	const thumbSize = $derived($thumbSizeStore);
 	const THUMB = (id: number | null) =>
-		id ? `http://localhost:8000/media/thumbnail/${id}?size=sm` : null;
+		id ? `/media/thumbnail/${id}?size=${getThumbSize(thumbSize)}` : null;
 
 	// ---------------------------------------------------------------------------
 	// State
@@ -197,7 +200,7 @@
 						<p class="text-sm">No stacks found. Run <strong class="text-amber-400">Detect Stacks</strong> to build the catalog.</p>
 					</div>
 				{:else}
-					<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))">
+					<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each stacks as s}
 							{@const active = selected?.id === s.id}
 							<button
