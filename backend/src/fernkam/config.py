@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     has_pgvector: bool = False
     has_postgis: bool = False
 
+    # Duplicate auto-clean folder priority — comma-separated top-level album
+    # path prefixes. Any album_path starting with one of `dedup_staging_folders`
+    # is the lowest priority (auto-delete first); `dedup_archive_folder` is the
+    # middle priority; anything else (a manually-organized/special folder) is
+    # the highest priority and is always kept over the other two.
+    dedup_staging_folders: str = "AB_TO_SORT,AC_SORTED"  # DEDUP_STAGING_FOLDERS
+    dedup_archive_folder: str = "Ordered by Dates"       # DEDUP_ARCHIVE_FOLDER
+
 
 @lru_cache
 def get_settings() -> Settings:

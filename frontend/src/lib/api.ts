@@ -137,6 +137,39 @@ export interface PhotoPage {
   next_cursor?: string | null;
 }
 
+export interface DedupPhoto {
+  id: number;
+  filename: string;
+  album_path: string;
+  taken_at: string | null;
+  file_size: number | null;
+  media_type: string;
+  tier: number; // 0 = staging (AB_TO_SORT/AC_SORTED), 1 = archive (Ordered by Dates), 2 = special/manually-organized folder
+}
+
+export interface DedupAutoCleanGroup {
+  sha256: string;
+  keep: DedupPhoto[];
+  delete: DedupPhoto[];
+  merge: { rating: number | null; color_label: number | null; title: string | null; caption: string | null; tags: string[] };
+}
+
+export interface DedupAutoCleanSkip {
+  id: number;
+  sha256: string;
+  filename: string;
+  album_path: string;
+  media_type: string;
+  reason: string;
+}
+
+export interface DedupAutoCleanPlan {
+  groups: DedupAutoCleanGroup[];
+  skipped: DedupAutoCleanSkip[];
+  total_delete_count: number;
+  total_reclaim_bytes: number;
+}
+
 async function get<T>(path: string, params?: Record<string, string | number | boolean | null | undefined>, signal?: AbortSignal): Promise<T> {
   const url = new URL(path, window.location.origin);
   if (params) {
@@ -372,7 +405,13 @@ export const api = {
         return r.json() as Promise<{ task_id: string; status: string }>;
       }),
     groups: (params?: { page?: number; page_size?: number; min_count?: number }) =>
-      get<{ total_groups: number; page: number; page_size: number; groups: Array<{ sha256: string; count: number; photos: Array<{ id: number; filename: string; album_path: string; taken_at: string | null; file_size: number | null }> }> }>('/api/dedup/groups', params),
+      get<{ total_groups: number; page: number; page_size: number; groups: Array<{ sha256: string; count: number; photos: Array<DedupPhoto> }> }>('/api/dedup/groups', params),
+    autoCleanPreview: () => get<DedupAutoCleanPlan>('/api/dedup/auto-clean/preview'),
+    autoCleanApply: () =>
+      fetch('/api/dedup/auto-clean/apply', { method: 'POST' }).then(r => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json() as Promise<{ task_id: string; status: string }>;
+      }),
   },
   savedSearches: {
     list: (params?: { pinned_only?: boolean }) => get<SavedSearchOut[]>('/api/saved-searches', params),
