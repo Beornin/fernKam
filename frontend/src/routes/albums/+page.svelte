@@ -23,7 +23,7 @@
 </script>
 
 <div class="p-6">
-	<h1 class="text-xl font-semibold text-zinc-100 mb-6">Albums</h1>
+	<h1 class="text-3xl font-bold text-zinc-100 mb-6">Albums</h1>
 
 	{#if loading}
 		<div class="flex items-center gap-2 text-zinc-500 text-sm">

@@ -156,9 +156,9 @@
 
 		<!-- Toolbar -->
 		<header class="px-6 py-4 border-b border-zinc-800 flex items-center gap-4 shrink-0">
-			<Layers size={22} class="text-amber-400" />
+			<Layers size={18} class="text-amber-400 shrink-0" />
 			<div>
-				<h1 class="text-lg font-semibold leading-tight">RAW / JPG Stacks</h1>
+				<h1 class="text-base font-semibold text-zinc-100">RAW / JPG Stacks</h1>
 				<p class="text-xs text-zinc-500">{total} stack{total !== 1 ? 's' : ''}{albumFilter ? ` in ${albumFilter}` : ''}</p>
 			</div>
 
@@ -213,7 +213,7 @@
 										<img src={THUMB(s.cover_photo_id)} alt={s.stem_key} class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
 									{:else}
 										<div class="w-full h-full flex items-center justify-center text-zinc-700">
-											<Image size={36} />
+											<Image size={32} />
 										</div>
 									{/if}
 								</div>

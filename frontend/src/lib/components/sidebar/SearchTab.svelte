@@ -324,7 +324,7 @@
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onclick={() => showSaveModal = false}>
 		<div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl w-80 p-5" onclick={(e) => e.stopPropagation()}>
 			<h3 class="text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2">
-				<Bookmark size={15} class="text-amber-400" /> Save as Smart Album
+				<Bookmark size={14} class="text-amber-400" /> Save as Smart Album
 			</h3>
 			<input type="text" placeholder="Album name…"
 				bind:value={saveSearchName}
@@ -337,7 +337,7 @@
 				<button onclick={() => showSaveModal = false}
 					class="px-3 py-1.5 text-xs rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400">Cancel</button>
 				<button onclick={saveSearch} disabled={savingSearch}
-					class="px-4 py-1.5 text-xs rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50 flex items-center gap-1.5">
+					class="px-3 py-1.5 text-xs rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-50 flex items-center gap-1.5">
 					<Bookmark size={11} /> {savingSearch ? 'Saving…' : 'Save'}
 				</button>
 			</div>

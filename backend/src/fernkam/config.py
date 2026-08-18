@@ -54,6 +54,25 @@ class Settings(BaseSettings):
     has_pgvector: bool = False
     has_postgis: bool = False
 
+    # ── Postgres per-database tuning, applied at startup (see db/index_setup.py) ──
+    # These are set with ALTER DATABASE (scoped to fernKam's own database only,
+    # never cluster-wide) and take effect for new connections without a restart.
+    # Clear any value to "" to leave that setting untouched.
+    #
+    # random_page_cost: Postgres ships with 4.0, the historical cost ratio for a
+    # 7200rpm spinning disk. On SSD/NVMe that badly over-penalises index scans —
+    # measured on a 125k-photo library, the stock 4.0 made the planner pick a
+    # Sort+GroupAggregate over a HashAggregate for duplicate detection (977 ms
+    # vs 147 ms). Set to "4" if the database really is on a spinning disk.
+    pg_random_page_cost: str = "1.1"          # PG_RANDOM_PAGE_COST
+    # work_mem is per sort/hash operation. fernKam is a single-user desktop app,
+    # so concurrency is low and a larger value is safe.
+    pg_work_mem: str = "32MB"                 # PG_WORK_MEM
+    # Planner hint only (allocates nothing) — roughly 50-75% of system RAM.
+    # Left empty by default because it's machine-specific and can't be guessed;
+    # e.g. set PG_EFFECTIVE_CACHE_SIZE=24GB on a 64 GB machine.
+    pg_effective_cache_size: str = ""         # PG_EFFECTIVE_CACHE_SIZE
+
     # Duplicate auto-clean folder priority — comma-separated top-level album
     # path prefixes. Any album_path starting with one of `dedup_staging_folders`
     # is the lowest priority (auto-delete first); `dedup_archive_folder` is the

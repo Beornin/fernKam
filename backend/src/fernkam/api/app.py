@@ -169,8 +169,9 @@ async def lifespan(app: FastAPI):
 
     # Ensure optimal indexes exist and dead ones are dropped
     try:
-        from fernkam.db.index_setup import ensure_indexes
+        from fernkam.db.index_setup import ensure_database_tuning, ensure_indexes
         await ensure_indexes(get_async_engine())
+        await ensure_database_tuning(get_async_engine())
         print("[index_setup] index maintenance complete", flush=True)
     except Exception as _e:
         print(f"[index_setup] failed: {_e}", flush=True)

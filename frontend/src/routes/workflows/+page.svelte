@@ -185,7 +185,7 @@
 					<div class="flex items-start justify-between gap-4">
 						<div class="flex items-start gap-4 flex-1 min-w-0">
 							<div class="p-3 {colorClasses(wf.color, 'icon-bg')} rounded-lg shrink-0">
-								<Workflow size={22} class={colorClasses(wf.color, 'icon')} />
+								<Workflow size={20} class={colorClasses(wf.color, 'icon')} />
 							</div>
 							<div class="min-w-0">
 								<div class="flex items-center gap-2 mb-1">

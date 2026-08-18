@@ -536,7 +536,7 @@
 		<button
 			onclick={reviewTrash}
 			disabled={reviewTrashing || reviewPhotos.length === 0}
-			class="flex items-center gap-2 px-5 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium disabled:opacity-40 transition-colors"
+			class="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium disabled:opacity-40 transition-colors"
 			title="Trash this photo (Delete)"
 		>
 			<Trash2 size={16} />

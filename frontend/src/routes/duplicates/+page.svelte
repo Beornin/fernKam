@@ -385,7 +385,7 @@
 						Cancel
 					</button>
 					<button onclick={confirmAutoClean} disabled={autoCleanApplying || autoCleanPlan.groups.length === 0}
-						class="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-40">
+						class="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-40">
 						<Trash2 size={12} />
 						{autoCleanApplying ? 'Cleaning…' : `Confirm & Delete ${autoCleanPlan.total_delete_count}`}
 					</button>

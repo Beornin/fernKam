@@ -16,6 +16,32 @@ body {
 ::-webkit-scrollbar-thumb { background-color: #3f3f46; border-radius: 9999px; }
 ::-webkit-scrollbar-thumb:hover { background-color: #71717a; }
 
+/* ── Sizing scale ────────────────────────────────────────────────────────
+   Keep new UI on these steps so controls stay visually consistent. Audited
+   across every route; deviations below were normalised onto this scale.
+
+   Buttons (pick by prominence, not by page):
+     compact / inline      px-2 py-1    text-xs      e.g. inline toolbars
+     standard              px-3 py-1.5  text-xs      the default — most buttons
+     primary / dialog      px-4 py-2    text-sm      modal actions, page CTAs
+     icon-only             p-1 or p-1.5              square, no text
+   Inputs & selects        px-2 py-1.5  text-xs      (buttons styled as a field
+                                                      match this, not a button)
+
+   Lucide icons — use these steps only:
+     10  micro badges over thumbnails
+     12  inline with text-xs            (most common)
+     14  inline with text-sm / buttons
+     16  toolbar / panel actions
+     18  page-header bar icon
+     20  nav rail
+     24+ empty-state art only (28/32/40/48)
+
+   Page titles:
+     compact header bar    h1.text-base.font-semibold  + an 18px icon
+     full-page            h1.text-3xl.font-bold
+   ──────────────────────────────────────────────────────────────────────── */
+
 /* ── Color palettes ──────────────────────────────────────────────────────
    The app uses Tailwind's amber-* scale as its one accent color everywhere
    (nav highlights, buttons, focus states, links), so remapping just those

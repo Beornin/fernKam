@@ -143,17 +143,17 @@
 		<div class="shrink-0 flex items-center justify-center gap-3 px-4 py-5">
 			<button
 				onclick={() => pickerOpen = true} disabled={busy}
-				class="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium disabled:opacity-50 transition-colors"
+				class="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium disabled:opacity-50 transition-colors"
 				title="Wrong person — reassign (W)"
 			><UserX size={16} /> Wrong person</button>
 			<button
 				onclick={handleUnknown} disabled={busy}
-				class="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-zinc-200 font-medium disabled:opacity-50 transition-colors"
+				class="flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-zinc-200 font-medium disabled:opacity-50 transition-colors"
 				title="Send back to the review queue (U)"
 			><HelpCircle size={16} /> Mark unknown</button>
 			<button
 				onclick={handleDelete} disabled={busy}
-				class="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-red-700 hover:bg-red-600 text-white font-medium disabled:opacity-50 transition-colors"
+				class="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white font-medium disabled:opacity-50 transition-colors"
 				title="Delete this face tag permanently (Del)"
 			><Trash2 size={16} /> Delete</button>
 		</div>

@@ -61,7 +61,7 @@
 </script>
 
 <div class="p-6">
-	<h1 class="text-2xl font-bold mb-6">Background Tasks</h1>
+	<h1 class="text-3xl font-bold text-zinc-100 mb-6">Background Tasks</h1>
 
 	{#if loading}
 		<div class="text-gray-500">Loading tasks...</div>

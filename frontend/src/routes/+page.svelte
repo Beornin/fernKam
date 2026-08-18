@@ -338,7 +338,7 @@
 				disabled={backingUp}
 				class="w-full py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium text-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 mb-3"
 			>
-				<Save size={15} />
+				<Save size={14} />
 				{backingUp ? 'Creating backup…' : 'Create Backup Now'}
 			</button>
 
