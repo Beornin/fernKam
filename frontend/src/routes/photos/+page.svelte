@@ -14,7 +14,7 @@
 	import PeopleTab from '$lib/components/sidebar/PeopleTab.svelte';
 	import LabelsTab from '$lib/components/sidebar/LabelsTab.svelte';
 	import MapView from '$lib/components/MapView.svelte';
-	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star, Loader } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
 	import { statusCountStore } from '$lib/stores';
 	import { createLightboxNav } from '$lib/lightboxNav.svelte';
@@ -206,7 +206,18 @@
 		}
 	}
 
+	// A 59 MB NEF takes ~12s to decode and send, during which the viewport was
+	// plain black — the worst moment to accept a rating keystroke, because the
+	// filename has already advanced to a photo you cannot see yet.
+	let reviewLoadedId = $state<number | null>(null);
+	const reviewLoading = $derived(
+		reviewMode && reviewPhotos[reviewIdx] !== undefined
+		&& reviewPhotos[reviewIdx].media_type !== 'video'
+		&& reviewLoadedId !== reviewPhotos[reviewIdx].id
+	);
+
 	function onImgLoad() {
+		reviewLoadedId = reviewPhotos[reviewIdx]?.id ?? null;
 		if (restoreScroll && reviewScroll) {
 			reviewScroll.scrollLeft = savedScrollX;
 			reviewScroll.scrollTop = savedScrollY;
@@ -230,6 +241,23 @@
 		}
 	}
 
+
+	function reviewRate(n: number) {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur || reviewLoading) return;
+		applyToPhotos([cur.id], { rating: n }, n === 0 ? 'Rating cleared' : `${n} star${n === 1 ? '' : 's'}`);
+		if (n > 0 && reviewAdvance) reviewNext();
+	}
+
+	function reviewToggleReject() {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur || reviewLoading) return;
+		// Toggle, so a mis-press is undone by pressing the same thing again.
+		const next = cur.color_label === 1 ? 0 : 1;
+		applyToPhotos([cur.id], { color_label: next }, next === 1 ? 'Rejected (red)' : 'Reject removed');
+		if (next === 1 && reviewAdvance) reviewNext();
+	}
+
 	function onReviewKey(e: KeyboardEvent) {
 		if (!reviewMode) return;
 		if (e.key === 'ArrowLeft') { e.preventDefault(); reviewPrev(); }
@@ -241,23 +269,10 @@
 			// Same cull keys as the grid, acting on the photo on screen. Review
 			// mode could previously only trash, so marking a keeper meant
 			// leaving it — which is why culling here never happened.
-			const cur = reviewPhotos[reviewIdx];
-			if (!cur) return;
-			if (e.key >= '1' && e.key <= '5') {
-				e.preventDefault();
-				applyToPhotos([cur.id], { rating: Number(e.key) }, `${e.key} star${e.key === '1' ? '' : 's'}`);
-				if (reviewAdvance) reviewNext();
-			} else if (e.key === '0') {
-				e.preventDefault();
-				applyToPhotos([cur.id], { rating: 0 }, 'Rating cleared');
-			} else if (e.key === 'x' || e.key === 'X') {
-				e.preventDefault();
-				applyToPhotos([cur.id], { color_label: 1 }, 'Rejected (red)');
-				if (reviewAdvance) reviewNext();
-			} else if (e.key === 'u' || e.key === 'U') {
-				e.preventDefault();
-				applyToPhotos([cur.id], { color_label: 0 }, 'Label cleared');
-			}
+			if (!reviewPhotos[reviewIdx]) return;
+			if (e.key >= '1' && e.key <= '5') { e.preventDefault(); reviewRate(Number(e.key)); }
+			else if (e.key === '0') { e.preventDefault(); reviewRate(0); }
+			else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); reviewToggleReject(); }
 		}
 	}
 
@@ -668,16 +683,40 @@
 	<div class="shrink-0 flex items-center justify-between px-4 py-2 bg-black/80 backdrop-blur-sm z-10">
 		<div class="flex items-center gap-3">
 			<span class="text-white font-semibold text-sm">{reviewPhotos[reviewIdx]?.filename ?? ''}</span>
-			<!-- Current verdict, so the cull keys have visible feedback -->
-			<span class="flex items-center gap-0.5" title="1-5 to rate, 0 to clear">
+
+			<!-- Verdict controls. Clickable as well as keyed: during a cull the
+			     risk is pressing the wrong key on a photo you meant to keep, so
+			     every key has a visible button doing the same thing. -->
+			<span class="flex items-center gap-0.5 pl-2 border-l border-zinc-700 transition-opacity {reviewLoading ? 'opacity-30' : ''}">
 				{#each [1, 2, 3, 4, 5] as n}
-					<Star size={12} class={(reviewPhotos[reviewIdx]?.rating ?? 0) >= n
-						? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'} />
+					<button
+						onclick={() => reviewRate(n)}
+						disabled={reviewLoading}
+						title="{n} star{n === 1 ? '' : 's'}  (key {n})"
+						class="p-0.5 rounded hover:bg-zinc-700 transition-colors"
+					>
+						<Star size={14} class={(reviewPhotos[reviewIdx]?.rating ?? 0) >= n
+							? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'} />
+					</button>
 				{/each}
+				<button
+					onclick={() => reviewRate(0)}
+					disabled={reviewLoading}
+					title="Clear rating  (key 0)"
+					class="ml-0.5 px-1.5 py-0.5 text-[10px] rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+				>clear</button>
 			</span>
-			{#if reviewPhotos[reviewIdx]?.color_label === 1}
-				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">rejected</span>
-			{/if}
+
+			<button
+				onclick={reviewToggleReject}
+				disabled={reviewLoading}
+				title="Reject — marks the red label, does not delete  (key X)"
+				class="px-2 py-1 text-[11px] rounded transition-colors
+					{reviewPhotos[reviewIdx]?.color_label === 1
+						? 'bg-red-600 text-white'
+						: 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+			>{reviewPhotos[reviewIdx]?.color_label === 1 ? 'rejected ✕' : 'reject'}</button>
+
 			{#if reviewTrashedCount > 0}
 				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">{reviewTrashedCount} trashed</span>
 			{/if}
@@ -707,6 +746,23 @@
 		</div>
 	</div>
 
+	<!-- Key legend. A cull pass is fast and destructive-ish; the mistake to
+	     prevent is pressing a key whose meaning you half-remember. -->
+	<div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 bg-zinc-950/90 border-b border-zinc-800 text-[11px] text-zinc-500">
+		{#each [
+			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'],
+			['← →', 'prev / next'], ['Del', 'trash file'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
+		] as [key, what]}
+			<span class="flex items-center gap-1">
+				<kbd class="px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 font-mono text-[10px]">{key}</kbd>
+				{what}
+			</span>
+		{/each}
+		<span class="ml-auto text-zinc-600">
+			Rating and reject are catalogue-only — nothing is deleted except <kbd class="px-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 font-mono text-[10px]">Del</kbd>
+		</span>
+	</div>
+
 	<!-- Image area -->
 	<div
 		bind:this={reviewScroll}
@@ -732,12 +788,27 @@
 					><track kind="captions" /></video>
 				{/key}
 			{:else}
+				{#if reviewLoading}
+					<!-- The cached thumbnail stands in while the full-size decode
+					     runs, so you always see which photo you are judging. -->
+					<div class="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
+						<img
+							src="/media/thumbnail/{reviewPhotos[reviewIdx].id}?size=xl"
+							alt=""
+							class="max-w-[70%] max-h-[70%] object-contain opacity-40 blur-[2px]"
+						/>
+						<span class="flex items-center gap-2 text-xs text-zinc-300 bg-black/70 px-3 py-1.5 rounded-full">
+							<Loader size={13} class="animate-spin" />
+							Decoding {reviewPhotos[reviewIdx].filename}…
+						</span>
+					</div>
+				{/if}
 				<img
 					src="/media/original/{reviewPhotos[reviewIdx].id}"
 					alt={reviewPhotos[reviewIdx].filename}
 					draggable="false"
 					onload={onImgLoad}
-					class="block select-none {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
+					class="block select-none {reviewLoading ? 'invisible' : ''} {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
 					style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
 				/>
 			{/if}
