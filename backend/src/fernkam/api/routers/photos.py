@@ -44,6 +44,7 @@ async def list_photos(
     lens_id: Optional[int] = Query(None),
     has_gps: Optional[bool] = Query(None),
     has_faces: Optional[bool] = Query(None),
+    unnamed_faces: Optional[bool] = Query(None),
     no_date: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     date_from: Optional[date] = Query(None),
@@ -58,7 +59,7 @@ async def list_photos(
         album_path=album_path, tag_id=tag_id, person_tag_id=person_tag_id,
         rating_min=rating_min, color_label=color_label, media_type=media_type,
         camera_id=camera_id, lens_id=lens_id, has_gps=has_gps,
-        has_faces=has_faces, no_date=no_date, search=search,
+        has_faces=has_faces, unnamed_faces=unnamed_faces, no_date=no_date, search=search,
         date_from=date_from, date_to=date_to, country_code=country_code,
     )
     base_q = await build_photo_query(filters, db)
@@ -753,3 +754,37 @@ async def update_photo(photo_id: int, payload: PhotoUpdate, db: DB) -> PhotoSumm
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
     return PhotoSummary.model_validate(row)
+
+
+@router.post("/{photo_id}/reveal", response_model=dict)
+async def reveal_in_file_manager(photo_id: int, db: DB) -> dict:
+    """Open the OS file manager with this photo selected.
+
+    Local desktop app — the backend and the person clicking are on the same
+    machine, which is the only reason this is reasonable at all.
+    """
+    import subprocess
+    import sys
+    from fernkam.thumbnails import photo_disk_path
+
+    row = (await db.execute(
+        select(Photo.album_path, Photo.filename).where(Photo.id == photo_id)
+    )).first()
+    if not row:
+        raise HTTPException(404, "Photo not found")
+    path = photo_disk_path(row[0], row[1])
+    if not path.exists():
+        raise HTTPException(404, f"File not on disk: {path}")
+
+    try:
+        if sys.platform == "win32":
+            # explorer always returns exit code 1 even on success, so its
+            # return code is deliberately not checked.
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path.parent)])
+    except OSError as exc:
+        raise HTTPException(500, f"Could not open file manager: {exc}")
+    return {"ok": True, "path": str(path)}

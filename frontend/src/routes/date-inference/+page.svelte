@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { api } from '$lib/api';
 	import { onMount } from 'svelte';
 	import { CalendarClock, Check, X, ChevronDown, Info } from '@lucide/svelte';
@@ -52,6 +53,9 @@
 			offset = (reset ? 0 : offset) + data.candidates.length;
 			hasMore = data.candidates.length === LIMIT;
 			if (reset) selectedIds = new Set(data.candidates.map(c => c.id));
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load load: ${e}`);
 		} finally {
 			loading = false;
 		}

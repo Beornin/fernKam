@@ -654,30 +654,103 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
         await db.commit()
 
 
+# ──────────────────────── learn-from-manual-confirm ───────────────────────────
+
+async def _relearn_person_bg(
+    person_tag_id: int, seed_face_ids: list, *, propagate: bool = True
+) -> None:
+    """Background job to run after a human confirms faces for one person.
+
+    Two halves, and they are not redundant:
+
+    * `_auto_confirm_similar` searches every unreviewed face against the newly
+      confirmed ones used directly as seeds, so it takes effect immediately.
+    * `_rebuild_person_centroids` refreshes the averaged embedding that drives
+      *ranked suggestions*. That used to happen only inside a full auto-confirm
+      sweep, so suggestions kept scoring against a centroid which had never seen
+      the faces just confirmed by hand.
+
+    `propagate=False` skips the seed search for large bulk assigns (which would
+    hammer the DB) while still refreshing the centroid, which is cheap and is
+    exactly what a freshly labelled cluster needs.
+    """
+    from fernkam.db.session import async_session_factory
+    try:
+        async with async_session_factory() as bg_db:
+            if propagate:
+                await _auto_confirm_similar(bg_db, person_tag_id, seed_face_ids)
+            await _rebuild_person_centroids(bg_db, person_ids={person_tag_id})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("relearn person %s failed: %s", person_tag_id, exc)
+
+
 # ─────────────────────────── cluster helper ───────────────────────────────────
 
 async def _rebuild_face_clusters(
-    db, *, cluster_thresh: float, k: int, min_size: int
+    db, *, cluster_thresh: float, k: int, min_size: int, min_blur: float = 60.0,
+    min_det: float = 0.65,
 ) -> int:
-    """Build same-person clusters of unconfirmed faces and persist to face_clusters.
+    """Build same-person clusters of unreviewed faces and persist to face_clusters.
 
-    Uses the HNSW pgvector index to find each face's k nearest unconfirmed
+    Uses the HNSW pgvector index to find each face's k nearest unreviewed
     neighbours, keeps edges with cosine similarity >= cluster_thresh, then
     union-finds the edge list into connected components. Singletons (no edge
     above threshold) are dropped. Returns the number of clusters written.
+
+    Quality gates (`min_blur`, `min_det`, `min_size`) matter as much as the
+    threshold. An out-of-focus face's embedding collapses toward a generic mean,
+    so every blurry face resembles every other one regardless of identity:
+    without the blur gate one component absorbed 1,440 faces drawn from 1,434
+    *different* photos spanning 2006-2026 across every album (avg blur_score
+    94.9, against 169.9 for real clusters).
+
+    But the gates alone do not prevent union-find chaining. Measured over the
+    live pool with all gates on (blur>=60, det>=0.65, w/h>=60, k=10), the
+    largest component by threshold:
+
+        thresh   clusters   faces in   largest   <=20 faces
+         0.65      1,138      4,374     1,236       1,136
+         0.72        858      2,665       645         856
+         0.78        602      1,656       287         601
+         0.82        452      1,131       112         451
+         0.86        315        716        12         315
+
+    At every setting only one or two components are oversized and the rest are
+    already small, so the threshold is really choosing how much chaining to
+    tolerate in the single worst cluster. 0.82 is the default: the largest
+    component is small enough to plausibly be one real person, and 451 of 452
+    clusters are <= 20 faces.
+
+    Note when re-measuring this: `LIMIT :k` is a bind parameter, so Postgres
+    plans for an unknown limit and does an EXACT nearest-neighbour scan rather
+    than using the HNSW index. Reproducing this query with a *literal* LIMIT
+    silently switches to approximate search, under-retrieves neighbours, and
+    reports far smaller components than production actually builds (6,390 edges
+    vs 14,263 at thresh 0.65). Keep the bind parameter, or the numbers lie.
+
+    ponytail: no cluster cohesion check. The largest surviving component is
+    still a chain rather than one person (mean internal similarity 0.343 at 0.65
+    against 0.6+ for a real person). Split low-cohesion components with k-means
+    (scikit-learn is already a dependency, and _compute_person_centroids already
+    uses it that way) only if the oversized cluster starts costing real review
+    time -- today it costs one "skip" click.
     """
     from collections import defaultdict
     from sqlalchemy import text as _sql
 
     # Boost ef_search so the HNSW index scans enough candidates when
-    # filtering to status='unconfirmed' (a subset of all indexed faces).
+    # filtering to unreviewed faces (a subset of all indexed faces).
     await db.execute(_sql("SET LOCAL hnsw.ef_search = 300"))
 
+    # 'suggested' faces were previously excluded, silently dropping 4,810 faces
+    # from every rebuild — they are exactly as unreviewed as 'unconfirmed' ones.
     edges_q = _sql("""
         WITH unc AS (
             SELECT id, embedding_v
             FROM faces
-            WHERE status = 'unconfirmed' AND embedding_v IS NOT NULL
+            WHERE status IN ('unconfirmed', 'suggested') AND embedding_v IS NOT NULL
+              AND (:min_blur = 0 OR blur_score >= :min_blur)
+              AND (:min_det = 0 OR det_score >= :min_det)
               AND (:min_size = 0 OR (w >= :min_size AND h >= :min_size))
         )
         SELECT u.id AS a, nb.id AS b
@@ -685,8 +758,10 @@ async def _rebuild_face_clusters(
         CROSS JOIN LATERAL (
             SELECT o.id, 1 - (o.embedding_v <=> u.embedding_v) AS score
             FROM faces o
-            WHERE o.status = 'unconfirmed' AND o.embedding_v IS NOT NULL
+            WHERE o.status IN ('unconfirmed', 'suggested') AND o.embedding_v IS NOT NULL
               AND o.id <> u.id
+              AND (:min_blur = 0 OR o.blur_score >= :min_blur)
+              AND (:min_det = 0 OR o.det_score >= :min_det)
               AND (:min_size = 0 OR (o.w >= :min_size AND o.h >= :min_size))
             ORDER BY o.embedding_v <=> u.embedding_v
             LIMIT :k
@@ -694,7 +769,9 @@ async def _rebuild_face_clusters(
         WHERE nb.score >= :thresh
     """)
     rows = (await db.execute(
-        edges_q, {"min_size": min_size, "k": k, "thresh": cluster_thresh}
+        edges_q,
+        {"min_size": min_size, "k": k, "thresh": cluster_thresh,
+         "min_blur": min_blur, "min_det": min_det},
     )).fetchall()
 
     # ── Union-find over the edge list ──

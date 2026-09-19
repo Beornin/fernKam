@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { onMount } from 'svelte';
 	import { Layers, RefreshCw, ChevronRight, Star, Image, Tag, X, Loader, ScanSearch, CheckCircle } from '@lucide/svelte';
 	import { api } from '$lib/api';
@@ -48,6 +49,9 @@
 			});
 			stacks = res.items;
 			total = res.total;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load stacks: ${e}`);
 		} finally {
 			loading = false;
 		}
@@ -65,6 +69,9 @@
 			detectResult = await api.stacks.detect(albumFilter ?? undefined);
 			await loadTree();
 			await loadStacks();
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load detect: ${e}`);
 		} finally {
 			detecting = false;
 		}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
@@ -77,7 +78,7 @@
 	}
 
 	async function deleteTag(id: number) {
-		if (!confirm('Delete this tag and all its children?')) return;
+		if (!(await ask('Delete this tag and all its children?'))) return;
 		try {
 			await api.tags.delete(id);
 			selectedTagIds.delete(id);
@@ -88,16 +89,16 @@
 	}
 
 	async function removeFromPhotos(id: number) {
-		if (!confirm('Remove this tag from all photos?')) return;
+		if (!(await ask('Remove this tag from all photos?'))) return;
 		try {
 			const res = await api.tags.removeFromPhotos(id);
-			alert(`Removed from ${res.removed} photo(s).`);
+			notify(`Removed from ${res.removed} photo(s).`);
 		} catch (e) { console.error(e); }
 	}
 
 	async function bulkRemoveFromPhotos() {
 		if (selectedTagIds.size === 0) return;
-		if (!confirm(`Remove ${selectedTagIds.size} selected tag(s) from all photos?`)) return;
+		if (!(await ask(`Remove ${selectedTagIds.size} selected tag(s) from all photos?`))) return;
 		bulkWorking = true;
 		try {
 			let total = 0;
@@ -106,7 +107,7 @@
 				total += res.removed;
 			}
 			selectedTagIds = new Set();
-			alert(`Removed ${total} photo association(s).`);
+			notify(`Removed ${total} photo association(s).`);
 		} catch (e) { console.error(e); } finally { bulkWorking = false; }
 	}
 

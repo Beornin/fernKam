@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { onMount } from 'svelte';
 	import { api, type PersonOut, type FaceCluster, type FaceOut } from '$lib/api';
 	import {
@@ -121,6 +122,9 @@
 			await loadCounts();
 			await loadSidebar();
 			if (typeof selectedPersonId === 'number') await loadCandidates();
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load run auto confirm sweep: ${e}`);
 		} finally {
 			sweeping = false;
 			sweepMessage = '';
@@ -179,6 +183,9 @@
 			const batch = await api.faces.recentAuto({ limit: AUTO_PAGE, offset: newOffset });
 			autoConfirmedFaces = newOffset === 0 ? batch : [...autoConfirmedFaces, ...batch];
 			autoConfirmedOffset = newOffset;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load auto-confirmed faces: ${e}`);
 		} finally {
 			loadingAutoConfirmed = false;
 		}
@@ -212,6 +219,9 @@
 		try {
 			candidates = await api.faces.candidates({ person_tag_id: selectedPersonId, limit: 500, min_score: 0.35 });
 			focusedIndex = 0;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load candidates: ${e}`);
 		} finally {
 			loadingCandidates = false;
 		}
@@ -237,6 +247,9 @@
 			confirmedFaces = newOffset === 0 ? batch : [...confirmedFaces, ...batch];
 			confirmedOffset = newOffset;
 			confirmedHasMore = batch.length === CONFIRMED_PAGE;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load confirmed faces: ${e}`);
 		} finally {
 			loadingConfirmed = false;
 		}
@@ -293,6 +306,9 @@
 			candidates = candidates.filter(c => !idSet.has(c.face_id));
 			unassignedCount = Math.max(0, unassignedCount - ids.length);
 			await loadSidebar();
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load confirm all eligible: ${e}`);
 		} finally {
 			candidateActionBusy = false;
 		}
@@ -364,6 +380,9 @@
 			clusterOffset = newOffset;
 			clusterIdx = 0;
 			deselected = new Set();
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load clusters: ${e}`);
 		} finally {
 			loadingClusters = false;
 		}
@@ -399,7 +418,7 @@
 			await loadSidebar();
 			await loadCounts();
 		} catch (e) {
-			alert(`Failed to assign: ${e}`);
+			notify(`Failed to assign: ${e}`);
 		} finally {
 			clusterActing = false;
 		}
@@ -417,7 +436,7 @@
 			if (clusters.length === 0) await loadClusters(0);
 			await loadCounts();
 		} catch (e) {
-			alert(`Failed to ignore: ${e}`);
+			notify(`Failed to ignore: ${e}`);
 		} finally {
 			clusterActing = false;
 		}
@@ -426,7 +445,7 @@
 	async function deleteCluster() {
 		const ids = activeClusterFaceIds();
 		if (!ids.length || clusterActing) return;
-		if (!confirm(`Permanently delete ${ids.length} face record(s)?`)) return;
+		if (!(await ask(`Permanently delete ${ids.length} face record(s)?`))) return;
 		clusterActing = true;
 		try {
 			await api.faces.batchDelete(ids);
@@ -436,7 +455,7 @@
 			if (clusters.length === 0) await loadClusters(0);
 			await loadCounts();
 		} catch (e) {
-			alert(`Failed to delete: ${e}`);
+			notify(`Failed to delete: ${e}`);
 		} finally {
 			clusterActing = false;
 		}
@@ -478,7 +497,7 @@
 		} catch (e) {
 			autoAssigning = false;
 			autoAssignMsg = '';
-			alert(`Auto-assign failed: ${e}`);
+			notify(`Auto-assign failed: ${e}`);
 		}
 	}
 
@@ -504,19 +523,19 @@
 		} catch (e) {
 			rebuilding = false;
 			rebuildMsg = '';
-			alert(`Rebuild failed: ${e}`);
+			notify(`Rebuild failed: ${e}`);
 		}
 	}
 
 	async function ignoreTinyFaces() {
 		if (clusterActing) return;
-		if (!confirm('Ignore all unconfirmed faces smaller than 50px? This clears junk crops.')) return;
+		if (!(await ask('Ignore all unconfirmed faces smaller than 50px? This clears junk crops.'))) return;
 		clusterActing = true;
 		try {
 			const { ignored } = await api.faces.ignoreTiny(50);
-			alert(`Ignored ${ignored} tiny faces. Rebuild clusters to refresh.`);
+			notify(`Ignored ${ignored} tiny faces. Rebuild clusters to refresh.`);
 		} catch (e) {
-			alert(`Failed: ${e}`);
+			notify(`Failed: ${e}`);
 		} finally {
 			clusterActing = false;
 		}

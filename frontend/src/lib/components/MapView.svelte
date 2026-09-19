@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { onMount, onDestroy } from 'svelte';
 
 	import { api, type PhotoSummary } from '$lib/api';
@@ -33,10 +34,10 @@
 		geocoding = true;
 		try {
 			const r = await api.geocode.run();
-			alert(`Geocoding started (task ${r.task_id}). Check Tasks page for progress.`);
+			notify(`Geocoding started (task ${r.task_id}). Check Tasks page for progress.`);
 			geoStats = await api.geocode.stats();
 		} catch (e: any) {
-			alert(e.message ?? 'Failed');
+			notify(e.message ?? 'Failed');
 		} finally {
 			geocoding = false;
 		}

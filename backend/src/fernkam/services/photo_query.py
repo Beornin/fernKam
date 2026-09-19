@@ -76,6 +76,7 @@ class PhotoFilters:
     lens_id: Optional[int] = None
     has_gps: Optional[bool] = None
     has_faces: Optional[bool] = None
+    unnamed_faces: Optional[bool] = None
     no_date: Optional[bool] = None
     search: Optional[str] = None
     date_from: Optional[date] = None
@@ -189,6 +190,18 @@ async def build_photo_query(f: PhotoFilters, db: AsyncSession) -> Select:
         q = q.where(has_face_row)
     elif f.has_faces is False:
         q = q.where(~has_face_row)
+
+    # Photos where a face was detected but nobody has been named yet — the
+    # people who are missing from the catalogue, as opposed to has_faces which
+    # also matches photos that are already fully tagged.
+    if f.unnamed_faces is True:
+        q = q.where(has_face_row).where(
+            ~exists(
+                select(Face.photo_id).where(
+                    Face.photo_id == Photo.id, Face.person_tag_id.isnot(None)
+                )
+            )
+        )
 
     if f.no_date is True:
         q = q.where(Photo.taken_at.is_(None))

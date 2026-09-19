@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type FaceOut } from '$lib/api';
 	import PersonPicker from './PersonPicker.svelte';
 	import { X, ChevronLeft, ChevronRight, UserX, Trash2, HelpCircle, Loader2 } from '@lucide/svelte';
@@ -33,13 +34,13 @@
 
 	async function handleDelete() {
 		if (!face || busy) return;
-		if (!confirm('Delete this face tag permanently? This removes the detection, not the photo.')) return;
+		if (!(await ask('Delete this face tag permanently? This removes the detection, not the photo.'))) return;
 		busy = true;
 		try {
 			await api.faces.delete(face.id);
 			afterMutate(face.id, 'deleted');
 		} catch (e) {
-			alert(`Failed to delete: ${e}`);
+			notify(`Failed to delete: ${e}`);
 		} finally {
 			busy = false;
 		}
@@ -52,7 +53,7 @@
 			await api.faces.update(face.id, { status: 'unconfirmed', person_tag_id: null });
 			afterMutate(face.id, 'unconfirmed');
 		} catch (e) {
-			alert(`Failed to send back to review: ${e}`);
+			notify(`Failed to send back to review: ${e}`);
 		} finally {
 			busy = false;
 		}
@@ -68,12 +69,12 @@
 				body: JSON.stringify({ person_tag_id: personId, status: 'confirmed' }),
 			});
 			if (!res.ok && res.status !== 409) {
-				alert(res.status === 409 ? 'That person is already tagged in this photo' : 'Failed to reassign');
+				notify(res.status === 409 ? 'That person is already tagged in this photo' : 'Failed to reassign');
 				return;
 			}
 			afterMutate(face.id, 'reassigned');
 		} catch (e) {
-			alert(`Failed to reassign: ${e}`);
+			notify(`Failed to reassign: ${e}`);
 		} finally {
 			busy = false;
 		}

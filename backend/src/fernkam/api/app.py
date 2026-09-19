@@ -7,6 +7,17 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Windows consoles default to cp1252, which cannot encode the U+2713/U+2717
+# marks used in the startup banner below. Two of those prints sit in `except`
+# blocks, so a genuine failure would raise UnicodeEncodeError *while reporting
+# itself* and take the worker down with the real cause hidden. errors="replace"
+# means these streams can never raise on encoding again.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass  # already wrapped, detached, or not a real stream
+
 # Add CUDA paths to PATH so onnxruntime-gpu can find CUDA/cuDNN DLLs.
 # DaVinci Resolve includes cuDNN 9, which works with onnxruntime-gpu.
 _CUDA_PATHS = [
@@ -27,7 +38,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, stacks, sync, tags, workflows
+from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, semantic, stacks, sync, tags, workflows
 from fernkam.db.session import get_async_engine
 
 # Configure logging to output to terminal
@@ -268,6 +279,7 @@ app.include_router(geocode.router, prefix="/api/geocode", tags=["geocode"])
 app.include_router(saved_searches.router, prefix="/api/saved-searches", tags=["saved-searches"])
 app.include_router(stacks.router, prefix="/api/stacks", tags=["stacks"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
+app.include_router(semantic.router, prefix="/api/semantic", tags=["semantic"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 
 

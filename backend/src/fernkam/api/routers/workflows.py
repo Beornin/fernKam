@@ -13,7 +13,10 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import text as _sql
+
+from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,20 +27,28 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 class SortingRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
     raw_dir: str = r"D:\Pictures and Videos\AA_RAW"
     sort_me_dir: str = r"D:\Pictures and Videos\AB_TO_SORT\SORT ME"
     export_root: str = r"D:\Pictures and Videos\AC_SORTED"
 
 
 class RemoveNonKeepRawRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
     starting_folder: str = r"D:\Pictures and Videos\AA_RAW"
 
 
 class MoveRawsToFoldersRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
     starting_folder: Optional[str] = None
 
 
 class SyncStackTagsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
     album_path: Optional[str] = None
 
 
@@ -92,13 +103,14 @@ async def run_sorting(req: SortingRequest) -> dict:
 
     task_id = await task_manager.create_task(
         "workflow_sorting",
-        f"Sorting videos: {req.raw_dir}",
+        f"{'Preview: ' if req.dry_run else ''}Sorting videos: {req.raw_dir}",
     )
     asyncio.create_task(
         _run_in_thread(task_id, sorting_video.run,
                        raw_dir=req.raw_dir,
                        sort_me_dir=req.sort_me_dir,
-                       export_root=req.export_root),
+                       export_root=req.export_root,
+                       dry_run=req.dry_run),
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}
@@ -111,11 +123,12 @@ async def run_remove_nonkeep_raw(req: RemoveNonKeepRawRequest) -> dict:
 
     task_id = await task_manager.create_task(
         "workflow_remove_nonkeep_raw",
-        f"Remove non-keep RAW: {req.starting_folder}",
+        f"{'Preview: ' if req.dry_run else ''}Remove non-keep RAW: {req.starting_folder}",
     )
     asyncio.create_task(
         _run_in_thread(task_id, remove_nonkeep_raw.run,
-                       starting_folder=req.starting_folder),
+                       starting_folder=req.starting_folder,
+                       dry_run=req.dry_run),
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}
@@ -126,11 +139,12 @@ async def run_move_raws_to_folders(req: MoveRawsToFoldersRequest) -> dict:
     from fernkam.task_manager import task_manager
     from fernkam.workflows import move_raws_to_folders
 
-    desc = f"Move stray RAWs: {req.starting_folder or 'full library'}"
+    desc = f"{'Preview: ' if req.dry_run else ''}Move stray RAWs: {req.starting_folder or 'full library'}"
     task_id = await task_manager.create_task("workflow_move_raws", desc)
     asyncio.create_task(
         _run_in_thread(task_id, move_raws_to_folders.run,
-                       starting_folder=req.starting_folder),
+                       starting_folder=req.starting_folder,
+                       dry_run=req.dry_run),
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}
@@ -141,11 +155,12 @@ async def run_sync_stack_tags(req: SyncStackTagsRequest) -> dict:
     from fernkam.task_manager import task_manager
     from fernkam.workflows import sync_stack_tags
 
-    desc = f"Sync stack tags: {req.album_path or 'full library'}"
+    desc = f"{'Preview: ' if req.dry_run else ''}Sync stack tags: {req.album_path or 'full library'}"
     task_id = await task_manager.create_task("workflow_sync_stack_tags", desc)
     asyncio.create_task(
         _run_in_thread(task_id, sync_stack_tags.run,
-                       album_path=req.album_path),
+                       album_path=req.album_path,
+                       dry_run=req.dry_run),
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}
@@ -165,3 +180,244 @@ async def get_workflow_task(task_id: str) -> dict:
         "message": task.message,
         "lines": (task.progress or {}).get("lines", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline view (Roadmap 3.1) and RAW/JPEG health (3.4) — both read-only.
+# ---------------------------------------------------------------------------
+
+@router.get("/pipeline")
+async def pipeline_stages(db: DB) -> dict:
+    """Live counts for each stage of the sorting pipeline.
+
+    Counts come from the catalogue, not a disk walk, so this stays instant on a
+    116k-photo library. `on_disk` is reported separately for the staging folders
+    only — those are small, and a drift between disk and catalogue there is the
+    thing actually worth noticing.
+    """
+    from pathlib import Path
+    from fernkam.config import get_settings
+
+    s = get_settings()
+    staging = [f.strip() for f in s.dedup_staging_folders.split(",") if f.strip()]
+    stages = (
+        [(s.raw_intake_folder, "intake", "RAW files straight off the card")]
+        + [(f, "staging", "Waiting to be sorted") for f in staging]
+        + [(s.dedup_archive_folder, "archive", "Sorted by date"),
+           (s.portfolio_folder, "portfolio", "Curated keepers")]
+    )
+
+    rows = (await db.execute(_sql("""
+        SELECT split_part(trim(both '/' from album_path), '/', 1) AS top,
+               COUNT(*) AS n,
+               COUNT(*) FILTER (WHERE media_type = 'video') AS videos,
+               COUNT(*) FILTER (WHERE rating > 0) AS rated,
+               COALESCE(SUM(file_size), 0) AS bytes
+        FROM photos WHERE status = 1 GROUP BY 1
+    """))).fetchall()
+    by_top = {r[0]: r for r in rows}
+
+    library_root = Path(s.library_root)
+    out = []
+    for folder, kind, blurb in stages:
+        r = by_top.get(folder)
+        entry = {
+            "folder": folder, "kind": kind, "blurb": blurb,
+            "catalogued": int(r[1]) if r else 0,
+            "videos": int(r[2]) if r else 0,
+            "rated": int(r[3]) if r else 0,
+            "bytes": int(r[4]) if r else 0,
+            "on_disk": None,
+        }
+        if kind in ("intake", "staging"):
+            d = library_root / folder
+            try:
+                entry["on_disk"] = sum(1 for p in d.rglob("*") if p.is_file()) if d.exists() else 0
+            except OSError:
+                entry["on_disk"] = None
+        out.append(entry)
+    return {"stages": out}
+
+
+@router.get("/raw-health")
+async def raw_health(db: DB, album_path: Optional[str] = None) -> dict:
+    """RAW/JPEG pairing problems, catalogue-side.
+
+    Three things worth knowing before a cull, all of which were previously only
+    discoverable by hand:
+      * orphan RAWs   — a RAW whose derivative was deleted (the cull already happened)
+      * unstacked RAW — a RAW/JPEG pair that exists but was never stacked
+      * lone JPEGs    — a picture in a RAW folder with no RAW beside it
+    """
+    where = "AND p.album_path LIKE :ap" if album_path else ""
+    params = {"ap": f"{album_path}%"} if album_path else {}
+
+    rows = (await db.execute(_sql(f"""
+        WITH f AS (
+            SELECT p.id, p.album_path, p.filename, p.stack_id,
+                   lower(regexp_replace(p.filename, '\.[^.]+$', '')) AS stem,
+                   lower(regexp_replace(p.filename, '^.*\.', '')) AS ext,
+                   regexp_replace(trim(both '/' from p.album_path), '/RAW$', '', 'i') AS base_album
+            FROM photos p WHERE p.status = 1 {where}
+        ),
+        raws AS (SELECT * FROM f WHERE ext IN ('nef','cr2','cr3','arw','orf','raf','rw2','pef','srw','dng')),
+        pics AS (SELECT * FROM f WHERE ext IN ('jpg','jpeg','tif','tiff','png','heic','webp'))
+        SELECT
+          (SELECT COUNT(*) FROM raws) AS raw_total,
+          (SELECT COUNT(*) FROM raws r WHERE NOT EXISTS (
+              SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)) AS orphan_raw,
+          (SELECT COUNT(*) FROM raws r WHERE r.stack_id IS NULL AND EXISTS (
+              SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)) AS unstacked_pairs,
+          (SELECT COUNT(*) FROM pics q WHERE q.album_path ILIKE '%%/RAW' AND NOT EXISTS (
+              SELECT 1 FROM raws r WHERE r.base_album = q.base_album AND r.stem = q.stem)) AS lone_pics
+    """), params)).first()
+
+    samples = (await db.execute(_sql(f"""
+        WITH f AS (
+            SELECT p.id, p.album_path, p.filename,
+                   lower(regexp_replace(p.filename, '\.[^.]+$', '')) AS stem,
+                   lower(regexp_replace(p.filename, '^.*\.', '')) AS ext,
+                   regexp_replace(trim(both '/' from p.album_path), '/RAW$', '', 'i') AS base_album
+            FROM photos p WHERE p.status = 1 {where}
+        ),
+        raws AS (SELECT * FROM f WHERE ext IN ('nef','cr2','cr3','arw','orf','raf','rw2','pef','srw','dng')),
+        pics AS (SELECT * FROM f WHERE ext IN ('jpg','jpeg','tif','tiff','png','heic','webp'))
+        SELECT r.id, r.album_path, r.filename FROM raws r
+        WHERE NOT EXISTS (SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)
+        ORDER BY r.album_path, r.filename LIMIT 25
+    """), params)).fetchall()
+
+    return {
+        "album_path": album_path,
+        "raw_total": int(row_or(rows, 0)),
+        "orphan_raw": int(row_or(rows, 1)),
+        "unstacked_pairs": int(row_or(rows, 2)),
+        "lone_pics": int(row_or(rows, 3)),
+        "orphan_samples": [
+            {"id": s[0], "album_path": s[1], "filename": s[2]} for s in samples
+        ],
+    }
+
+
+def row_or(row, idx: int, default: int = 0) -> int:
+    return default if row is None or row[idx] is None else row[idx]
+
+
+
+def promote_destination(src_album: str, dest_album: str, filename: str) -> tuple[str, str]:
+    """Where one file lands when promoted. Returns (album_path, relative_path).
+
+    RAWs live in <album>/RAW/ by convention (see move_raws_to_folders), so a
+    file coming from a RAW/ subfolder must land in one — flattening it into the
+    destination root would break the pairing the stack depends on.
+    """
+    in_raw = src_album.rstrip("/").upper().endswith("/RAW")
+    album = f"{dest_album}/RAW" if in_raw else dest_album
+    return album, f"{album}/{filename}"
+
+
+class PromoteRequest(BaseModel):
+    """Roadmap 3.5 — rate, tag, move and re-stack in one action."""
+    photo_ids: list[int]
+    subfolder: Optional[str] = None      # under the portfolio root, e.g. "Snakes"
+    rating: Optional[int] = None         # 1-5, or None to leave alone
+    tag_ids: list[int] = []
+    dry_run: bool = True
+
+
+@router.post("/promote-to-portfolio")
+async def promote_to_portfolio(req: PromoteRequest, db: DB) -> dict:
+    """Move keepers into the portfolio, carrying their whole stack.
+
+    Moving a JPEG without its RAW would silently break the pair, so every
+    member of a selected photo's stack moves with it. `photo_stacks.album_path`
+    is part of a unique key with stem_key, so it is rewritten too — otherwise
+    the next stack rebuild would create a duplicate stack at the old location.
+
+    dry_run defaults to True: this relocates originals on disk.
+    """
+    from pathlib import Path
+    from fernkam.config import get_settings
+
+    if not req.photo_ids:
+        return {"moved": 0, "plan": [], "dry_run": req.dry_run}
+    if req.rating is not None and not (0 <= req.rating <= 5):
+        from fastapi import HTTPException
+        raise HTTPException(400, "rating must be 0-5")
+
+    s = get_settings()
+    library_root = Path(s.library_root)
+    dest_album = s.portfolio_folder + (f"/{req.subfolder.strip('/')}" if req.subfolder else "")
+    dest_dir = library_root / dest_album
+
+    # Expand the selection to whole stacks.
+    rows = (await db.execute(_sql("""
+        SELECT p.id, p.album_path, p.filename, p.stack_id
+        FROM photos p
+        WHERE p.status = 1 AND (
+            p.id = ANY(CAST(:ids AS int[]))
+            OR p.stack_id IN (SELECT stack_id FROM photos
+                              WHERE id = ANY(CAST(:ids AS int[])) AND stack_id IS NOT NULL)
+        )
+        ORDER BY p.album_path, p.filename
+    """), {"ids": req.photo_ids})).fetchall()
+
+    plan, conflicts = [], []
+    for pid, album, fname, stack_id in rows:
+        src = library_root / album.strip("/") / fname if album.strip("/") else library_root / fname
+        # RAWs live in <album>/RAW/ by convention (see move_raws_to_folders).
+        # Flattening them into the destination root would break that pairing,
+        # so a file that came from a RAW/ subfolder lands in one.
+        item_album, rel = promote_destination(album, dest_album, fname)
+        dst = library_root / rel
+        item = {"photo_id": pid, "from": str(src), "to": str(dst),
+                "album": item_album,
+                "stacked": stack_id is not None,
+                "carried": pid not in req.photo_ids}
+        if album.strip("/") == item_album.strip("/"):
+            item["skip"] = "already in destination"
+        elif dst.exists():
+            item["skip"] = "destination file exists"
+            conflicts.append(item)
+        plan.append(item)
+
+    movable = [p for p in plan if "skip" not in p]
+    if req.dry_run:
+        return {"dry_run": True, "dest_album": dest_album, "would_move": len(movable),
+                "conflicts": len(conflicts), "carried_with_stack": sum(1 for p in movable if p["carried"]),
+                "plan": plan[:200]}
+
+    import shutil
+    moved, errors = 0, []
+    for item in movable:
+        try:
+            Path(item["to"]).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(item["from"], item["to"])
+        except OSError as exc:
+            errors.append({"photo_id": item["photo_id"], "error": str(exc)})
+            continue
+        await db.execute(_sql("UPDATE photos SET album_path = :a, file_sync_dirty = true WHERE id = :pid"),
+                         {"a": item["album"], "pid": item["photo_id"]})
+        moved += 1
+
+    if moved:
+        # Keep stacks pointing at where their members now live.
+        await db.execute(_sql("""
+            UPDATE photo_stacks SET album_path = :a, updated_at = now()
+            WHERE id IN (SELECT DISTINCT stack_id FROM photos
+                         WHERE id = ANY(CAST(:ids AS int[])) AND stack_id IS NOT NULL)
+        """), {"a": dest_album, "ids": [i["photo_id"] for i in movable]})
+        if req.rating is not None:
+            await db.execute(_sql("UPDATE photos SET rating = :r WHERE id = ANY(CAST(:ids AS int[]))"),
+                             {"r": req.rating, "ids": [i["photo_id"] for i in movable]})
+        if req.tag_ids:
+            await db.execute(_sql("""
+                INSERT INTO photo_tags (photo_id, tag_id)
+                SELECT p, t FROM unnest(CAST(:pids AS int[])) p
+                CROSS JOIN unnest(CAST(:tids AS int[])) t
+                ON CONFLICT DO NOTHING
+            """), {"pids": [i["photo_id"] for i in movable], "tids": req.tag_ids})
+        await db.commit()
+
+    return {"dry_run": False, "dest_album": dest_album, "moved": moved,
+            "skipped": len(plan) - len(movable), "errors": errors}

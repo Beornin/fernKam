@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { onMount } from 'svelte';
 	import { Settings as SettingsIcon, Sparkles, Loader2, Palette } from '@lucide/svelte';
 	import { api } from '$lib/api';
@@ -17,6 +18,9 @@
 			const s = await api.faces.getSensitivity();
 			sensitivity = s.sensitivity;
 			derived = { auto_confirm_thresh: s.auto_confirm_thresh, knn_margin: s.knn_margin, adaptive_floor: s.adaptive_floor };
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load settings: ${e}`);
 		} finally {
 			loading = false;
 		}
@@ -29,6 +33,9 @@
 			try {
 				const s = await api.faces.setSensitivity(sensitivity);
 				derived = { auto_confirm_thresh: s.auto_confirm_thresh, knn_margin: s.knn_margin, adaptive_floor: s.adaptive_floor };
+			} catch (e) {
+				// Previously swallowed: the spinner stopped and nothing said why.
+				notify(`Could not load on slide: ${e}`);
 			} finally {
 				saving = false;
 			}

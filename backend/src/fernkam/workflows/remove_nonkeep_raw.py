@@ -24,7 +24,12 @@ from fernkam.workflows.shared import format_elapsed, gather_files
 DEFAULT_STARTING_FOLDER = r"D:\Pictures and Videos\AA_RAW"
 
 
-def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
+def run(starting_folder: str = DEFAULT_STARTING_FOLDER, dry_run: bool = True) -> None:
+    """Trash RAW files that have no matching picture.
+
+    `dry_run` defaults to True: this deletes originals, so the caller has to ask
+    for it explicitly rather than getting it by forgetting a flag.
+    """
     start = time.perf_counter()
     print(f"Loading files from: {starting_folder}")
 
@@ -46,6 +51,19 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER) -> None:
             to_delete.append(f)
 
     print(f"Found {len(nef_files)} RAW files. {len(to_delete)} have no matching picture.")
+
+    if dry_run:
+        print("DRY RUN — nothing was deleted. These would be moved to Trash:")
+        freed = 0
+        for f in to_delete:
+            try:
+                freed += f.stat().st_size
+            except OSError:
+                pass
+            print(f"  WOULD TRASH: {f}")
+        print(f"DRY RUN complete: {len(to_delete)} file(s), {freed / 1e9:.2f} GB would be freed.")
+        print(f"Process took: {format_elapsed(start)}")
+        return
 
     if not _SEND2TRASH_AVAILABLE:
         print("send2trash unavailable — cannot move files to Trash. Install with: pip install send2trash")

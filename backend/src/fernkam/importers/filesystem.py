@@ -27,6 +27,11 @@ _CPUS = os.cpu_count() or 4
 METADATA_CONCURRENCY = int(os.getenv("FERNKAM_META_CONCURRENCY", str(min(32, _CPUS * 2))))
 THUMB_CONCURRENCY = int(os.getenv("FERNKAM_THUMB_CONCURRENCY", str(max(4, _CPUS))))
 BATCH_COMMIT_SIZE = 50      # photos committed per transaction
+# Tolerance when comparing a file's on-disk mtime against the mtime recorded at
+# its last sync. Filesystem timestamp granularity varies (NTFS 100ns, FAT 2s,
+# and network shares round differently), so anything inside this window counts
+# as unchanged rather than triggering a needless metadata re-read.
+MTIME_SLACK_SECONDS = 2.0
 
 
 def _sha256_path(path: Path) -> Optional[str]:
@@ -86,16 +91,25 @@ def _stat_walk_batch(
     files: list[str],
     main_library: Path,
     library_root: Path,
-    existing_photos: dict[tuple[str, str], int],
-) -> tuple[list, list, set]:
+    existing_photos: dict[tuple[str, str], tuple[int, Optional[datetime]]],
+) -> tuple[list, list, set, int]:
     """Blocking: stat() every candidate file in one directory. Call via run_in_executor.
 
-    Returns (new_files, existing_to_update, disk_keys) for just this directory,
-    in the same tuple shapes scan_library() accumulates across the whole walk.
+    Returns (new_files, existing_to_update, disk_keys, unchanged) for just this
+    directory, in the same tuple shapes scan_library() accumulates across the
+    whole walk.
+
+    Files whose on-disk mtime still matches the mtime recorded at their last
+    sync are reported as `unchanged` and dropped here, so the caller never pays
+    for an exiftool read on them. Previously every known file was queued for a
+    refresh unconditionally, which made a no-op rescan of this library re-read
+    all ~122k files and take over two hours. Forcing a full re-read is still
+    available separately via /sync/metadata (refresh_metadata_from_files).
     """
     new_files: list[tuple[Path, str, str, datetime]] = []
     existing_to_update: list[tuple[Path, str, str, datetime, int]] = []
     disk_keys: set[tuple[str, str]] = set()
+    unchanged = 0
 
     for filename in files:
         ext = Path(filename).suffix.lower()
@@ -109,20 +123,26 @@ def _stat_walk_batch(
         album_path = str(rel_path.parent).replace("\\", "/") if rel_path.parent != Path(".") else "/"
         key = (album_path, filename)
         disk_keys.add(key)
-        if key in existing_photos:
-            try:
-                mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-            except OSError:
-                mtime = datetime.now(timezone.utc)
-            existing_to_update.append((full_path, album_path, filename, mtime, existing_photos[key]))
-        else:
-            try:
-                mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
-            except OSError:
-                mtime = datetime.now(timezone.utc)
-            new_files.append((full_path, album_path, filename, mtime))
+        try:
+            mtime = datetime.fromtimestamp(full_path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            mtime = datetime.now(timezone.utc)
 
-    return new_files, existing_to_update, disk_keys
+        existing = existing_photos.get(key)
+        if existing is None:
+            new_files.append((full_path, album_path, filename, mtime))
+            continue
+
+        photo_id, synced_at = existing
+        # Compared with slack in both directions: filesystem timestamp
+        # granularity (and restores that rewind an mtime) must both count as
+        # "changed" only when the difference is real, not sub-second noise.
+        if synced_at is not None and abs((mtime - synced_at).total_seconds()) <= MTIME_SLACK_SECONDS:
+            unchanged += 1
+            continue
+        existing_to_update.append((full_path, album_path, filename, mtime, photo_id))
+
+    return new_files, existing_to_update, disk_keys, unchanged
 
 
 async def scan_library(
@@ -141,7 +161,7 @@ async def scan_library(
     Returns dict with stats: added, skipped, deleted, errors, total, added_ids
     """
     from sqlalchemy import delete as sa_delete
-    from fernkam.thumbnails import store_thumbnail_to_db
+    from fernkam.thumbnails import write_thumbnail_to_disk
     settings = get_settings()
     main_library = Path(settings.library_root)
     library_root = Path(custom_path) if custom_path else main_library
@@ -152,10 +172,12 @@ async def scan_library(
     stats = {"added": 0, "skipped": 0, "updated": 0, "deleted": 0, "errors": 0, "total": 0}
 
     # ── Phase 0: load existing photos ──────────────────────────────────────
-    existing_photos: dict[tuple[str, str], int] = {}
-    result = await db.execute(select(Photo.id, Photo.album_path, Photo.filename))
+    existing_photos: dict[tuple[str, str], tuple[int, Optional[datetime]]] = {}
+    result = await db.execute(
+        select(Photo.id, Photo.album_path, Photo.filename, Photo.file_modified_at_sync)
+    )
     for row in result:
-        existing_photos[(row.album_path, row.filename)] = row.id
+        existing_photos[(row.album_path, row.filename)] = (row.id, row.file_modified_at_sync)
 
     # Always walk from the root so new directories are discovered.
     # Already-imported files are skipped in O(1) via the existing_photos dict,
@@ -180,13 +202,14 @@ async def scan_library(
             # a thread so a cold-cache walk doesn't stall every other request
             # for its whole duration. os.walk() itself (just listing directory
             # entries) stays on the main thread; that part is comparatively cheap.
-            new_batch, existing_batch, keys_batch = await loop.run_in_executor(
+            new_batch, existing_batch, keys_batch, unchanged_batch = await loop.run_in_executor(
                 None, _stat_walk_batch, root, files, main_library, library_root, existing_photos
             )
             new_files.extend(new_batch)
             existing_to_update.extend(existing_batch)
             disk_keys.update(keys_batch)
-            walk_scanned += len(new_batch) + len(existing_batch)
+            stats["skipped"] += unchanged_batch
+            walk_scanned += len(new_batch) + len(existing_batch) + unchanged_batch
 
             # Throttled progress report — the disk walk (esp. the per-file stat()
             # calls on existing photos) is the slow part on large/HDD libraries,
@@ -244,7 +267,9 @@ async def scan_library(
                 photo_id, size_bytes = res
                 for size, data in size_bytes.items():
                     try:
-                        await store_thumbnail_to_db(photo_id, size, data, db)
+                        await loop.run_in_executor(
+                            None, write_thumbnail_to_disk, photo_id, size, data
+                        )
                     except Exception as thumb_exc:
                         # Silently dropping this left the batch reporting
                         # "0 errors" even though the photo ends up with no
@@ -310,7 +335,8 @@ async def scan_library(
             await progress_callback(stats)
 
     # ── Phase 3: delete removed files ─────────────────────────────────────
-    for key, photo_id in existing_photos.items():
+    gone_ids: list[int] = []
+    for key, (photo_id, _synced_at) in existing_photos.items():
         if key in disk_keys:
             continue
         album_path_str, _ = key
@@ -320,10 +346,19 @@ async def scan_library(
                 photo_abs.relative_to(library_root)
             except ValueError:
                 continue
-        await db.execute(sa_delete(Photo).where(Photo.id == photo_id))
-        stats["deleted"] += 1
+        gone_ids.append(photo_id)
+
+    if gone_ids:
+        await db.execute(sa_delete(Photo).where(Photo.id.in_(gone_ids)))
+        stats["deleted"] = len(gone_ids)
 
     await db.commit()
+
+    # Thumbnails live on disk, so the row delete above no longer cascades to
+    # them the way the old `photo_thumbnails` FK did — drop them explicitly.
+    if gone_ids:
+        from fernkam.thumbnails import delete_thumbnails_from_disk
+        await loop.run_in_executor(None, delete_thumbnails_from_disk, gone_ids)
 
     stats["added_ids"] = added_ids
     if progress_callback:
@@ -511,14 +546,14 @@ async def import_new_photo(
     db.add(photo)
     await db.flush()
 
-    # Generate thumbnails and store in DB (images + video poster)
+    # Generate thumbnails into the disk cache (images + video poster)
     if generate_thumbs and media_type in ("image", "video"):
         try:
-            from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db
+            from fernkam.thumbnails import generate_thumbnail_bytes, write_thumbnail_to_disk
             for size in ("sm", "md", "lg", "xl"):
                 data = generate_thumbnail_bytes(file_path, size)
                 if data:
-                    await store_thumbnail_to_db(photo.id, size, data, db)
+                    write_thumbnail_to_disk(photo.id, size, data)
         except Exception:
             pass  # Thumbnail generation failure is non-fatal
 

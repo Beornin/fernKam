@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { api, type PersonOut } from '$lib/api';
 	import { Search, X, User, Plus } from '@lucide/svelte';
 
@@ -53,7 +54,7 @@
 			people = [...people, person];
 			await pick(person.id);
 		} catch (e) {
-			alert(`Failed to create person: ${e}`);
+			notify(`Failed to create person: ${e}`);
 		} finally {
 			creating = false;
 		}

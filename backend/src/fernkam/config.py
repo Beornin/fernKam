@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     dedup_staging_folders: str = "AB_TO_SORT,AC_SORTED"  # DEDUP_STAGING_FOLDERS
     dedup_archive_folder: str = "Ordered by Dates"       # DEDUP_ARCHIVE_FOLDER
 
+    # The sorting pipeline's stages, in the order work flows through them.
+    # Reuses the same folder names dedup already knows about; declared here so
+    # the stage view and the dedup tier logic cannot drift apart.
+    raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
+    portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
+
 
 @lru_cache
 def get_settings() -> Settings:

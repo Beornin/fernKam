@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
+import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +60,61 @@ def thumb_cache_path(photo_id: int, size: str) -> Path:
     return cache / bucket / f"{photo_id}_{size}.webp"
 
 
+# ── Disk-backed thumbnail cache ────────────────────────────────────────────
+# Thumbnails used to live in a `photo_thumbnails` bytea column, which grew to
+# 32 GB of a 34 GB database — 94% of it a regenerable cache. The cost was not
+# read latency (Postgres served these in ~0.5-0.8 ms) but connection pressure:
+# every thumbnail held one of the 50 pooled connections, so changing the grid's
+# thumbnail size made ~42 tiles contend with the catalogue query populating that
+# same grid. Measured, the catalogue query went 0.67 ms idle -> 19.19 ms under
+# that burst, and 2.55 ms once thumbnails were served from disk instead.
+#
+# These are blocking; call them via run_in_executor.
+
+def read_thumbnail_from_disk(photo_id: int, size: str) -> bytes | None:
+    """Return cached thumbnail bytes, or None if not cached yet."""
+    try:
+        return thumb_cache_path(photo_id, size).read_bytes()
+    except OSError:
+        return None
+
+
+def write_thumbnail_to_disk(photo_id: int, size: str, data: bytes) -> None:
+    """Cache thumbnail bytes to disk, atomically.
+
+    Written to a unique temp name and renamed into place so a concurrent
+    reader never sees a half-written file.
+    """
+    dest = thumb_cache_path(photo_id, size)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f"{dest.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def delete_thumbnails_from_disk(photo_ids: "Iterable[int]") -> int:
+    """Remove every cached size for the given photos. Returns files removed.
+
+    The old bytea column was cleaned up by ON DELETE CASCADE; on disk the
+    deleting code path has to say so explicitly.
+    """
+    removed = 0
+    for photo_id in photo_ids:
+        for size in SIZES:
+            try:
+                thumb_cache_path(photo_id, size).unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def generate_thumbnail_bytes(
     src: Path,
     size: Literal["sm", "md", "lg", "xl", "xxl"] = "md",
@@ -67,17 +125,28 @@ def generate_thumbnail_bytes(
     """
     ext = src.suffix.lower()
     if ext in VIDEO_EXTENSIONS:
-        dest_path = thumb_cache_path(0, size)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        # ffmpeg needs a real file to write to, and the result is read back and
+        # deleted immediately. This used to use thumb_cache_path(0, size) — a
+        # single fixed path shared by EVERY video, so concurrent thumbnail
+        # workers (see THUMB_CONCURRENCY in importers/filesystem.py) raced on
+        # it: one would unlink the file while another was reading it
+        # ("No such file or directory"), or Windows would hold it open
+        # ("Permission denied"). Both surfaced as 500s from /media/thumbnail.
+        # A unique per-call temp path removes the shared state entirely.
+        cache_dir = Path(get_settings().thumb_cache_dir) / "tmp"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = cache_dir / f"vthumb_{uuid.uuid4().hex}_{size}.webp"
         tmp = _video_thumbnail(src, dest_path, size)
-        if tmp and tmp.exists():
-            data = tmp.read_bytes()
-            try:
-                tmp.unlink(missing_ok=True)
-            except (OSError, PermissionError):
-                pass
-            return data
-        return None
+        try:
+            if tmp and tmp.exists():
+                return tmp.read_bytes()
+            return None
+        finally:
+            for leftover in {dest_path, tmp} - {None}:
+                try:
+                    leftover.unlink(missing_ok=True)
+                except (OSError, PermissionError):
+                    pass
 
     try:
         if ext in RAW_EXTENSIONS:
@@ -93,77 +162,6 @@ def generate_thumbnail_bytes(
         img.save(buf, "WEBP", quality=82, method=4)
         return buf.getvalue()
     except Exception:
-        return None
-
-
-async def get_thumbnail_from_db(photo_id: int, size: str, db) -> bytes | None:
-    """Fetch thumbnail bytes from photo_thumbnails table. Returns None if not found."""
-    from sqlalchemy import text
-    row = (await db.execute(
-        text("SELECT data FROM photo_thumbnails WHERE photo_id = :pid AND size = :sz"),
-        {"pid": photo_id, "sz": size},
-    )).fetchone()
-    return bytes(row[0]) if row else None
-
-
-async def store_thumbnail_to_db(photo_id: int, size: str, data: bytes, db) -> None:
-    """Insert or replace thumbnail bytes in photo_thumbnails table."""
-    from sqlalchemy import text
-    await db.execute(
-        text("""
-            INSERT INTO photo_thumbnails (photo_id, size, data)
-            VALUES (:pid, :sz, :data)
-            ON CONFLICT (photo_id, size) DO UPDATE SET data = EXCLUDED.data, created_at = now()
-        """),
-        {"pid": photo_id, "sz": size, "data": data},
-    )
-
-
-def get_or_create_thumbnail(
-    photo_id: int,
-    album_path: str,
-    filename: str,
-    size: Literal["sm", "md", "lg"] = "md",
-) -> Path | None:
-    """Return path to cached thumbnail, generating it if needed.
-    Returns None if source file not found or is a video (no thumbnail yet).
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    dest = thumb_cache_path(photo_id, size)
-    if dest.exists():
-        logger.debug(f"Cache hit: {dest}")
-        return dest
-
-    logger.debug(f"Cache miss, generating thumbnail: photo_id={photo_id}, size={size}")
-    src = photo_disk_path(album_path, filename)
-    if not src.exists():
-        logger.error(f"Source file not found: {src}")
-        return None
-
-    ext = src.suffix.lower()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    if ext in VIDEO_EXTENSIONS:
-        logger.debug(f"Video thumbnail: {src}")
-        return _video_thumbnail(src, dest, size)
-
-    try:
-        logger.debug(f"Opening image: {src}")
-        if ext in RAW_EXTENSIONS:
-            img = _open_raw_as_pil(src)
-        else:
-            img = Image.open(src)
-        img = ImageOps.exif_transpose(img)
-        img.thumbnail(SIZES[size], Image.LANCZOS)
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        img.save(dest, "WEBP", quality=82, method=4)
-        logger.debug(f"Thumbnail saved: {dest}")
-        return dest
-    except Exception as e:
-        logger.error(f"Thumbnail generation failed for {src}: {e}", exc_info=True)
         return None
 
 

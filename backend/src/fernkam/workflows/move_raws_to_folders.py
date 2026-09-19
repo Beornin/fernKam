@@ -4,8 +4,7 @@ Move stray RAW files into their album's RAW/ subfolder.
 Walks the library (or a starting folder), finds RAW-extension files that are
 NOT already inside a RAW/ subfolder, and moves them into
 `<their album>/RAW/`, updating the matching `photos.album_path` in the DB so
-the catalog stays in sync. Runs immediately (no preview) — see the
-raw-jpg-stacks plan for the rationale.
+the catalog stays in sync. Previews by default (dry_run=True); pass dry_run=False to actually move.
 """
 from __future__ import annotations
 
@@ -26,7 +25,9 @@ def _to_album_path(rel_parent: Path) -> str:
     return "/" if s == "." else s
 
 
-def run(starting_folder: Optional[str] = None) -> None:
+def run(starting_folder: Optional[str] = None, dry_run: bool = True) -> None:
+    """dry_run defaults to True — this relocates files on disk and rewrites
+    photos.album_path, so it is opt-in rather than opt-out."""
     start = time.perf_counter()
     settings = get_settings()
     library_root = Path(settings.library_root)
@@ -70,6 +71,11 @@ def run(starting_folder: Optional[str] = None) -> None:
                 skipped += 1
                 continue
 
+            if dry_run:
+                print(f"WOULD MOVE: {src} -> {dest}")
+                moved += 1
+                continue
+
             try:
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 src.replace(dest)
@@ -93,7 +99,9 @@ def run(starting_folder: Optional[str] = None) -> None:
                 except Exception as e:
                     print(f"WARNING: DB update failed for {filename}: {e}")
 
-    print(f"Done: {moved} moved, {skipped} skipped, {errors} errors.")
+    prefix = "DRY RUN — " if dry_run else ""
+    verb = "would be moved" if dry_run else "moved"
+    print(f"{prefix}Done: {moved} {verb}, {skipped} skipped, {errors} errors.")
     print(f"Process took: {format_elapsed(start)}")
 
 

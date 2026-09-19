@@ -6,9 +6,10 @@
 	import { formatBytes, formatDuration } from '$lib/format';
 	import { COLOR_LABEL_CLASS } from '$lib/colorLabels';
 
-	let { photos, onSelect, selectedIds = $bindable(new Set<number>()) }: {
+	let { photos, onSelect, onContext, selectedIds = $bindable(new Set<number>()) }: {
 		photos: PhotoSummary[];
 		onSelect?: (p: PhotoSummary) => void;
+		onContext?: (p: PhotoSummary, e: MouseEvent) => void;
 		selectedIds?: Set<number>;
 	} = $props();
 
@@ -73,25 +74,30 @@
 		scrollTop = (e.currentTarget as HTMLDivElement).scrollTop;
 	}
 
-	const clickTimers = new Map<number, ReturnType<typeof setTimeout>>();
+	// Select instantly on click; open on dblclick. The previous version deferred
+	// selection by 250ms to disambiguate the two, which put visible lag on the
+	// single most common action in the app. Shift-click extends a range over the
+	// full `photos` array (not just the rendered window), matching every other
+	// catalog app.
+	let lastClickedId: number | null = null;
 
 	function handlePhotoClick(photo: PhotoSummary, e: MouseEvent) {
 		e.stopPropagation();
-		if (e.detail === 2) {
-			clearTimeout(clickTimers.get(photo.id));
-			clickTimers.delete(photo.id);
-			onSelect?.(photo);
-		} else if (e.detail === 1) {
-			clearTimeout(clickTimers.get(photo.id));
-			const timer = setTimeout(() => {
-				const newSet = new Set(selectedIds);
-				if (newSet.has(photo.id)) newSet.delete(photo.id);
-				else newSet.add(photo.id);
-				selectedIds = newSet;
-				clickTimers.delete(photo.id);
-			}, 250);
-			clickTimers.set(photo.id, timer);
+		if (e.detail > 1) return; // second click of a dblclick — ondblclick opens it
+		const next = new Set(selectedIds);
+		if (e.shiftKey && lastClickedId !== null) {
+			const a = photos.findIndex(p => p.id === lastClickedId);
+			const b = photos.findIndex(p => p.id === photo.id);
+			if (a !== -1 && b !== -1) {
+				for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(photos[i].id);
+			}
+		} else if (next.has(photo.id)) {
+			next.delete(photo.id);
+		} else {
+			next.add(photo.id);
 		}
+		selectedIds = next;
+		lastClickedId = photo.id;
 	}
 
 	function formatDate(dt: string | null): string {
@@ -135,6 +141,14 @@
 					class="flex flex-col bg-zinc-900 rounded overflow-hidden group focus:outline-none transition-all
 						{selected ? 'ring-2 ring-amber-400' : 'ring-1 ring-transparent hover:ring-zinc-700'}"
 					onclick={(e) => handlePhotoClick(photo, e)}
+					ondblclick={() => onSelect?.(photo)}
+					oncontextmenu={(e) => {
+						e.preventDefault();
+						// Right-clicking outside the selection acts on that one photo,
+						// which is what every file manager does.
+						if (!selectedIds.has(photo.id)) selectedIds = new Set([photo.id]);
+						onContext?.(photo, e);
+					}}
 				>
 					<!-- Thumbnail -->
 					<div class="relative overflow-hidden shrink-0" style="height:{imgHeight}px">

@@ -1,7 +1,11 @@
 ﻿<script lang="ts">
+	import { ask } from '$lib/dialog.svelte';
+	import AppDialog from '$lib/components/AppDialog.svelte';
 import '../app.css';
 import { page } from '$app/stores';
-import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers, Star, Wrench, Settings, ChevronDown, Database } from '@lucide/svelte';
+import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers, Star, Wrench, Settings, ChevronDown, Database,
+	Sparkles
+} from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
 import { thumbSizeStore, statusCountStore } from '$lib/stores';
 import { inferTab } from '$lib/shellFilters';
@@ -37,7 +41,7 @@ onDestroy(() => {
 });
 
 async function shutdown() {
-	if (confirm('Shutdown fernKam?')) {
+	if ((await ask('Shutdown fernKam?'))) {
 		try { await fetch('/api/shutdown', { method: 'POST' }); } catch { /* expected */ }
 	}
 }
@@ -51,6 +55,7 @@ const navItems = [
 	{ href: '/photos?tab=timeline', label: 'Timeline', icon: CalendarDays, tab: 'timeline' },
 	{ href: '/photos?tab=people', label: 'People', icon: Users, tab: 'people' },
 	{ href: '/photos?tab=labels', label: 'Labels', icon: Star, tab: 'labels' },
+	{ href: '/discover', label: 'Discover', icon: Sparkles, exact: false },
 	{ href: '/review', label: 'Face Review', icon: ScanFace, exact: false },
 	{ href: '/photos?view=map', label: 'Map', icon: MapPin, view: 'map' },
 ];
@@ -198,3 +203,6 @@ function isActive(item: typeof navItems[0]) {
 </div>
 
 <svelte:window onclick={closeToolsMenu} />
+
+<!-- One mounted dialog host for the whole app (replaces window.alert/confirm) -->
+<AppDialog />

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type SavedSearchOut, type PhotoSummary } from '$lib/api';
 	import { Bookmark, Plus, Pencil, Trash2, Play, X, Check, Pin, Search } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
@@ -28,6 +29,9 @@
 		try {
 			savedSearches = await api.savedSearches.list();
 			statusCountStore.set(`${savedSearches.length} smart album${savedSearches.length === 1 ? '' : 's'}`);
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load smart albums: ${e}`);
 		} finally {
 			loading = false;
 		}
@@ -43,6 +47,9 @@
 			photos = data.items;
 			total = data.total;
 			nextCursor = data.next_cursor ?? null;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load run search: ${e}`);
 		} finally {
 			loadingPhotos = false;
 		}
@@ -58,6 +65,9 @@
 			);
 			photos = [...photos, ...data.items];
 			nextCursor = data.next_cursor ?? null;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load more: ${e}`);
 		} finally {
 			loadingMore = false;
 		}
@@ -71,7 +81,7 @@
 	}, 150);
 
 	async function deleteSearch(ss: SavedSearchOut) {
-		if (!confirm(`Delete smart album "${ss.name}"?`)) return;
+		if (!(await ask(`Delete smart album "${ss.name}"?`))) return;
 		await api.savedSearches.delete(ss.id);
 		savedSearches = savedSearches.filter(s => s.id !== ss.id);
 		if (selectedSearch?.id === ss.id) { selectedSearch = null; photos = []; }

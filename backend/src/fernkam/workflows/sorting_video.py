@@ -34,8 +34,10 @@ DEFAULT_EXPORT_ROOT = r"D:\Pictures and Videos\AC_SORTED"
 
 def run(raw_dir: str = DEFAULT_RAW_DIR,
         sort_me_dir: str = DEFAULT_SORT_ME_DIR,
-        export_root: str = DEFAULT_EXPORT_ROOT) -> None:
-    _video_moving(raw_dir, sort_me_dir)
+        export_root: str = DEFAULT_EXPORT_ROOT,
+        dry_run: bool = True) -> None:
+    """dry_run defaults to True so the destinations can be reviewed first."""
+    _video_moving(raw_dir, sort_me_dir, dry_run)
 
     start = time.perf_counter()
     files = gather_files(sort_me_dir, ALL_EXTENSIONS)
@@ -46,18 +48,26 @@ def run(raw_dir: str = DEFAULT_RAW_DIR,
             print(f"Progress: {i + 1} / {len(files)}")
         try:
             dest_dir = _resolve_destination(file_path, export_root)
+            if dry_run:
+                print(f"WOULD SORT: {file_path.name} -> {dest_dir}")
+                continue
             dest_dir.mkdir(parents=True, exist_ok=True)
             _safe_copy(file_path, dest_dir / file_path.name)
         except Exception as e:
             print(f"Error processing {file_path.name}: {e}")
 
-    print(f"Total process took: {format_elapsed(start)}")
+    print(f"{'DRY RUN — ' if dry_run else ''}Total process took: {format_elapsed(start)}")
 
 
-def _video_moving(raw_dir: str, sort_me_dir: str) -> None:
+def _video_moving(raw_dir: str, sort_me_dir: str, dry_run: bool = True) -> None:
     start = time.perf_counter()
     files = gather_files(raw_dir, VIDEO_EXTENSIONS)
     staging = Path(sort_me_dir)
+    if dry_run:
+        for f in files:
+            print(f"WOULD STAGE VIDEO: {f.name} -> {staging}")
+        print(f"DRY RUN — {len(files)} video(s) would be staged.")
+        return
     staging.mkdir(parents=True, exist_ok=True)
     for f in files:
         _safe_copy(f, staging / f.name)

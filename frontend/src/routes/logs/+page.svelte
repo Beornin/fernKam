@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { untrack } from 'svelte';
 	import { api, type LogEntry } from '$lib/api';
 	import { RefreshCw, Search, Bug, AlertTriangle, X, ChevronDown, ChevronRight, Trash2, Pause, Play } from '@lucide/svelte';
@@ -31,6 +32,9 @@
 			]);
 			items = r.items;
 			total = c.count;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load load: ${e}`);
 		} finally {
 			loading = false;
 		}
@@ -113,7 +117,7 @@
 	}
 
 	async function clearAll() {
-		if (!confirm('Delete ALL log rows? This cannot be undone.')) return;
+		if (!(await ask('Delete ALL log rows? This cannot be undone.'))) return;
 		await api.logs.clear();
 		await load();
 		await loadMeta();

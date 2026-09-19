@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type DedupPhoto, type DedupAutoCleanPlan } from '$lib/api';
 	import { onMount } from 'svelte';
 	import { Copy, Trash2, RefreshCw, ChevronDown, Sparkles, X, AlertTriangle, Video } from '@lucide/svelte';
@@ -49,6 +50,9 @@
 			const data = await api.dedup.groups({ page, page_size: PAGE_SIZE });
 			groups = reset ? data.groups : [...groups, ...data.groups];
 			totalGroups = data.total_groups;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load groups: ${e}`);
 		} finally {
 			loading = false;
 		}
@@ -61,6 +65,9 @@
 		try {
 			const data = await api.dedup.groups({ page, page_size: PAGE_SIZE });
 			groups = [...groups, ...data.groups];
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load more: ${e}`);
 		} finally {
 			loadingMore = false;
 		}
@@ -78,16 +85,16 @@
 		try {
 			const r = await api.dedup.computeHashes();
 			taskId = r.task_id;
-			alert(`Hash computation started (task ${r.task_id}). Check Tasks page for progress, then reload this page.`);
+			notify(`Hash computation started (task ${r.task_id}). Check Tasks page for progress, then reload this page.`);
 		} catch (e: any) {
-			alert(e.message ?? 'Failed to start');
+			notify(e.message ?? 'Failed to start');
 		} finally {
 			computing = false;
 		}
 	}
 
 	async function trashPhoto(groupIdx: number, photo: DedupPhoto) {
-		if (!confirm(`Trash "${photo.filename}"? This moves it to the Recycle Bin.`)) return;
+		if (!(await ask(`Trash "${photo.filename}"? This moves it to the Recycle Bin.`))) return;
 		await api.photos.trash(photo.id);
 		groups = groups.map((g, i) => i !== groupIdx ? g : {
 			...g,
@@ -119,7 +126,7 @@
 			autoCleanPlan = await api.dedup.autoCleanPreview();
 			autoCleanPanelOpen = true;
 		} catch (e: any) {
-			alert(`Failed to compute the auto-clean plan: ${e}`);
+			notify(`Failed to compute the auto-clean plan: ${e}`);
 		} finally {
 			autoCleanLoading = false;
 		}
@@ -136,12 +143,12 @@
 				autoCleanProgress = null;
 				autoCleanPanelOpen = false;
 				autoCleanPlan = null;
-				alert(msg);
+				notify(msg);
 				loadStats();
 				loadGroups();
 			});
 		} catch (e: any) {
-			alert(`Auto-clean failed: ${e}`);
+			notify(`Auto-clean failed: ${e}`);
 			autoCleanApplying = false;
 			autoCleanProgress = null;
 		}

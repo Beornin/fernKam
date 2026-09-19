@@ -12,13 +12,15 @@ from typing import Optional
 from fernkam.workflows.shared import format_elapsed
 
 
-def run(album_path: Optional[str] = None) -> None:
+def run(album_path: Optional[str] = None, dry_run: bool = True) -> None:
+    """dry_run defaults to True — the sync half writes XMP into every member
+    file, so it is opt-in. The detect half is read-only and always runs."""
     start = time.perf_counter()
-    asyncio.run(_run_async(album_path))
+    asyncio.run(_run_async(album_path, dry_run))
     print(f"Process took: {format_elapsed(start)}")
 
 
-async def _run_async(album_path: Optional[str]) -> None:
+async def _run_async(album_path: Optional[str], dry_run: bool = True) -> None:
     from fernkam.db.models.photos import PhotoStack
     from fernkam.db.session import async_session_factory
     from fernkam.services.stacks import detect_stacks
@@ -38,6 +40,11 @@ async def _run_async(album_path: Optional[str]) -> None:
             clean_album_path = album_path.lstrip("/")
             q = q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
         stack_ids = [r[0] for r in (await db.execute(q)).fetchall()]
+
+    if dry_run:
+        print(f"DRY RUN — {len(stack_ids)} stack(s) would have tags/rating/colour "
+              f"unioned and written back to each member's XMP. Nothing was written.")
+        return
 
     print(f"Syncing tags for {len(stack_ids)} stacks…")
     from fernkam.api.routers.stacks import sync_stack_tags as _sync_one_stack

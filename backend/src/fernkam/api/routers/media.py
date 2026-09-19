@@ -16,8 +16,8 @@ from fernkam.db.models.photos import Face, Photo
 from fernkam.media_types import MIME_MAP, RAW_EXTENSIONS, VIDEO_EXTENSIONS
 from fernkam.thumbnails import (
     generate_thumbnail_bytes,
-    get_thumbnail_from_db,
-    store_thumbnail_to_db,
+    read_thumbnail_from_disk,
+    write_thumbnail_to_disk,
     photo_disk_path,
 )
 
@@ -37,21 +37,24 @@ async def serve_thumbnail(
     db: DB,
     size: Literal["sm", "md", "lg", "xl", "xxl"] = Query("md"),
 ) -> Response:
-    # 1. Try DB cache
-    data = await get_thumbnail_from_db(photo_id, size, db)
+    loop = asyncio.get_event_loop()
+
+    # 1. Disk cache. Deliberately not the DB: serving these from Postgres meant
+    #    every tile held one of the 50 pooled connections, and a grid-size
+    #    change fired ~42 at once against the catalogue query feeding that same
+    #    grid (0.67 ms idle -> 19.19 ms under burst; 2.55 ms from disk).
+    data = await loop.run_in_executor(None, read_thumbnail_from_disk, photo_id, size)
     if data:
         return Response(content=data, media_type="image/webp",
                         headers={"Cache-Control": "public, max-age=86400"})
 
-    # 2. Fallback: generate from disk and cache to DB
+    # 2. Miss: generate from the source file and cache it.
     photo = await _get_photo(photo_id, db)
     src = photo_disk_path(photo.album_path, photo.filename)
-    loop = asyncio.get_event_loop()
     data = await loop.run_in_executor(None, generate_thumbnail_bytes, src, size)
     if not data:
         raise HTTPException(422, "Thumbnail unavailable (video or missing source)")
-    await store_thumbnail_to_db(photo_id, size, data, db)
-    await db.commit()
+    await loop.run_in_executor(None, write_thumbnail_to_disk, photo_id, size, data)
     return Response(content=data, media_type="image/webp",
                     headers={"Cache-Control": "public, max-age=86400"})
 

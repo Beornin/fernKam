@@ -8,6 +8,7 @@ from sqlalchemy import func, select, update
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
+from fernkam.thumbnails import thumb_cache_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,16 +24,31 @@ async def reset_db(db: DB) -> dict:
 
     tables = [
         "faces", "photo_tags", "photos",
-        "tags", "cameras", "lenses", "people",
-        "audit_log", "app_logs",
+        "tags", "cameras", "lenses", "app_logs",
     ]
     truncate_sql = "TRUNCATE TABLE {} RESTART IDENTITY CASCADE".format(
         ", ".join(tables)
     )
     await db.execute(_sql(truncate_sql))
     await db.commit()
+
+    # Thumbnails are files now, not a CASCADEd table, so the truncate above
+    # leaves the whole cache orphaned unless it is cleared here too.
+    import asyncio
+    import shutil
+    from pathlib import Path
+
+    cache_dir = thumb_cache_path(0, "md").parent.parent
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: shutil.rmtree(cache_dir, ignore_errors=True)
+        )
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[RESET-DB] thumbnail cache not fully cleared: %s", exc)
+
     logger.warning("[RESET-DB] All tables truncated by user request")
-    return {"ok": True, "tables_cleared": tables}
+    return {"ok": True, "tables_cleared": tables, "thumbnail_cache_cleared": True}
 
 
 @router.get("/status")
@@ -71,13 +87,12 @@ async def backfill_thumbnails(db: DB) -> dict:
         text("""
             SELECT p.id, p.album_path, p.filename
             FROM photos p
-            WHERE p.status = 1
-              AND p.media_type = 'image'
-              AND NOT EXISTS (
-                  SELECT 1 FROM photo_thumbnails t WHERE t.photo_id = p.id
-              )
+            WHERE p.status = 1 AND p.media_type = 'image'
         """),
     )).fetchall()
+    # Thumbnails live on disk now, so "missing" is a filesystem check rather
+    # than a NOT EXISTS against photo_thumbnails.
+    rows = [r for r in rows if not thumb_cache_path(r.id, "md").exists()]
     if not rows:
         return {"task_id": None, "queued": 0, "message": "No photos missing thumbnails"}
 
@@ -88,7 +103,7 @@ async def backfill_thumbnails(db: DB) -> dict:
     async def run_backfill() -> None:
         import time as _time
         from fernkam.db.session import async_session_factory
-        from fernkam.thumbnails import generate_thumbnail_bytes, store_thumbnail_to_db, photo_disk_path
+        from fernkam.thumbnails import generate_thumbnail_bytes, write_thumbnail_to_disk, photo_disk_path
 
         t_start = _time.time()
         total = len(rows)
@@ -107,7 +122,9 @@ async def backfill_thumbnails(db: DB) -> dict:
                         for size in ("sm", "md", "lg", "xl"):
                             data = await loop.run_in_executor(None, generate_thumbnail_bytes, src, size)
                             if data:
-                                await store_thumbnail_to_db(row.id, size, data, bdb)
+                                await loop.run_in_executor(
+                                    None, write_thumbnail_to_disk, row.id, size, data
+                                )
                         ok += 1
                     except Exception as exc:
                         logger.warning("backfill thumb error photo %d: %s", row.id, exc)

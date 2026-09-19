@@ -1,9 +1,7 @@
 from fernkam.db.models.photos import (
-    AuditLog,
     Camera,
     Face,
     Lens,
-    Person,
     PersonCentroid,
     Photo,
     PhotoTag,
@@ -11,4 +9,4 @@ from fernkam.db.models.photos import (
 )
 from fernkam.db.models.tasks import BackgroundTask
 
-__all__ = ["Camera", "Lens", "Photo", "Tag", "PhotoTag", "Person", "Face", "AuditLog", "BackgroundTask", "PersonCentroid"]
+__all__ = ["Camera", "Lens", "Photo", "Tag", "PhotoTag", "Face", "BackgroundTask", "PersonCentroid"]

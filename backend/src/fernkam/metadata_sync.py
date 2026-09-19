@@ -284,6 +284,27 @@ async def read_many_metadata_async(paths: list[Path], chunk_size: int = 100) -> 
     return await loop.run_in_executor(None, partial(read_many_metadata, paths, chunk_size))
 
 
+def _as_text(val, max_len: Optional[int] = None) -> Optional[str]:
+    """Coerce an exiftool value to a string safe for a text/varchar column.
+
+    exiftool returns raw JSON types, so a field that is *usually* text can come
+    back as a number (a TIFF whose Title is the bare value -7877) or as a list
+    (repeated tags). Passing those straight to asyncpg raises DataError
+    ("expected str, got int") and aborts the whole photo insert, so the file
+    silently never gets catalogued.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        val = ", ".join(str(v) for v in val if v is not None)
+    elif not isinstance(val, str):
+        val = str(val)
+    val = val.strip()
+    if not val:
+        return None
+    return val[:max_len] if max_len else val
+
+
 def parse_exif_dict(meta: dict, file_path: Path) -> dict:
     """Convert a raw exiftool JSON object into fernKam's structured metadata."""
     if meta is None:
@@ -342,16 +363,17 @@ def parse_exif_dict(meta: dict, file_path: Path) -> dict:
         except OSError:
             pass
 
-    # Camera make/model
-    camera_make = meta.get("Make") or meta.get("DeviceManufacturer")
-    camera_model = meta.get("Model") or meta.get("DeviceModelName")
-    camera_serial = meta.get("SerialNumber") or meta.get("CameraSerialNumber")
-    camera_info = {"make": camera_make, "model": camera_model, "serial": str(camera_serial) if camera_serial is not None else None} if (camera_make or camera_model) else None
+    # Camera make/model — cameras.make/model/serial are String(128), so coerce
+    # non-string exiftool values and clamp the length (see _as_text).
+    camera_make = _as_text(meta.get("Make") or meta.get("DeviceManufacturer"), 128)
+    camera_model = _as_text(meta.get("Model") or meta.get("DeviceModelName"), 128)
+    camera_serial = _as_text(meta.get("SerialNumber") or meta.get("CameraSerialNumber"), 128)
+    camera_info = {"make": camera_make, "model": camera_model, "serial": camera_serial} if (camera_make or camera_model) else None
 
-    # Lens make/model
-    lens_make = meta.get("LensMake")
-    lens_model = meta.get("LensModel") or meta.get("Lens") or meta.get("LensInfo")
-    lens_info = {"make": lens_make, "model": str(lens_model) if lens_model else None} if (lens_make or lens_model) else None
+    # Lens make/model — lenses.make/model are String(128).
+    lens_make = _as_text(meta.get("LensMake"), 128)
+    lens_model = _as_text(meta.get("LensModel") or meta.get("Lens") or meta.get("LensInfo"), 128)
+    lens_info = {"make": lens_make, "model": lens_model} if (lens_make or lens_model) else None
 
     # Build structured exif snapshot (omit large/binary fields)
     _SKIP = {"SourceFile", "ExifToolVersion", "FilePermissions", "ThumbnailImage",
@@ -363,8 +385,10 @@ def parse_exif_dict(meta: dict, file_path: Path) -> dict:
         "tag_paths": [h.replace("|", "/") for h in hier],
         "rating": rating,
         "color_label": color_label,
-        "title": meta.get("Title") or meta.get("XPTitle"),
-        "caption": meta.get("Description") or meta.get("ImageDescription") or meta.get("Caption-Abstract"),
+        # photos.title/caption are Text (unbounded) but still must be str —
+        # a numeric Title in a TIFF was aborting the whole insert.
+        "title": _as_text(meta.get("Title") or meta.get("XPTitle")),
+        "caption": _as_text(meta.get("Description") or meta.get("ImageDescription") or meta.get("Caption-Abstract")),
         "faces": faces,
         "img_w": meta.get("ImageWidth") or meta.get("ExifImageWidth"),
         "img_h": meta.get("ImageHeight") or meta.get("ExifImageHeight"),

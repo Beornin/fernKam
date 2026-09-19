@@ -239,24 +239,11 @@ class PhotoTag(Base):
     )
 
 
-class Person(Base):
-    __tablename__ = "people"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tag_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"), unique=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    notes: Mapped[Optional[str]] = mapped_column(Text)
-
-    tag: Mapped[Optional["Tag"]] = relationship()
-    faces: Mapped[list["Face"]] = relationship(back_populates="person")
-
-
 class Face(Base):
     __tablename__ = "faces"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"), nullable=False)
-    person_id: Mapped[Optional[int]] = mapped_column(ForeignKey("people.id"))
     person_tag_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
 
     # Bounding box (absolute pixel coords from DigiKam)
@@ -306,7 +293,6 @@ class Face(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     photo: Mapped["Photo"] = relationship(back_populates="faces")
-    person: Mapped[Optional["Person"]] = relationship(back_populates="faces")
     person_tag: Mapped[Optional["Tag"]] = relationship(foreign_keys=[person_tag_id])
 
     __table_args__ = (
@@ -336,20 +322,6 @@ class PersonCentroid(Base):
         UniqueConstraint("person_tag_id", "label", name="uq_person_centroids_ptid_label"),
         Index("ix_person_centroids_ptid", "person_tag_id"),
     )
-
-
-class AuditLog(Base):
-    __tablename__ = "audit_log"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    row_id: Mapped[Optional[str]] = mapped_column(String(64))
-    action: Mapped[str] = mapped_column(String(16), nullable=False)
-    changed_by: Mapped[Optional[str]] = mapped_column(String(128))
-    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    payload: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    __table_args__ = (Index("ix_audit_log_table_changed_at", "table_name", "changed_at"),)
 
 
 class AppLog(Base):

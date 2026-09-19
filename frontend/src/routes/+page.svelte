@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ask } from '$lib/dialog.svelte';
 	import { Download, RefreshCw, ArrowRight, Database, HardDrive, Activity, Trash2, Save, RotateCcw, Workflow, FileSearch } from '@lucide/svelte';
 	import { api } from '$lib/api';
 
@@ -147,7 +148,7 @@
 	}
 
 	async function restoreBackup(path: string) {
-		if (!confirm(`Restore from this backup? This will overwrite the current database.`)) return;
+		if (!(await ask(`Restore from this backup? This will overwrite the current database.`))) return;
 		restoringPath = path;
 		restoreResult = null;
 		try {

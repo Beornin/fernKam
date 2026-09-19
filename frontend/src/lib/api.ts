@@ -182,6 +182,25 @@ async function get<T>(path: string, params?: Record<string, string | number | bo
   return res.json();
 }
 
+export interface SemanticHit {
+  id: number;
+  filename: string;
+  album_path: string;
+  taken_at: string | null;
+  media_type?: string;
+  rating?: number;
+  file_size?: number;
+  score: number;
+}
+
+export interface TagSuggestion {
+  tag_id: number;
+  name: string;
+  path: string;
+  weight: number;
+  votes: number;
+}
+
 export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
@@ -202,6 +221,7 @@ export const api = {
       lens_id?: number;
       has_gps?: boolean;
       has_faces?: boolean;
+      unnamed_faces?: boolean;
       no_date?: boolean;
       search?: string;
       date_from?: string;
@@ -237,6 +257,22 @@ export const api = {
     trash: (id: number) =>
       fetch(`/api/photos/${id}/trash`, { method: 'POST' }).then(r => r.json() as Promise<{ ok: boolean; filename: string }>),
   },
+  semantic: {
+    status: () => get<{ embedded: number; total: number; remaining: number }>('/api/semantic/status'),
+    embed: (params?: { limit?: number }) =>
+      fetch(`/api/semantic/embed${params?.limit ? `?limit=${params.limit}` : ''}`, { method: 'POST' })
+        .then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string }>),
+    search: (params: { q: string; limit?: number; min_score?: number }, signal?: AbortSignal) =>
+      get<{ query: string; count: number; results: SemanticHit[] }>('/api/semantic/search', params, signal),
+    similar: (photoId: number, params?: { limit?: number; min_score?: number }) =>
+      get<{ photo_id: number; results: SemanticHit[] }>(`/api/semantic/similar/${photoId}`, params),
+    suggestTags: (photoId: number, params?: { k?: number; min_score?: number; limit?: number }) =>
+      get<{ photo_id: number; suggestions: TagSuggestion[] }>(`/api/semantic/suggest-tags/${photoId}`, params),
+    applyTags: (body: { photo_ids: number[]; tag_ids: number[] }) =>
+      fetch('/api/semantic/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => r.json() as Promise<{ linked: number }>),
+  },
+
   tags: {
     list: (params?: { flat?: boolean; search?: string }, signal?: AbortSignal) => get<TagOut[]>('/api/tags', params, signal),
     create: (body: { name: string; parent_id?: number | null; is_person?: boolean }) =>

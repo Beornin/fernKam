@@ -12,7 +12,7 @@ from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, FaceUpdate
 from fernkam.db.models.photos import Face, Photo, Tag
 
-from ._helpers import _already_confirmed_in_photo, _auto_confirm_similar, _make_face_out
+from ._helpers import _already_confirmed_in_photo, _make_face_out, _relearn_person_bg
 
 router = APIRouter()
 
@@ -103,22 +103,14 @@ async def batch_assign_faces(
         )
     await db.commit()
 
-    # Only run _auto_confirm_similar for small batches (single/few-face manual confirms).
-    # Large bulk assigns (e.g. acceptAllSuggested) skip it to avoid hammering the DB;
-    # the explicit "Batch Assign" sweep handles those instead.
-    if status == "confirmed" and person_tag_id and len(uuids) <= 5:
-        async def _bg_similar(ptid: int, seeds: list[UUID]):
-            from fernkam.db.session import async_session_factory
-            try:
-                async with async_session_factory() as bg_db:
-                    await _auto_confirm_similar(bg_db, ptid, seeds)
-            except Exception as _e:
-                logger_ = __import__("logging").getLogger(__name__)
-                logger_.warning("background _auto_confirm_similar failed: %s", _e)
-
+    if status == "confirmed" and person_tag_id:
+        # Seed propagation is skipped for large bulk assigns (e.g. acceptAllSuggested)
+        # because it would hammer the DB; the explicit "Batch Assign" sweep handles
+        # those. The centroid refresh still runs either way, which is what a freshly
+        # labelled cluster needs so its faces immediately improve ranked suggestions.
         _asyncio.create_task(
-            _bg_similar(person_tag_id, list(uuids)),
-            name="fernkam-auto-confirm-similar",
+            _relearn_person_bg(person_tag_id, list(uuids), propagate=len(uuids) <= 5),
+            name="fernkam-relearn-person",
         )
 
     photo_ids = [r[0] for r in (await db.execute(
@@ -203,19 +195,9 @@ async def update_face(face_id: UUID, payload: FaceUpdate, db: DB) -> FaceOut:
     if updates.get("status") == "confirmed" and row.person_tag_id:
         import asyncio as _asyncio
 
-        async def _bg(ptid: int, seeds: list):
-            from fernkam.db.session import async_session_factory
-            try:
-                async with async_session_factory() as bg_db:
-                    await _auto_confirm_similar(bg_db, ptid, seeds)
-            except Exception as _e:
-                __import__("logging").getLogger(__name__).warning(
-                    "bg _auto_confirm_similar failed: %s", _e
-                )
-
         _asyncio.create_task(
-            _bg(row.person_tag_id, [face_id]),
-            name="fernkam-auto-confirm-similar",
+            _relearn_person_bg(row.person_tag_id, [face_id]),
+            name="fernkam-relearn-person",
         )
 
     return _make_face_out(row)

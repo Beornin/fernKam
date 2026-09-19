@@ -67,6 +67,7 @@
 		hasGps = gps === null ? '' : (gps === '1' || gps === 'true' ? 'yes' : 'no');
 		const faces = sp.get('has_faces');
 		hasFaces = faces === null ? '' : (faces === '1' || faces === 'true' ? 'yes' : 'no');
+		if (sp.get('unnamed_faces') === '1' || sp.get('unnamed_faces') === 'true') hasFaces = 'unnamed';
 		noDate = sp.get('no_date') === '1' || sp.get('no_date') === 'true';
 
 		const [tagData, camData, lensData] = await Promise.all([
@@ -95,7 +96,8 @@
 			date_from: dateFrom || undefined,
 			date_to: dateTo || undefined,
 			has_gps: hasGps === '' ? undefined : (hasGps === 'yes' ? '1' : '0'),
-			has_faces: hasFaces === '' ? undefined : (hasFaces === 'yes' ? '1' : '0'),
+			has_faces: hasFaces === 'yes' ? '1' : hasFaces === 'no' ? '0' : undefined,
+			unnamed_faces: hasFaces === 'unnamed' ? '1' : undefined,
 			no_date: noDate ? '1' : undefined,
 		};
 	}
@@ -302,6 +304,7 @@
 					<option value="">Any</option>
 					<option value="yes">Has faces</option>
 					<option value="no">No faces</option>
+					<option value="unnamed">Faces, nobody named</option>
 				</select>
 			</div>
 		</div>

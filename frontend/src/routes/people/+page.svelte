@@ -1,4 +1,5 @@
 ﻿<script lang="ts">
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type PersonOut, type FaceOut } from '$lib/api';
 	import { Plus, Search, Trash2, Pencil, Check, X, User, ExternalLink, EyeOff, Layers, ArrowUpDown, ArrowUp, ArrowDown, Merge, Scissors } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
@@ -67,7 +68,7 @@
 			}
 			showMergeModal = false;
 		} catch (e: any) {
-			alert(e.message ?? 'Merge failed');
+			notify(e.message ?? 'Merge failed');
 		} finally {
 			merging = false;
 		}
@@ -81,7 +82,7 @@
 
 	async function doSplit(intoId?: number) {
 		if (!selectedPerson || splitSelected.size === 0) return;
-		if (!intoId && !splitNewName.trim()) { alert('Enter a name for the new person'); return; }
+		if (!intoId && !splitNewName.trim()) { notify('Enter a name for the new person'); return; }
 		splitting = true;
 		try {
 			const res = await api.people.split(selectedPerson.id, [...splitSelected], splitNewName.trim() || undefined, intoId);
@@ -97,7 +98,7 @@
 			splitNewName = '';
 			showSplitTargetPicker = false;
 		} catch (e: any) {
-			alert(e.message ?? 'Split failed');
+			notify(e.message ?? 'Split failed');
 		} finally {
 			splitting = false;
 		}
@@ -112,6 +113,11 @@
 		try {
 			people = await api.people.list({ search: search || undefined, limit: 500 });
 			return people;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			// Returns the last-known list so callers keep a defined array.
+			notify(`Could not load people: ${e}`);
+			return people;
 		} finally {
 			loadingPeople = false;
 		}
@@ -123,6 +129,9 @@
 			const batch = await api.faces.list({ status: 'ignored', limit: PAGE, offset: ignoredPage * PAGE });
 			ignoredHasMore = batch.length >= PAGE;
 			ignoredFaces = batch;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load ignored faces: ${e}`);
 		} finally {
 			loadingIgnored = false;
 		}
@@ -168,6 +177,9 @@
 		try {
 			faces = await api.people.faces(person.id, { limit: PAGE, offset: facePage * PAGE, sort: sortMode, dir: sortDir });
 			faceHasMore = faces.length >= PAGE;
+		} catch (e) {
+			// Previously swallowed: the spinner stopped and nothing said why.
+			notify(`Could not load faces: ${e}`);
 		} finally {
 			loadingFaces = false;
 		}
@@ -191,14 +203,14 @@
 			showCreate = false;
 			await selectPerson(p);
 		} catch (e: any) {
-			alert(e.message ?? 'Failed to create person');
+			notify(e.message ?? 'Failed to create person');
 		} finally {
 			creating = false;
 		}
 	}
 
 	async function deletePerson(person: PersonOut) {
-		if (!confirm(`Delete "${person.name}"? All their faces will be unassigned.`)) return;
+		if (!(await ask(`Delete "${person.name}"? All their faces will be unassigned.`))) return;
 		await api.people.delete(person.id);
 		people = people.filter(p => p.id !== person.id);
 		if (selectedPerson?.id === person.id) {

@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { api, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 	import AlbumsTab from '$lib/components/sidebar/AlbumsTab.svelte';
 	import TagsTab from '$lib/components/sidebar/TagsTab.svelte';
@@ -220,7 +222,7 @@
 			reviewTrashedCount++;
 			if (reviewIdx >= reviewPhotos.length && reviewIdx > 0) reviewIdx--;
 		} catch (e) {
-			alert(`Failed to trash: ${e}`);
+			notify(`Failed to trash: ${e}`);
 		} finally {
 			reviewTrashing = false;
 		}
@@ -233,6 +235,115 @@
 		else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); reviewTrash(); }
 		else if (e.key === 'Escape') exitReview();
 		else if (e.key === 'f' || e.key === 'F') reviewFit = !reviewFit;
+	}
+
+
+	// ── Right-click menu (Roadmap 5.2) ──────────────────────────────────────
+	const menuItem = 'w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 transition-colors';
+	let menu = $state<{ x: number; y: number; photo: PhotoSummary } | null>(null);
+	const menuCount = $derived(selectedIds.size || (menu ? 1 : 0));
+
+	function openMenu(photo: PhotoSummary, e: MouseEvent) {
+		menu = { x: e.clientX, y: e.clientY, photo };
+	}
+
+	async function menuRate(n: number) {
+		const m = menu; menu = null;
+		if (!m) return;
+		await applyToSelection({ rating: n }, n === 0 ? 'Rating cleared' : `${n} star${n === 1 ? '' : 's'}`);
+	}
+
+	async function menuReject() {
+		menu = null;
+		await applyToSelection({ color_label: 1 }, 'Rejected (red)');
+	}
+
+	async function menuReveal() {
+		const m = menu; menu = null;
+		if (!m) return;
+		try {
+			const r = await fetch(`/api/photos/${m.photo.id}/reveal`, { method: 'POST' });
+			if (!r.ok) notify(`Could not reveal file: ${(await r.json()).detail ?? r.status}`);
+		} catch (e) {
+			notify(`Could not reveal file: ${e}`);
+		}
+	}
+
+	function menuOpen() {
+		const m = menu; menu = null;
+		if (m) openPhoto(m.photo);
+	}
+
+	function menuSimilar() {
+		const m = menu; menu = null;
+		if (m) goto(`/discover?similar=${m.photo.id}`);
+	}
+
+	// ── Grid cull loop (Roadmap 4.1) ────────────────────────────────────────
+	// Only 73 of 116k photos were ever rated, because rating required opening a
+	// photo and clicking. digiKam's loop is: arrow through, press 1-5, press X.
+	let gridKeyMsg = $state<string | null>(null);
+	let gridKeyTimer: ReturnType<typeof setTimeout>;
+
+	function flashGridMsg(text: string) {
+		gridKeyMsg = text;
+		clearTimeout(gridKeyTimer);
+		gridKeyTimer = setTimeout(() => { gridKeyMsg = null; }, 1800);
+	}
+
+	async function applyToSelection(fields: { rating?: number; color_label?: number }, label: string) {
+		const ids = [...selectedIds];
+		if (ids.length === 0) return;
+		// Optimistic: the grid re-renders immediately, the write follows.
+		for (const p of photos) {
+			if (!selectedIds.has(p.id)) continue;
+			if (fields.rating !== undefined) p.rating = fields.rating;
+			if (fields.color_label !== undefined) p.color_label = fields.color_label;
+		}
+		photos = [...photos];
+		flashGridMsg(`${label} — ${ids.length} photo${ids.length === 1 ? '' : 's'}`);
+		try {
+			await api.photos.batchEdit(ids, fields);
+		} catch (e) {
+			flashGridMsg(`Failed: ${e}`);
+		}
+	}
+
+	function onGridKey(e: KeyboardEvent) {
+		if (reviewMode || mapMode || lightbox.selectedId !== null) return;
+		// Never hijack typing in the search box or any other field.
+		const t = e.target as HTMLElement | null;
+		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+
+		if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+			e.preventDefault();
+			selectedIds = new Set(photos.map(p => p.id));
+			flashGridMsg(`Selected ${photos.length}`);
+			return;
+		}
+		if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+		if (e.key === 'Escape' && selectedIds.size > 0) {
+			selectedIds = new Set();
+			return;
+		}
+		if (selectedIds.size === 0) return;
+
+		if (e.key >= '1' && e.key <= '5') {
+			e.preventDefault();
+			applyToSelection({ rating: Number(e.key) }, `${e.key} star${e.key === '1' ? '' : 's'}`);
+		} else if (e.key === '0') {
+			e.preventDefault();
+			applyToSelection({ rating: 0 }, 'Rating cleared');
+		} else if (e.key === 'x' || e.key === 'X') {
+			// digiKam's reject. fernKam has no pick-label column, so red is the
+			// reject marker — it is already the first colour label everywhere.
+			e.preventDefault();
+			applyToSelection({ color_label: 1 }, 'Rejected (red)');
+		} else if (e.key === 'u' || e.key === 'U') {
+			e.preventDefault();
+			applyToSelection({ color_label: 0 }, 'Label cleared');
+		}
 	}
 
 	function panStart(e: MouseEvent) {
@@ -402,7 +513,12 @@
 				{:else if photos.length === 0}
 					<div class="flex items-center justify-center h-40 text-zinc-500 text-sm">No photos found</div>
 				{:else}
-					<PhotoGrid {photos} onSelect={openPhoto} bind:selectedIds={selectedIds} />
+					<PhotoGrid {photos} onSelect={openPhoto} onContext={openMenu} bind:selectedIds={selectedIds} />
+					{#if gridKeyMsg}
+						<div class="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs text-zinc-100 shadow-lg pointer-events-none">
+							{gridKeyMsg}
+						</div>
+					{/if}
 				{/if}
 			</div>
 
@@ -442,7 +558,7 @@
 	/>
 {/if}
 
-<svelte:window onkeydown={onReviewKey} />
+<svelte:window onkeydown={(e) => { onReviewKey(e); onGridKey(e); }} />
 
 <!-- ── Review Mode Overlay ── -->
 {#if reviewMode}
@@ -552,4 +668,28 @@
 	</div>
 
 </div>
+{/if}
+
+{#if menu}
+	<ContextMenu x={menu.x} y={menu.y} onClose={() => menu = null}>
+		<div class="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">
+			{menuCount} photo{menuCount === 1 ? '' : 's'}
+		</div>
+		<button class={menuItem} onclick={menuOpen}>Open</button>
+		<button class={menuItem} onclick={menuSimilar}>Find visually similar</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<div class="px-3 py-1 flex items-center gap-1">
+			{#each [1, 2, 3, 4, 5] as n}
+				<button
+					onclick={() => menuRate(n)}
+					class="w-6 h-6 rounded hover:bg-zinc-800 text-zinc-400 hover:text-amber-400 text-xs"
+					title="{n} star{n === 1 ? '' : 's'}">{n}</button>
+			{/each}
+			<button onclick={() => menuRate(0)}
+				class="ml-1 px-1.5 h-6 rounded hover:bg-zinc-800 text-zinc-500 text-[10px]">clear</button>
+		</div>
+		<button class={menuItem} onclick={menuReject}>Reject (red label)</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={menuReveal}>Reveal in File Explorer</button>
+	</ContextMenu>
 {/if}

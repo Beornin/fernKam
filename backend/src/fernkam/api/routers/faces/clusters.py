@@ -34,26 +34,34 @@ async def _count_unconfirmed_clusters(db) -> int:
 
 @router.post("/clusters/rebuild", response_model=dict)
 async def rebuild_clusters(
-    min_size: int = Query(0, ge=0),
     cluster_thresh: Optional[float] = Query(None),
-    k: int = Query(30, ge=2, le=100),
+    k: int = Query(10, ge=2, le=100),
+    min_blur: float = Query(60.0, ge=0),
+    min_det: float = Query(0.65, ge=0),
+    min_size: int = Query(60, ge=0),
 ) -> dict:
-    """Kick off cluster rebuild as a background task. Returns a task_id."""
+    """Kick off cluster rebuild as a background task. Returns a task_id.
+
+    Defaults are the measured ones — see _rebuild_face_clusters for the
+    threshold/cluster-size table they come from. Pass min_blur=0 and
+    cluster_thresh=0.72 to reproduce the old behaviour.
+    """
     import asyncio
     from fernkam.task_manager import task_manager
-    from fernkam.config import get_settings
     from fernkam.db.session import async_session_factory as _session_factory
 
-    thresh = cluster_thresh if cluster_thresh is not None else max(
-        get_settings().suggest_thresh, 0.72
-    )
+    # 0.82, not the old max(suggest_thresh, 0.72): at 0.72 union-find chains
+    # one component up to 645 faces, which sorts first in the review UI. See the
+    # table in _rebuild_face_clusters.
+    thresh = cluster_thresh if cluster_thresh is not None else 0.82
     task_id = await task_manager.create_task("cluster_rebuild", "Building face clusters…")
 
     async def _run() -> None:
         async with _session_factory() as bg_db:
             try:
                 n = await _rebuild_face_clusters(
-                    bg_db, cluster_thresh=thresh, k=k, min_size=min_size
+                    bg_db, cluster_thresh=thresh, k=k, min_size=min_size,
+                    min_blur=min_blur, min_det=min_det,
                 )
                 await task_manager.update_task(
                     task_id, status="completed",
@@ -64,7 +72,8 @@ async def rebuild_clusters(
                 await task_manager.update_task(task_id, status="failed", message=str(exc))
 
     asyncio.create_task(_run())
-    return {"task_id": task_id, "status": "started", "threshold": thresh}
+    return {"task_id": task_id, "status": "started", "threshold": thresh,
+            "min_blur": min_blur, "min_det": min_det, "min_size": min_size, "k": k}
 
 
 @router.get("/clusters")

@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { Workflow, Play, CheckCircle, XCircle, Loader, ChevronDown, ChevronUp } from '@lucide/svelte';
+	import { ask } from '$lib/dialog.svelte';
+	import { Workflow, Play, CheckCircle, XCircle, Loader, ChevronDown, ChevronUp, Eye, Layers, HeartPulse } from '@lucide/svelte';
+	import { onMount } from 'svelte';
 
 	// ---------------------------------------------------------------------------
 	// Types
@@ -17,6 +19,7 @@
 		taskId: string | null;
 		lines: string[];
 		expanded: boolean;
+		lastDryRun?: boolean;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -128,18 +131,47 @@
 
 	let pollTimers: Record<string, ReturnType<typeof setInterval>> = {};
 
-	async function runWorkflow(wf: WorkflowCard) {
+
+	// ── Pipeline stages (3.1) + RAW health (3.4) ────────────────────────────
+	interface Stage {
+		folder: string; kind: string; blurb: string;
+		catalogued: number; videos: number; rated: number; bytes: number;
+		on_disk: number | null;
+	}
+	let stages = $state<Stage[]>([]);
+	let health = $state<{ raw_total: number; orphan_raw: number; unstacked_pairs: number; lone_pics: number } | null>(null);
+	let loadingOverview = $state(true);
+
+	const fmtGB = (b: number) => b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : `${(b / 1e9).toFixed(0)} GB`;
+
+	onMount(async () => {
+		try {
+			const [p, h] = await Promise.all([
+				fetch('/api/workflows/pipeline').then(r => r.json()),
+				fetch('/api/workflows/raw-health').then(r => r.json()),
+			]);
+			stages = p.stages ?? [];
+			health = h;
+		} catch { /* overview is advisory; the workflows below still work */ }
+		finally { loadingOverview = false; }
+	});
+
+	async function runWorkflow(wf: WorkflowCard, dryRun = true) {
+		// These workflows trash and relocate originals, so Apply is a separate,
+		// explicit action and Preview is what the plain button does.
+		if (!dryRun && !(await ask(`${wf.label}: this modifies files on disk. Run for real?`))) return;
 		wf.status = 'running';
 		wf.lines = [];
 		wf.taskId = null;
 		wf.expanded = true;
+		wf.lastDryRun = dryRun;
 
 		const endpoint = `/api/workflows/run/${wf.id}`;
 		try {
 			const res = await fetch(endpoint, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(wf.values),
+				body: JSON.stringify({ ...wf.values, dry_run: dryRun }),
 			});
 			const data = await res.json();
 			if (!res.ok) throw new Error(data.detail ?? JSON.stringify(data));
@@ -177,6 +209,61 @@
 		<p class="text-zinc-400">File-system automation workflows</p>
 	</div>
 
+	<!-- 3.1 pipeline stages: where everything currently sits -->
+	<section class="mb-6">
+		<h2 class="text-sm font-semibold text-zinc-300 flex items-center gap-2 mb-3">
+			<Layers size={15} class="text-amber-400" /> Pipeline
+		</h2>
+		{#if loadingOverview}
+			<p class="text-xs text-zinc-600">Loading…</p>
+		{:else}
+			<div class="grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr))">
+				{#each stages as st}
+					<div class="bg-zinc-900 border rounded-lg p-3
+						{st.catalogued > 0 && (st.kind === 'intake' || st.kind === 'staging')
+							? 'border-amber-700/60' : 'border-zinc-800'}">
+						<div class="text-[11px] uppercase tracking-wider text-zinc-500">{st.kind}</div>
+						<div class="text-sm font-semibold text-zinc-200 truncate" title={st.folder}>{st.folder}</div>
+						<div class="text-lg font-semibold text-zinc-100 mt-1">{st.catalogued.toLocaleString()}</div>
+						<div class="text-[11px] text-zinc-500">
+							{fmtGB(st.bytes)}{#if st.videos > 0} · {st.videos.toLocaleString()} video{/if}
+						</div>
+						{#if st.on_disk !== null && st.on_disk !== st.catalogued}
+							<div class="text-[11px] text-amber-500 mt-1">{st.on_disk.toLocaleString()} on disk — catalogue drift</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</section>
+
+	<!-- 3.4 RAW/JPEG pairing health -->
+	{#if health}
+		<section class="mb-8">
+			<h2 class="text-sm font-semibold text-zinc-300 flex items-center gap-2 mb-3">
+				<HeartPulse size={15} class="text-amber-400" /> RAW health
+			</h2>
+			<div class="grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr))">
+				<div class="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+					<div class="text-lg font-semibold text-zinc-100">{health.raw_total.toLocaleString()}</div>
+					<div class="text-[11px] text-zinc-500">RAW files</div>
+				</div>
+				<div class="bg-zinc-900 border {health.orphan_raw > 0 ? 'border-amber-700/60' : 'border-zinc-800'} rounded-lg p-3">
+					<div class="text-lg font-semibold text-zinc-100">{health.orphan_raw.toLocaleString()}</div>
+					<div class="text-[11px] text-zinc-500">orphan RAW — derivative already culled</div>
+				</div>
+				<div class="bg-zinc-900 border {health.unstacked_pairs > 0 ? 'border-amber-700/60' : 'border-zinc-800'} rounded-lg p-3">
+					<div class="text-lg font-semibold text-zinc-100">{health.unstacked_pairs.toLocaleString()}</div>
+					<div class="text-[11px] text-zinc-500">unstacked RAW+JPEG pairs</div>
+				</div>
+				<div class="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
+					<div class="text-lg font-semibold text-zinc-100">{health.lone_pics.toLocaleString()}</div>
+					<div class="text-[11px] text-zinc-500">pictures in RAW/ with no RAW</div>
+				</div>
+			</div>
+		</section>
+	{/if}
+
 	<div class="space-y-6">
 		{#each workflows as wf}
 			<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden hover:{colorClasses(wf.color, 'border')} transition-all">
@@ -210,17 +297,26 @@
 
 						<div class="flex items-center gap-2 shrink-0">
 							<button
-								onclick={() => runWorkflow(wf)}
+								onclick={() => runWorkflow(wf, true)}
 								disabled={wf.status === 'running'}
-								class="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed {colorClasses(wf.color, 'btn')}"
+								class="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
 							>
 								{#if wf.status === 'running'}
 									<Loader size={14} class="animate-spin" />
 									Running…
 								{:else}
-									<Play size={14} />
-									Run
+									<Eye size={14} />
+									Preview
 								{/if}
+							</button>
+							<button
+								onclick={() => runWorkflow(wf, false)}
+								disabled={wf.status === 'running'}
+								title="Modifies files on disk"
+								class="flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed {colorClasses(wf.color, 'btn')}"
+							>
+								<Play size={14} />
+								Apply
 							</button>
 							{#if wf.lines.length > 0}
 								<button
