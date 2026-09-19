@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -238,6 +239,55 @@
 	}
 
 
+
+	// ── Resizable sidebar ───────────────────────────────────────────────────
+	// Scientific-name tags ("Scientific_Names.Haemorhous_mexicanus") do not fit
+	// in 220px, and the tree is the main way to navigate them.
+	const SIDEBAR_MIN = 160, SIDEBAR_MAX = 560, SIDEBAR_DEFAULT = 220;
+	let sidebarW = $state(SIDEBAR_DEFAULT);
+	let resizing = $state(false);
+
+	onMount(() => {
+		// Per-viewer preference, so localStorage is the right home for it.
+		try {
+			const saved = Number(localStorage.getItem('fk.sidebarWidth'));
+			if (saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX) sidebarW = saved;
+		} catch { /* private window or blocked storage — the default is fine */ }
+	});
+
+	function persistSidebar() {
+		try { localStorage.setItem('fk.sidebarWidth', String(sidebarW)); } catch { /* ignore */ }
+	}
+
+	function startResize(e: PointerEvent) {
+		e.preventDefault();
+		resizing = true;
+		const startX = e.clientX;
+		const startW = sidebarW;
+		const move = (ev: PointerEvent) => {
+			sidebarW = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, startW + ev.clientX - startX));
+		};
+		const stop = () => {
+			resizing = false;
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', stop);
+			persistSidebar();
+		};
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', stop);
+	}
+
+	function resizeKey(e: KeyboardEvent) {
+		// Keyboard-reachable too — a bare drag handle is unusable without a mouse.
+		const step = e.shiftKey ? 40 : 10;
+		if (e.key === 'ArrowLeft') sidebarW = Math.max(SIDEBAR_MIN, sidebarW - step);
+		else if (e.key === 'ArrowRight') sidebarW = Math.min(SIDEBAR_MAX, sidebarW + step);
+		else if (e.key === 'Home') sidebarW = SIDEBAR_DEFAULT;
+		else return;
+		e.preventDefault();
+		persistSidebar();
+	}
+
 	// ── Right-click menu (Roadmap 5.2) ──────────────────────────────────────
 	const menuItem = 'w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 transition-colors';
 	let menu = $state<{ x: number; y: number; photo: PhotoSummary } | null>(null);
@@ -382,7 +432,10 @@
 <div class="flex h-full overflow-hidden">
 	<!-- Tab content panel -->
 	{#if treeOpen}
-		<aside class="w-[220px] shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden">
+		<aside
+			style="width:{sidebarW}px"
+			class="relative shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col overflow-hidden"
+		>
 			<div class="flex items-center justify-between px-3 py-2 border-b border-zinc-800 shrink-0">
 				<span class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{TABS.find(t => t.key === activeTab)?.label}</span>
 				<button onclick={() => treeOpen = false} class="text-zinc-600 hover:text-zinc-300 transition-colors" title="Hide panel">
@@ -406,6 +459,19 @@
 					{TABS.find(t => t.key === activeTab)?.label} tab coming soon
 				</div>
 			{/if}
+			<!-- Drag handle: 5px hit area, 1px visual, so it is grabbable without
+			     stealing width from the panel. -->
+			<button
+				type="button"
+				aria-label="Resize sidebar (arrow keys, or drag)"
+				title="Drag to resize · double-click to reset"
+				onpointerdown={startResize}
+				ondblclick={() => { sidebarW = SIDEBAR_DEFAULT; persistSidebar(); }}
+				onkeydown={resizeKey}
+				class="absolute top-0 right-0 h-full w-[5px] cursor-col-resize z-10
+					hover:bg-amber-600/60 focus:bg-amber-600/60 focus:outline-none transition-colors
+					{resizing ? 'bg-amber-600/80' : ''}"
+			></button>
 		</aside>
 	{/if}
 
