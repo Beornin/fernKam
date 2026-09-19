@@ -219,7 +219,13 @@
 		{:else}
 			<div class="grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr))">
 				{#each stages as st}
-					<div class="bg-zinc-900 border rounded-lg p-3
+					<!-- Clicking a stage opens its album, which is where the cull
+					     keys live — otherwise you read a count here and then go
+					     hunt for the folder in the tree. -->
+					<a
+						href="/photos?tab=albums&album_path={encodeURIComponent(st.folder)}"
+						title="Open {st.folder} to review and cull"
+						class="block text-left bg-zinc-900 border rounded-lg p-3 hover:border-amber-600 transition-colors
 						{st.catalogued > 0 && (st.kind === 'intake' || st.kind === 'staging')
 							? 'border-amber-700/60' : 'border-zinc-800'}">
 						<div class="text-[11px] uppercase tracking-wider text-zinc-500">{st.kind}</div>
@@ -231,7 +237,7 @@
 						{#if st.on_disk !== null && st.on_disk !== st.catalogued}
 							<div class="text-[11px] text-amber-500 mt-1">{st.on_disk.toLocaleString()} on disk — catalogue drift</div>
 						{/if}
-					</div>
+					</a>
 				{/each}
 			</div>
 		{/if}

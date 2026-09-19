@@ -161,9 +161,37 @@ async def serve_original(photo_id: int, db: DB) -> FileResponse | Response:
         raise HTTPException(404, "Source file not found on disk")
     ext = src.suffix.lower()
 
+    # Browsers cannot render RAW. This used to 307 to /media/raw-preview/{id},
+    # but that route no longer exists — it was removed as dead because nothing
+    # in the frontend called it, missing that this redirect did. Every RAW has
+    # been returning FastAPI's bare "Not Found" ever since. Decoding inline
+    # here removes the redirect hop and the chance of it rotting again.
     if ext in RAW_EXTENSIONS:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=f"/media/raw-preview/{photo_id}", status_code=307)
+        try:
+            from io import BytesIO
+            from PIL import Image
+            from fernkam.thumbnails import _open_raw_as_pil
+
+            loop = asyncio.get_event_loop()
+
+            def _raw_to_jpeg() -> bytes:
+                # Uses the embedded JPEG preview when present (fast); falls back
+                # to a full demosaic only when it is missing.
+                img = _open_raw_as_pil(src)
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                buf = BytesIO()
+                img.save(buf, "JPEG", quality=92)
+                return buf.getvalue()
+
+            data = await loop.run_in_executor(None, _raw_to_jpeg)
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
+        except Exception as exc:
+            raise HTTPException(422, f"Cannot decode RAW: {exc}")
 
     # Browsers cannot render TIFF — transcode to JPEG on-the-fly.
     if ext in (".tif", ".tiff"):

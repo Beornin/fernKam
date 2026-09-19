@@ -14,7 +14,7 @@
 	import PeopleTab from '$lib/components/sidebar/PeopleTab.svelte';
 	import LabelsTab from '$lib/components/sidebar/LabelsTab.svelte';
 	import MapView from '$lib/components/MapView.svelte';
-	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
 	import { statusCountStore } from '$lib/stores';
 	import { createLightboxNav } from '$lib/lightboxNav.svelte';
@@ -151,6 +151,7 @@
 	let reviewTrashedCount = $state(0);
 	let reviewTrashing = $state(false);
 	let reviewFit = $state(false); // false = 1:1, true = fit-to-screen
+	let reviewAdvance = $state(true); // move on after rating/rejecting
 
 	// pan state
 	let reviewScroll = $state<HTMLDivElement | undefined>(undefined);
@@ -236,6 +237,28 @@
 		else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); reviewTrash(); }
 		else if (e.key === 'Escape') exitReview();
 		else if (e.key === 'f' || e.key === 'F') reviewFit = !reviewFit;
+		else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+			// Same cull keys as the grid, acting on the photo on screen. Review
+			// mode could previously only trash, so marking a keeper meant
+			// leaving it — which is why culling here never happened.
+			const cur = reviewPhotos[reviewIdx];
+			if (!cur) return;
+			if (e.key >= '1' && e.key <= '5') {
+				e.preventDefault();
+				applyToPhotos([cur.id], { rating: Number(e.key) }, `${e.key} star${e.key === '1' ? '' : 's'}`);
+				if (reviewAdvance) reviewNext();
+			} else if (e.key === '0') {
+				e.preventDefault();
+				applyToPhotos([cur.id], { rating: 0 }, 'Rating cleared');
+			} else if (e.key === 'x' || e.key === 'X') {
+				e.preventDefault();
+				applyToPhotos([cur.id], { color_label: 1 }, 'Rejected (red)');
+				if (reviewAdvance) reviewNext();
+			} else if (e.key === 'u' || e.key === 'U') {
+				e.preventDefault();
+				applyToPhotos([cur.id], { color_label: 0 }, 'Label cleared');
+			}
+		}
 	}
 
 
@@ -341,16 +364,24 @@
 		gridKeyTimer = setTimeout(() => { gridKeyMsg = null; }, 1800);
 	}
 
-	async function applyToSelection(fields: { rating?: number; color_label?: number }, label: string) {
-		const ids = [...selectedIds];
+	async function applyToPhotos(
+		ids: number[],
+		fields: { rating?: number; color_label?: number },
+		label: string,
+	) {
 		if (ids.length === 0) return;
-		// Optimistic: the grid re-renders immediately, the write follows.
-		for (const p of photos) {
-			if (!selectedIds.has(p.id)) continue;
-			if (fields.rating !== undefined) p.rating = fields.rating;
-			if (fields.color_label !== undefined) p.color_label = fields.color_label;
+		// Optimistic: both the grid and the review filmstrip re-render
+		// immediately, the write follows. Same photo objects back both views.
+		const touched = new Set(ids);
+		for (const list of [photos, reviewPhotos]) {
+			for (const p of list) {
+				if (!touched.has(p.id)) continue;
+				if (fields.rating !== undefined) p.rating = fields.rating;
+				if (fields.color_label !== undefined) p.color_label = fields.color_label;
+			}
 		}
 		photos = [...photos];
+		reviewPhotos = [...reviewPhotos];
 		flashGridMsg(`${label} — ${ids.length} photo${ids.length === 1 ? '' : 's'}`);
 		try {
 			await api.photos.batchEdit(ids, fields);
@@ -358,6 +389,9 @@
 			flashGridMsg(`Failed: ${e}`);
 		}
 	}
+
+	const applyToSelection = (fields: { rating?: number; color_label?: number }, label: string) =>
+		applyToPhotos([...selectedIds], fields, label);
 
 	function onGridKey(e: KeyboardEvent) {
 		if (reviewMode || mapMode || lightbox.selectedId !== null) return;
@@ -634,12 +668,28 @@
 	<div class="shrink-0 flex items-center justify-between px-4 py-2 bg-black/80 backdrop-blur-sm z-10">
 		<div class="flex items-center gap-3">
 			<span class="text-white font-semibold text-sm">{reviewPhotos[reviewIdx]?.filename ?? ''}</span>
+			<!-- Current verdict, so the cull keys have visible feedback -->
+			<span class="flex items-center gap-0.5" title="1-5 to rate, 0 to clear">
+				{#each [1, 2, 3, 4, 5] as n}
+					<Star size={12} class={(reviewPhotos[reviewIdx]?.rating ?? 0) >= n
+						? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'} />
+				{/each}
+			</span>
+			{#if reviewPhotos[reviewIdx]?.color_label === 1}
+				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">rejected</span>
+			{/if}
 			{#if reviewTrashedCount > 0}
 				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">{reviewTrashedCount} trashed</span>
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
 			<span class="text-zinc-400 text-sm">{reviewIdx + 1} / {reviewPhotos.length}</span>
+			<button
+				onclick={() => reviewAdvance = !reviewAdvance}
+				class="text-[11px] px-2 py-1 rounded transition-colors
+					{reviewAdvance ? 'bg-violet-600/40 text-violet-200' : 'text-zinc-500 hover:text-zinc-300'}"
+				title="After rating or rejecting, move to the next photo"
+			>auto-advance</button>
 			<button
 				onclick={() => reviewFit = !reviewFit}
 				class="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
@@ -669,14 +719,28 @@
 		onmouseleave={panEnd}
 	>
 		{#if reviewPhotos.length > 0}
-			<img
-				src="/media/original/{reviewPhotos[reviewIdx].id}"
-				alt={reviewPhotos[reviewIdx].filename}
-				draggable="false"
-				onload={onImgLoad}
-				class="block select-none {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
-				style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
-			/>
+			{#if reviewPhotos[reviewIdx].media_type === 'video'}
+				<!-- A video in an <img> renders nothing, which is why MOV/MP4
+				     looked broken here. /media/video transcodes when the codec
+				     is not browser-playable. -->
+				{#key reviewPhotos[reviewIdx].id}
+					<video
+						src="/media/video/{reviewPhotos[reviewIdx].id}"
+						controls
+						autoplay
+						class="block m-auto max-w-full max-h-full"
+					><track kind="captions" /></video>
+				{/key}
+			{:else}
+				<img
+					src="/media/original/{reviewPhotos[reviewIdx].id}"
+					alt={reviewPhotos[reviewIdx].filename}
+					draggable="false"
+					onload={onImgLoad}
+					class="block select-none {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
+					style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
+				/>
+			{/if}
 		{:else}
 			<div class="flex items-center justify-center h-full text-zinc-500">No photos left</div>
 		{/if}
