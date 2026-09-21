@@ -201,6 +201,32 @@ export interface TagSuggestion {
   votes: number;
 }
 
+
+/** Throw on a non-2xx so callers' try/catch actually fires.
+ *
+ * `fetch` rejects only on network failure, so `fetch(...).then(r => r.json())`
+ * treats a 500 as success and hands back the error body typed as the success
+ * shape. On a destructive call that is worse than an error: Review Mode
+ * dropped a photo from its list on a failed trash, leaving the view desynced
+ * from the library with nothing reported.
+ */
+async function okJson<T>(r: Response): Promise<T> {
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json())?.detail ?? ''; } catch { /* not JSON */ }
+    throw new Error(detail || `${r.status} ${r.statusText}`);
+  }
+  return r.json() as Promise<T>;
+}
+
+async function okVoid(r: Response): Promise<void> {
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json())?.detail ?? ''; } catch { /* not JSON */ }
+    throw new Error(detail || `${r.status} ${r.statusText}`);
+  }
+}
+
 export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
@@ -255,7 +281,8 @@ export const api = {
       fetch('/api/photos/batch-detect-all', { method: 'POST' }).then(r => r.json() as Promise<BatchDetectResult>),
     unscannedCount: () => get<{ count: number }>('/api/photos/unscanned-count'),
     trash: (id: number) =>
-      fetch(`/api/photos/${id}/trash`, { method: 'POST' }).then(r => r.json() as Promise<{ ok: boolean; filename: string }>),
+      fetch(`/api/photos/${id}/trash`, { method: 'POST' })
+        .then(r => okJson<{ ok: boolean; filename: string }>(r)),
   },
   semantic: {
     status: () => get<{ embedded: number; total: number; remaining: number }>('/api/semantic/status'),
@@ -279,15 +306,15 @@ export const api = {
       fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
     update: (id: number, body: { name?: string; parent_id?: number | null }) =>
       fetch(`/api/tags/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
-    delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }),
+    delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }).then(okVoid),
     removeFromPhotos: (id: number) =>
-      fetch(`/api/tags/${id}/from-photos`, { method: 'DELETE' }).then(r => r.json() as Promise<{ removed: number }>),
+      fetch(`/api/tags/${id}/from-photos`, { method: 'DELETE' }).then(r => okJson<{ removed: number }>(r)),
   },
   photoTags: {
     add: (photoId: number, tagId: number) =>
       fetch(`/api/photos/${photoId}/tags/${tagId}`, { method: 'POST' }),
     remove: (photoId: number, tagId: number) =>
-      fetch(`/api/photos/${photoId}/tags/${tagId}`, { method: 'DELETE' }),
+      fetch(`/api/photos/${photoId}/tags/${tagId}`, { method: 'DELETE' }).then(okVoid),
   },
   faces: {
     list: (params?: { photo_id?: number; person_tag_id?: number; status?: string; limit?: number; offset?: number }) =>
@@ -320,7 +347,7 @@ export const api = {
       fetch('/api/faces/archive-low-quality', { method: 'POST' }).then(r => r.json() as Promise<{ archived: number; min_det_score: number; min_face_px: number }>),
     buildCentroids: () =>
       fetch('/api/faces/build-centroids', { method: 'POST' }).then(r => r.json() as Promise<{ updated: number }>),
-    delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }),
+    delete: (faceId: string) => fetch(`/api/faces/${faceId}`, { method: 'DELETE' }).then(okVoid),
     clustersRebuild: (params?: { min_size?: number; cluster_thresh?: number; k?: number }) => {
       const qs = new URLSearchParams();
       if (params?.min_size != null) qs.set('min_size', String(params.min_size));
@@ -343,7 +370,7 @@ export const api = {
         .then(r => r.json() as Promise<{ task_id: string; status: string; threshold: number; dry_run: boolean }>);
     },
     batchDelete: (face_ids: string[]) =>
-      fetch('/api/faces/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(face_ids) }),
+      fetch('/api/faces/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(face_ids) }).then(okVoid),
     ignoreTiny: (max_size = 50) =>
       fetch(`/api/faces/ignore-tiny?max_size=${max_size}`, { method: 'POST' }).then(r => r.json() as Promise<{ ignored: number; max_size: number }>),
   },

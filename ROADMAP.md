@@ -510,6 +510,22 @@ controls left usable so the photo can be rated or skipped.
 Verified: 6 forward + 6 back over cached JPEGs and 25 rapid-fire navigations,
 zero stuck; a dispatched `error` shows the failure state with stars enabled.
 
+Deleting was the most reliable way to trigger it, and the reason is the index
+clamp: removing the last photo steps `reviewIdx` *backwards* onto a photo
+already viewed, so every delete at the end of a list lands on a cached image.
+Re-verified after the fix with 8 deletes at the end of a 64-photo list (trash
+endpoint stubbed, no files touched): zero stuck, clamp correct each time.
+
+**A second bug that search turned up.** `fetch` rejects only on network
+failure, so `fetch(...).then(r => r.json())` treated an HTTP 500 as success and
+handed back the error body typed as the success shape. `reviewTrash`'s
+try/catch therefore never fired on a failed delete: the photo was dropped from
+the review list while still present in the library, with nothing reported. The
+destructive calls (photo trash, tag delete, tag-from-photos, face delete, face
+batch-delete, photo-tag delete) now go through a shared `okJson`/`okVoid` that
+throws on non-2xx. Verified against a stubbed 500: the photo is kept, the count
+does not move, and "Failed to trash: simulated server failure" is shown.
+
 ---
 
 ## Phase 5 — Polish · DONE
