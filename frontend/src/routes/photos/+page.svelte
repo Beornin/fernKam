@@ -210,11 +210,33 @@
 	// plain black — the worst moment to accept a rating keystroke, because the
 	// filename has already advanced to a photo you cannot see yet.
 	let reviewLoadedId = $state<number | null>(null);
-	const reviewLoading = $derived(
-		reviewMode && reviewPhotos[reviewIdx] !== undefined
-		&& reviewPhotos[reviewIdx].media_type !== 'video'
-		&& reviewLoadedId !== reviewPhotos[reviewIdx].id
+	let reviewFailedId = $state<number | null>(null);
+	let reviewImgEl = $state<HTMLImageElement | undefined>(undefined);
+
+	const reviewCur = $derived(reviewPhotos[reviewIdx]);
+	const reviewFailed = $derived(
+		reviewCur !== undefined && reviewFailedId === reviewCur.id
 	);
+	const reviewLoading = $derived(
+		reviewMode && reviewCur !== undefined
+		&& reviewCur.media_type !== 'video'
+		&& reviewLoadedId !== reviewCur.id
+		&& !reviewFailed
+	);
+
+	// The load event alone is not enough to decide "it is on screen":
+	//  * a cached image can already be complete by the time the listener runs,
+	//    so no event ever arrives — this is why fast-loading JPEGs, not slow
+	//    RAWs, were the ones that stuck on "Decoding…";
+	//  * a failed image fires `error`, never `load`.
+	// Either way the old code waited forever with the verdict keys disabled.
+	// Checking the element's own state after each src change covers both.
+	$effect(() => {
+		const cur = reviewPhotos[reviewIdx];
+		const el = reviewImgEl;
+		if (!cur || cur.media_type === 'video' || !el) return;
+		if (el.complete && el.naturalWidth > 0) reviewLoadedId = cur.id;
+	});
 
 	function onImgLoad() {
 		reviewLoadedId = reviewPhotos[reviewIdx]?.id ?? null;
@@ -788,7 +810,15 @@
 					><track kind="captions" /></video>
 				{/key}
 			{:else}
-				{#if reviewLoading}
+				{#if reviewFailed}
+					<div class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
+						<span class="text-sm text-red-300">Could not display {reviewPhotos[reviewIdx].filename}</span>
+						<span class="text-xs text-zinc-500">
+							The file may be missing from disk or unreadable. Rating still works; use
+							<kbd class="px-1 rounded bg-zinc-800 border border-zinc-700 font-mono text-[10px]">→</kbd> to skip.
+						</span>
+					</div>
+				{:else if reviewLoading}
 					<!-- The cached thumbnail stands in while the full-size decode
 					     runs, so you always see which photo you are judging. -->
 					<div class="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
@@ -804,11 +834,13 @@
 					</div>
 				{/if}
 				<img
+					bind:this={reviewImgEl}
 					src="/media/original/{reviewPhotos[reviewIdx].id}"
 					alt={reviewPhotos[reviewIdx].filename}
 					draggable="false"
 					onload={onImgLoad}
-					class="block select-none {reviewLoading ? 'invisible' : ''} {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
+					onerror={() => { reviewFailedId = reviewPhotos[reviewIdx]?.id ?? null; }}
+					class="block select-none {reviewLoading || reviewFailed ? 'invisible' : ''} {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
 					style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
 				/>
 			{/if}

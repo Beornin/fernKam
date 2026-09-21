@@ -497,6 +497,19 @@ Verified end to end in the browser: selecting a tile and pressing `3` posted to
 `/api/photos/batch-edit` and the rated count went 73 -> 74 in the database.
 (Test write reverted.)
 
+**Follow-up fix — Review Mode stuck on "Decoding…".** The loading state trusted
+the `<img>` load event alone, and that event does not always arrive: a cached
+image can already be `complete` before the listener runs, and a failed image
+fires `error` instead. Both left the banner up forever with the verdict keys
+disabled — and because it is the *fast* files that get cached, the symptom
+showed up on JPEGs rather than the slow RAWs the banner was built for. The
+state now also reads `el.complete && el.naturalWidth > 0` after each src
+change, and a failed image gets a visible "Could not display <file>" with the
+controls left usable so the photo can be rated or skipped.
+
+Verified: 6 forward + 6 back over cached JPEGs and 25 rapid-fire navigations,
+zero stuck; a dispatched `error` shows the failure state with stars enabled.
+
 ---
 
 ## Phase 5 — Polish · DONE
