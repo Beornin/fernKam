@@ -150,7 +150,13 @@
 	let reviewPhotos = $state<PhotoSummary[]>([]);
 	let reviewTrashedCount = $state(0);
 	let reviewTrashing = $state(false);
-	let reviewFit = $state(false); // false = 1:1, true = fit-to-screen
+	let reviewFit = $state(false); // true = scale to fit; otherwise reviewZoom applies
+	// Continuous zoom. Culling wildlife means checking feather and eye detail,
+	// which 100%-or-fit cannot express: 1:1 on an 8256px frame shows a corner,
+	// fit shows a thumbnail, and the useful range is between them.
+	let reviewZoom = $state(1);
+	let reviewNatW = $state(0);
+	const REVIEW_ZOOM_MIN = 0.05, REVIEW_ZOOM_MAX = 8;
 	let reviewAdvance = $state(true); // move on after rating/rejecting
 
 	// pan state
@@ -190,12 +196,17 @@
 		}
 	}
 
+	function resetReviewView() {
+		reviewZoom = 1;
+		reviewNatW = 0;
+	}
+
 	function reviewPrev() {
-		if (reviewIdx > 0) { saveScroll(); reviewIdx--; }
+		if (reviewIdx > 0) { saveScroll(); reviewIdx--; resetReviewView(); }
 	}
 
 	function reviewNext() {
-		if (reviewIdx < reviewPhotos.length - 1) { saveScroll(); reviewIdx++; }
+		if (reviewIdx < reviewPhotos.length - 1) { saveScroll(); reviewIdx++; resetReviewView(); }
 	}
 
 	function saveScroll() {
@@ -240,6 +251,7 @@
 
 	function onImgLoad() {
 		reviewLoadedId = reviewPhotos[reviewIdx]?.id ?? null;
+		reviewNatW = reviewImgEl?.naturalWidth ?? 0;
 		if (restoreScroll && reviewScroll) {
 			reviewScroll.scrollLeft = savedScrollX;
 			reviewScroll.scrollTop = savedScrollY;
@@ -286,7 +298,7 @@
 		else if (e.key === 'ArrowRight') { e.preventDefault(); reviewNext(); }
 		else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); reviewTrash(); }
 		else if (e.key === 'Escape') exitReview();
-		else if (e.key === 'f' || e.key === 'F') reviewFit = !reviewFit;
+		else if (e.key === 'f' || e.key === 'F') { reviewFit = !reviewFit; reviewZoom = 1; }
 		else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
 			// Same cull keys as the grid, acting on the photo on screen. Review
 			// mode could previously only trash, so marking a keeper meant
@@ -467,8 +479,46 @@
 		}
 	}
 
+
+	function reviewWheel(e: WheelEvent) {
+		if (!reviewScroll) return;
+		e.preventDefault();
+		const el = reviewScroll;
+		const before = reviewFit ? fittedZoom() : reviewZoom;
+		const next = Math.min(REVIEW_ZOOM_MAX, Math.max(REVIEW_ZOOM_MIN,
+			before * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+		if (next === before) return;
+
+		// Keep the pixel under the cursor put. Without this every zoom step
+		// anchors top-left, which on an 8256px frame throws away whatever you
+		// were looking at.
+		const r = el.getBoundingClientRect();
+		const px = e.clientX - r.left, py = e.clientY - r.top;
+		const ratio = next / before;
+		reviewFit = false;
+		reviewZoom = next;
+		requestAnimationFrame(() => {
+			el.scrollLeft = (el.scrollLeft + px) * ratio - px;
+			el.scrollTop = (el.scrollTop + py) * ratio - py;
+		});
+	}
+
+	/** The zoom that would fit the current photo in the viewport. */
+	function fittedZoom(): number {
+		if (!reviewScroll || !reviewNatW || !reviewImgEl?.naturalHeight) return 1;
+		return Math.min(
+			reviewScroll.clientWidth / reviewNatW,
+			reviewScroll.clientHeight / reviewImgEl.naturalHeight,
+		);
+	}
+
 	function panStart(e: MouseEvent) {
-		if (reviewFit) return;
+		// Panning depends on whether the image overflows, not on which mode we
+		// are in — a wheel-zoomed image is pannable even though reviewFit is off.
+		if (!reviewScroll) return;
+		const overflows = reviewScroll.scrollWidth > reviewScroll.clientWidth
+			|| reviewScroll.scrollHeight > reviewScroll.clientHeight;
+		if (!overflows) return;
 		panActive = true;
 		panStartX = e.clientX;
 		panStartY = e.clientY;
@@ -751,8 +801,12 @@
 					{reviewAdvance ? 'bg-violet-600/40 text-violet-200' : 'text-zinc-500 hover:text-zinc-300'}"
 				title="After rating or rejecting, move to the next photo"
 			>auto-advance</button>
+			<span class="text-[11px] text-zinc-500 tabular-nums w-12 text-right"
+				title="Scroll wheel to zoom">
+				{reviewFit ? 'fit' : Math.round(reviewZoom * 100) + '%'}
+			</span>
 			<button
-				onclick={() => reviewFit = !reviewFit}
+				onclick={() => { reviewFit = !reviewFit; reviewZoom = 1; }}
 				class="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
 				title={reviewFit ? '1:1 pixel zoom (F)' : 'Fit to screen (F)'}
 			>
@@ -773,7 +827,7 @@
 	<div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 bg-zinc-950/90 border-b border-zinc-800 text-[11px] text-zinc-500">
 		{#each [
 			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'],
-			['← →', 'prev / next'], ['Del', 'trash file'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
+			['← →', 'prev / next'], ['Del', 'trash file'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
 		] as [key, what]}
 			<span class="flex items-center gap-1">
 				<kbd class="px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 font-mono text-[10px]">{key}</kbd>
@@ -795,6 +849,7 @@
 		onmousemove={panMove}
 		onmouseup={panEnd}
 		onmouseleave={panEnd}
+		onwheel={reviewWheel}
 	>
 		{#if reviewPhotos.length > 0}
 			{#if reviewPhotos[reviewIdx].media_type === 'video'}
@@ -841,7 +896,9 @@
 					onload={onImgLoad}
 					onerror={() => { reviewFailedId = reviewPhotos[reviewIdx]?.id ?? null; }}
 					class="block select-none {reviewLoading || reviewFailed ? 'invisible' : ''} {reviewFit ? 'max-w-full max-h-full w-auto h-auto m-auto' : ''}"
-					style={reviewFit ? 'width:100%;height:100%;object-fit:contain;' : 'width:auto;height:auto;max-width:none;max-height:none;'}
+					style={reviewFit
+						? 'width:100%;height:100%;object-fit:contain;'
+						: `width:${reviewNatW ? Math.round(reviewNatW * reviewZoom) + 'px' : 'auto'};height:auto;max-width:none;max-height:none;`}
 				/>
 			{/if}
 		{:else}

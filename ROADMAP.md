@@ -578,6 +578,29 @@ already viewed, so every delete at the end of a list lands on a cached image.
 Re-verified after the fix with 8 deletes at the end of a 64-photo list (trash
 endpoint stubbed, no files touched): zero stuck, clamp correct each time.
 
+**Continuous zoom (follow-up).** Review Mode offered only fit or 1:1, and the
+lightbox's wheel zoom was gated behind ctrl/cmd — the container is
+`overflow-hidden`, so an unmodified wheel had nothing to scroll and the zoom was
+simply undiscoverable. Culling wildlife needs the range between those two
+presets: 1:1 on an 8256px frame shows a corner, fit shows a thumbnail, and
+feather or eye detail lives in between.
+
+Plain wheel now zooms in both. Review Mode sizes the image to
+`naturalWidth * zoom` so the existing scroll container keeps working as the pan
+surface, and adjusts `scrollLeft/Top` on each step to keep the pixel under the
+cursor fixed — without that, every step anchors top-left and throws away
+whatever you were looking at. Zoom resets per photo, since carrying 400% onto
+the next frame means landing on a corner of a photo you have not seen.
+
+Verified: 100% -> 201% on five wheel steps (1.15^5), down to 28%, reset to 100%
+on navigate; lightbox scale(1) -> 2.44 -> 0.41 on plain wheel.
+
+Drag-panning used to be disabled whenever fit mode was on; it now depends on
+whether the image actually overflows, which is what decides if there is
+anything to pan. A `0` binding for zoom-reset was written and then deleted —
+`0` is already "clear rating" and the new branch ran first, so it would have
+silently stolen it.
+
 **A second bug that search turned up.** `fetch` rejects only on network
 failure, so `fetch(...).then(r => r.json())` treated an HTTP 500 as success and
 handed back the error body typed as the success shape. `reviewTrash`'s

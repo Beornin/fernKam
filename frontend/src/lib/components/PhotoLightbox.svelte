@@ -105,7 +105,7 @@ zoom = Math.min(zoom * 1.25, 10);
 }
 
 function zoomOut() {
-zoom = Math.max(zoom / 1.25, 0.5);
+zoom = Math.max(zoom / 1.25, 0.1);
 }
 
 function resetZoom() {
@@ -115,11 +115,12 @@ panY = 0;
 }
 
 function handleWheel(e: WheelEvent) {
-if (e.ctrlKey || e.metaKey) {
+// Plain wheel zooms. This used to require ctrl/cmd, which made the zoom
+// effectively undiscoverable — the container is overflow-hidden, so there
+// was never anything for an unmodified wheel to scroll anyway.
 e.preventDefault();
 if (e.deltaY < 0) zoomIn();
 else zoomOut();
-}
 }
 
 function handlePanStart(e: MouseEvent) {
