@@ -25,6 +25,40 @@ class Task:
 _MAX_CACHED_TERMINAL_TASKS = 300
 
 
+# Tasks that walk, move, copy or delete files in the library. Two of these at
+# once is the one combination that actually corrupts state: two concurrent
+# scans created 2,833 duplicate photo rows (see migration 0026), and a scan
+# racing a file-move sees files mid-flight and can delete rows for files that
+# merely moved.
+#
+# Deliberately narrow. Embedding, search, face work and geocoding only *read*
+# files, so they keep running alongside — serialising everything would mean
+# not being able to search during a 20-minute embed run, which is a worse app
+# for no safety gain.
+FILE_MUTATING_TASKS = frozenset({
+    "scan_library",
+    "workflow_sorting",
+    "workflow_remove_nonkeep_raw",
+    "workflow_move_raws",
+})
+
+
+class TaskConflict(RuntimeError):
+    """Raised when a file-mutating task is started while another is running.
+
+    Carries the offending task so the caller can name it. Mapped to HTTP 409 by
+    a handler in api/app.py, so every router gets the behaviour without a guard
+    at each call site — including routers written later.
+    """
+
+    def __init__(self, running: "Task") -> None:
+        self.running = running
+        super().__init__(
+            f"'{running.task_type}' is already running — wait for it to finish "
+            f"before starting another job that changes files."
+        )
+
+
 class TaskManager:
     """DB-backed task manager with in-memory cache."""
 
@@ -71,9 +105,19 @@ class TaskManager:
     # ------------------------------------------------------------------
 
     async def create_task(self, task_type: str, message: str) -> str:
-        """Create a new task, persist to DB, return its ID."""
+        """Create a new task, persist to DB, return its ID.
+
+        Raises TaskConflict if `task_type` mutates files and another
+        file-mutating task is already running. Enforced here rather than at
+        each call site so a new endpoint cannot forget it.
+        """
         from fernkam.db.models.tasks import BackgroundTask
         from sqlalchemy import insert
+
+        if task_type in FILE_MUTATING_TASKS:
+            for running in await self.get_running_tasks():
+                if running.task_type in FILE_MUTATING_TASKS:
+                    raise TaskConflict(running)
 
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)

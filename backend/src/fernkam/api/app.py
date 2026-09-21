@@ -40,6 +40,7 @@ from sqlalchemy import text
 
 from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, semantic, stacks, sync, tags, workflows
 from fernkam.db.session import get_async_engine
+from fernkam.task_manager import TaskConflict
 
 # Configure logging to output to terminal
 logging.basicConfig(
@@ -281,6 +282,21 @@ app.include_router(stacks.router, prefix="/api/stacks", tags=["stacks"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(semantic.router, prefix="/api/semantic", tags=["semantic"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
+
+
+@app.exception_handler(TaskConflict)
+async def task_conflict_handler(request, exc: TaskConflict):
+    """409, not 500: starting a second file-mutating job is a normal thing to
+    try, and the caller just needs to be told what is already running."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": str(exc),
+            "running_task": {"id": exc.running.id, "task_type": exc.running.task_type,
+                             "message": exc.running.message},
+        },
+    )
 
 
 @app.exception_handler(Exception)

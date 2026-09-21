@@ -219,6 +219,31 @@ mean trusting every future caller; the index cannot be bypassed. Verified that a
 duplicate insert is now rejected, and covered by
 `backend/tests/test_no_duplicate_photos.py`.
 
+**Concurrency guard (follow-up).** The unique index makes the *corruption*
+impossible, but two scans at once is still wasted work and a scan racing a
+file-move can delete rows for files that merely moved. Rather than a queue —
+persistence, ordering, a worker loop, starvation, all for one person who
+occasionally clicks twice — only the four tasks that touch the filesystem now
+exclude each other:
+
+```
+scan_library · workflow_sorting · workflow_remove_nonkeep_raw · workflow_move_raws
+```
+
+Everything else keeps running alongside. Serialising the whole app would mean
+not being able to search during a 20-minute embed, which is a worse app for no
+safety gain — embedding, search, face work and geocoding only *read* files.
+
+The check lives inside `create_task`, not at each call site, so an endpoint
+written later cannot forget it; `TaskConflict` maps to HTTP 409 via one handler
+in `api/app.py`. `cancel_stale_tasks()` already clears "running" rows at
+startup, so a crash cannot leave the guard stuck on.
+
+Verified live: a second scan returns 409 naming the running task, a *different*
+file workflow also returns 409, and semantic search, embed status and the photo
+grid all return 200 throughout. Covered by
+`backend/tests/test_task_conflict.py`.
+
 **Also fixed:** the scan's completion message reported only imports, refreshes
 and faces, so a scan that removed 400 stale rows read identically to one that
 did nothing — which is why rescanning never appeared to help. It now reports

@@ -414,8 +414,12 @@ export const api = {
     tasks: () => get<{ tasks: Array<{ id: string; task_type: string; status: string; message: string; started_at: string; completed_at: string | null; progress: any }> }>('/api/sync/tasks'),
     cancelTask: (taskId: string) =>
       fetch(`/api/sync/tasks/${taskId}/cancel`, { method: 'POST' }).then(r => r.json() as Promise<{ cancelled: boolean }>),
+    // Returns 409 when another file-mutating task is running, so this has to
+    // check status — otherwise the refusal is parsed as a successful start and
+    // the caller waits on a task_id that does not exist.
     scanLibrary: (body?: { custom_path?: string; limit?: number }) =>
-      fetch('/api/sync/scan-library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ status: string; task_id: string; message: string }>),
+      fetch('/api/sync/scan-library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+        .then(r => okJson<{ status: string; task_id: string; message: string }>(r)),
     backfillVideoDuration: () =>
       fetch('/api/sync/backfill-video-duration', { method: 'POST' }).then(r => r.json() as Promise<{ task_id: string; status: string; total: number }>),
     backfillThumbnails: () =>
