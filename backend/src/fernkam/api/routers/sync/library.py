@@ -149,7 +149,9 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     added, face_count, errors, t_total, per_photo_ms,
                 )
                 await task_manager.update_task(task_id, status="completed",
-                    message=f"Done: +{added} imported, {stats.get('updated', 0)} refreshed, {face_count} faces detected",
+                    message=(f"Done: +{added} imported, {stats.get('updated', 0)} refreshed, "
+                             f"{deleted} removed, {stats.get('skipped', 0):,} unchanged, "
+                             f"{face_count} faces detected"),
                     progress={**stats, "faces_detected": face_count, "total_s": round(t_total, 1)})
             except Exception as e:
                 print(f"[SCAN-LIBRARY] ERROR: {e}", flush=True)

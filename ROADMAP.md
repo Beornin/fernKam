@@ -189,6 +189,43 @@ Verified by starting under a forced `PYTHONIOENCODING=cp1252`.
 
 ---
 
+## Catalogue integrity — duplicate photo rows (migration 0026)
+
+A photo that would not open no matter how often the library was rescanned. The
+row pointed at `AA_RAW/…/jpg/_DSC2575.jpg`, the file had since been moved to the
+portfolio, and rescanning never cleared it.
+
+**Cause.** `scan_library` builds `existing_photos` as a dict keyed by
+`(album_path, filename)`. A dict collapses duplicates, so a second row for the
+same file is invisible to every phase of the scan — never matched against disk,
+never refreshed, never deleted. It accumulates permanently.
+
+Two scans running at once is all it takes; each sees the file as new and
+inserts it. The scan history showed exactly that: runs two minutes apart
+importing +2,952 and +2,852.
+
+```
+before   121,253 rows   2,833 duplicated (album_path, filename) groups
+after    118,420 rows           0
+AA_RAW/20260919_00028/jpg:  824 rows -> 412, against 412 files on disk
+```
+
+Cost of the cleanup, measured: 1 face record (re-detectable), 0 tags, 0
+embeddings, 0 ratings — the duplicate copies were empty because the real work
+had attached to the first row.
+
+**Fix.** A unique index on `(album_path, filename)`. Fixing the importer would
+mean trusting every future caller; the index cannot be bypassed. Verified that a
+duplicate insert is now rejected, and covered by
+`backend/tests/test_no_duplicate_photos.py`.
+
+**Also fixed:** the scan's completion message reported only imports, refreshes
+and faces, so a scan that removed 400 stale rows read identically to one that
+did nothing — which is why rescanning never appeared to help. It now reports
+removals and unchanged counts.
+
+---
+
 ## Phase 1 — Find and tag the people who are not tagged yet · DONE
 
 > **Rewritten twice, both times because a measurement was wrong.** The first
