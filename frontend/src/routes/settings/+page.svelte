@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { notify } from '$lib/dialog.svelte';
 	import { onMount } from 'svelte';
-	import { Settings as SettingsIcon, Sparkles, Loader2, Palette } from '@lucide/svelte';
+	import { Settings as SettingsIcon, Sparkles, Loader2, Palette, FolderSync } from '@lucide/svelte';
 	import { api } from '$lib/api';
 	import { themeStore, THEMES } from '$lib/stores';
 
@@ -42,8 +42,21 @@
 		}, 400);
 	}
 
+	// Minutes between scans for changes made outside fernKam; 0 = off.
+	let watchMinutes = $state<number | null>(null);
+
+	async function saveWatchInterval() {
+		if (watchMinutes === null || !(watchMinutes >= 0)) return;
+		try {
+			watchMinutes = (await api.outsideChanges.setWatchInterval(watchMinutes)).minutes;
+		} catch (e) {
+			notify(`Could not save the interval: ${e}`);
+		}
+	}
+
 	onMount(() => {
 		loadSensitivity();
+		api.outsideChanges.watchInterval().then(r => (watchMinutes = r.minutes)).catch(e => notify(`Could not load the interval: ${e}`));
 	});
 </script>
 
@@ -78,6 +91,32 @@
 				</button>
 			{/each}
 		</div>
+	</div>
+
+	<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
+		<div class="flex items-center gap-3 mb-2">
+			<div class="p-2 bg-sky-500/10 rounded-lg">
+				<FolderSync size={20} class="text-sky-400" />
+			</div>
+			<h2 class="text-lg font-semibold text-zinc-100">Changes made outside fernKam</h2>
+		</div>
+		<p class="text-sm text-zinc-400 mb-5">
+			fernKam notices files added, edited, moved or deleted by other programs while it runs, and catches up
+			with a scan. Changes are collected as they happen; the scan waits this long after the first one, so
+			copying a memory card in costs one scan, not dozens. It also scans once at every start.
+		</p>
+		<label class="flex items-center gap-3 text-sm text-zinc-300">
+			Scan for outside changes every
+			<input
+				type="number" min="0" max="1440" step="1"
+				bind:value={watchMinutes}
+				onchange={saveWatchInterval}
+				disabled={watchMinutes === null}
+				class="w-20 bg-zinc-800 border border-zinc-700 rounded-md px-2 py-1 text-zinc-100 font-mono text-right"
+			/>
+			minutes
+			<span class="text-xs text-zinc-500">(0 = off)</span>
+		</label>
 	</div>
 
 	<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6">

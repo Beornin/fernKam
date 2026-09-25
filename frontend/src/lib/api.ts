@@ -630,6 +630,10 @@ export const api = {
     dismiss: (body: { ids?: number[]; all?: boolean }) =>
       fetch('/api/outside-changes/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(r => okJson<{ dismissed: number }>(r)),
+    watchInterval: () => get<{ minutes: number }>('/api/outside-changes/watch-interval'),
+    setWatchInterval: (minutes: number) =>
+      fetch('/api/outside-changes/watch-interval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minutes }) })
+        .then(r => okJson<{ minutes: number }>(r)),
   },
   sync: {
     writeMetadata: (body?: { dirty_only?: boolean; album_path?: string; photo_ids?: number[] }) =>

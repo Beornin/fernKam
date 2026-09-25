@@ -4,8 +4,12 @@ digiKam's "Monitor the albums for external changes": when another program
 edits, adds, moves or deletes photos while fernKam is open, fernKam notices
 and catches up without a restart or a manual rescan.
 
-Events are only a hint of *where* to look. After a quiet period, the normal
-library scan runs over the smallest folder covering everything that changed,
+Events are only a hint of *where* to look. They are collected as they happen
+(free: the OS reports them), but a scan runs at most once per interval, the
+"Check for outside changes every N minutes" setting (default 10, 0 = off),
+counted from the first change not yet scanned. A card copied into AA_RAW then
+costs one scan instead of dozens. The scan covers the smallest folder
+containing everything that changed,
 so every rule the scan follows applies unchanged: the three-way metadata merge,
 picture-change detection, move/rename matching, the removal safeguards, and
 the one-file-job-at-a-time guard (if a workflow or another scan is running,
@@ -17,6 +21,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -30,6 +35,19 @@ _IDLE_TICK_MS = 5_000
 
 # Set on shutdown; the watcher thread checks it every step.
 _stop = threading.Event()
+
+DEFAULT_INTERVAL_MIN = 10
+# Seconds between scans for outside changes; 0 = off. Loaded from app_settings
+# when the watcher starts and updated by the Settings page.
+interval_s: float = DEFAULT_INTERVAL_MIN * 60
+
+
+async def load_interval() -> None:
+    global interval_s
+    from fernkam.db.app_settings import get_setting
+    from fernkam.db.session import async_session_factory
+    async with async_session_factory() as db:
+        interval_s = float(await get_setting(db, "watch_interval_min", str(DEFAULT_INTERVAL_MIN))) * 60
 
 
 def is_relevant(path: str) -> bool:
@@ -112,6 +130,10 @@ async def watch_library() -> None:
     def _filter(_change, path: str) -> bool:
         return is_relevant(path) and not Path(path).is_relative_to(thumbs)
 
+    try:
+        await load_interval()
+    except Exception as exc:  # noqa: BLE001 — keep the default
+        logger.warning("[watch] could not read the interval setting: %s", exc)
     queue: asyncio.Queue = asyncio.Queue()
     _stop.clear()
     threading.Thread(
@@ -120,10 +142,19 @@ async def watch_library() -> None:
     ).start()
 
     pending: set[str] = set()
-    print(f"[watch] Watching {root} for changes made outside fernKam", flush=True)
+    since = 0.0   # when the oldest change not yet scanned arrived
+    print(f"[watch] Watching {root} for changes made outside fernKam "
+          f"(scanning every {interval_s / 60:g} min)", flush=True)
+    # The thread also wakes every _IDLE_TICK_MS with no changes, so a due scan
+    # (or one held back by a running job) starts within a few seconds.
     while (changes := await queue.get()) is not None:
+        if interval_s <= 0:          # off: nothing is kept for later
+            pending.clear()
+            continue
+        if changes and not pending:
+            since = time.monotonic()
         pending.update(path for _change, path in changes)
-        if not pending:
+        if not pending or time.monotonic() - since < interval_s:
             continue
         scope = scan_scope(pending, root)
         if scope is None:

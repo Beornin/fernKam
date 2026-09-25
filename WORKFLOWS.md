@@ -33,8 +33,10 @@ jobs can be cancelled between batches.
 
 **User action:** Home → **Quick Scan** (whole library), or **Import Photos** with a folder path.
 Also Maintenance → **Rescan Library**. It also runs by itself: in the background at every start
-(`SCAN_ON_STARTUP`), and a few seconds after the library watcher sees a change while fernKam is
-running (`WATCH_LIBRARY`; the scan then covers just the smallest folder holding the changes).
+(`SCAN_ON_STARTUP`), and when the library watcher has seen changes while fernKam is running
+(`WATCH_LIBRARY`). Changes are collected as they happen and scanned at most once per interval,
+**Settings → Scan for outside changes every N minutes** (default 10, 0 = off), counted from the
+first unscanned change. The scan covers only the smallest folder holding the changes.
 An imported folder must be inside `LIBRARY_ROOT`, because photos are catalogued by their path
 relative to it; one outside it is refused.
 

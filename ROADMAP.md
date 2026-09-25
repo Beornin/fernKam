@@ -851,6 +851,22 @@ Separately, the GPU was only ~47% busy even at full speed, because decoding and 
 turns. Running them in parallel is the next ~2×. 93% of the `lg` thumbnails it reads were
 already cached.
 
+In the full run with that fix, SigLIP 2 finished at 10–11 photos/s with the worker flat at
+7,004 MB. BioCLIP 2 ran at 46–47 photos/s and reached 102,080 of 118,265 before fernKam was
+closed for other GPU work. "Index the rest" resumes it.
+
+### Living with it
+
+- **Closing no longer flashes the log.** On X, the launcher's watchdog saw the backend it had
+  just killed, took it for a crash, and loaded the error page with the log tail while the
+  window was closing. It now stands down when the launcher is the one closing. The window waits
+  until the server's port is closed, so the UI closes last: port closed at 1,575 ms, window at
+  1,577 ms, no processes left.
+- **The watcher scans every 10 minutes, not seconds after a change.** Copying a card into
+  AA_RAW had started a scan after every quiet moment of the copy. Changes still collect as
+  they happen, but they're scanned at most once per interval, counted from the first unscanned
+  change. It's set in Settings (0 = off) and saved in `app_settings`.
+
 ---
 
 ## Where this ended up

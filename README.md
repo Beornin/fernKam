@@ -273,7 +273,7 @@ variables override it. The ones you're most likely to touch:
 | `EXIFTOOL_PATH`, `FFMPEG_PATH` | from `PATH` | Explicit tool locations |
 | `THUMB_CACHE_DIR` | `data/thumbnails` | Relative to `backend/` |
 | `SCAN_ON_STARTUP` | `true` | Refresh from disk in the background at every start |
-| `WATCH_LIBRARY` | `true` | Pick up outside edits while running (`WATCH_LIBRARY_POLLING=true` for network shares) |
+| `WATCH_LIBRARY` | `true` | Pick up outside edits while running, scanned every 10 minutes by default (change it under Settings; 0 = off). `WATCH_LIBRARY_POLLING=true` for network shares |
 | `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU (`FERNKAM_CLIP_GPU` covers all image models) |
 | `FERNKAM_EMBED_BATCH` | per model (8 at 512 px, 16 at 384 px, else 32) | Images per GPU call when indexing Tag Review models. Lower it if indexing crawls on a smaller card (VRAM spilling into system RAM) |
 | `VISION_URL` | `http://127.0.0.1:11434` | Vision model server for Tag Review: Ollama, or any OpenAI-compatible URL ending in `/v1`. Photos are sent here, so keep it local. |

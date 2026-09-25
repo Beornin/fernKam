@@ -91,8 +91,9 @@ records mtime, size and sha256, and reads the file back for the new ancestor. Be
 
 **The watcher** (`library_watch.py`) runs watchfiles' synchronous `watch()` in its own daemon
 thread. Its async `awatch()` uses AnyIO's thread pool, whose non-daemon workers kept the
-Granian worker from exiting. Events only say *where*: after a quiet period it calls
-`start_library_scan()` on the smallest folder covering them, so every scan rule applies.
+Granian worker from exiting. Events only say *where*. They pile up until the interval passes
+(`app_settings.watch_interval_min`, default 10, set on the Settings page; 0 = off). Then it
+calls `start_library_scan()` on the smallest folder covering them, so every scan rule applies.
 
 **Tag verification.** `photo_tags.verified_at` is NULL for a tag nobody has checked. Anything
 that links a tag on its own (file reads in `sync_merge`, the scanner, the digiKam importer,

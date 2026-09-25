@@ -89,3 +89,19 @@ async def dismiss_outside_changes(
         raise HTTPException(400, "Pass ids or all=true")
     await db.commit()
     return {"dismissed": result.rowcount}
+
+
+@router.get("/watch-interval")
+async def get_watch_interval() -> dict:
+    """Minutes between scans for changes made outside fernKam (0 = off)."""
+    from fernkam import library_watch
+    return {"minutes": library_watch.interval_s / 60}
+
+
+@router.post("/watch-interval")
+async def set_watch_interval(db: DB, minutes: float = Body(..., embed=True, ge=0, le=1440)) -> dict:
+    from fernkam import library_watch
+    from fernkam.db.app_settings import set_setting
+    await set_setting(db, "watch_interval_min", f"{minutes:g}")
+    library_watch.interval_s = minutes * 60
+    return {"minutes": minutes}

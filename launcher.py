@@ -14,6 +14,7 @@ to the real app once the backend's health check passes.
 import collections
 import json
 import os
+import socket
 import subprocess
 from subprocess import TimeoutExpired
 import sys
@@ -84,8 +85,9 @@ PROJECT_ROOT = _resolve_project_root()
 BACKEND_DIR = PROJECT_ROOT / "backend"
 ICON_PATH = PROJECT_ROOT / "assets" / "fernkam.ico"
 LOG_PATH = PROJECT_ROOT / "logs" / "launcher.log"
-BACKEND_URL = "http://localhost:8000"
-BACKEND_HEALTH_URL = "http://127.0.0.1:8000/api/health"  # Use 127.0.0.1 for Windows compatibility
+BACKEND_PORT = 8000
+BACKEND_URL = f"http://localhost:{BACKEND_PORT}"
+BACKEND_HEALTH_URL = f"http://127.0.0.1:{BACKEND_PORT}/api/health"  # Use 127.0.0.1 for Windows compatibility
 
 
 def _setup_log_file() -> None:
@@ -423,10 +425,22 @@ def main():
         "fernKam", html=SPLASH_HTML, width=1400, height=900, min_size=(900, 600), background_color="#14161a"
     )
 
+    closing = threading.Event()
+
     def _on_closing():
         # Runs on the pywebview window's own close (X button) — this is the
-        # primary shutdown path once packaged (no console to Ctrl+C).
+        # primary shutdown path once packaged (no console to Ctrl+C). The
+        # window waits for this handler, so it closes last: after the
+        # backend tree is killed and nothing answers on its port any more.
+        closing.set()
         _kill_tree(backend_proc)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", BACKEND_PORT), timeout=0.2).close()
+            except OSError:
+                break  # port closed: the server and its worker are gone
+            time.sleep(0.1)
 
     window.events.closing += _on_closing
 
@@ -435,7 +449,11 @@ def main():
         # shows an error page instead of silently vanishing the window —
         # closing via X still works from here, _on_closing is unaffected.
         while True:
+            if closing.is_set():
+                return  # we stopped it ourselves; not a crash, no error page
             if backend_proc.poll() is not None:
+                if closing.is_set():
+                    return
                 print(f"[launcher] ✗ Backend process exited with code: {backend_proc.returncode}", flush=True)
                 status, body = _format_backend_failure(backend_proc, output_buffer)
                 hint = f"Log: {LOG_PATH}"
