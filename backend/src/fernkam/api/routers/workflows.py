@@ -468,11 +468,13 @@ async def promote_to_portfolio(req: PromoteRequest, db: DB) -> dict:
             await db.execute(_sql("UPDATE photos SET rating = :r WHERE id = ANY(CAST(:ids AS int[]))"),
                              {"r": req.rating, "ids": [i["photo_id"] for i in movable]})
         if req.tag_ids:
+            # Tags picked in the promote dialog are the user's own: approved.
             await db.execute(_sql("""
-                INSERT INTO photo_tags (photo_id, tag_id)
-                SELECT p, t FROM unnest(CAST(:pids AS int[])) p
+                INSERT INTO photo_tags (photo_id, tag_id, verified_at)
+                SELECT p, t, now() FROM unnest(CAST(:pids AS int[])) p
                 CROSS JOIN unnest(CAST(:tids AS int[])) t
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (photo_id, tag_id)
+                    DO UPDATE SET verified_at = COALESCE(photo_tags.verified_at, now())
             """), {"pids": [i["photo_id"] for i in movable], "tids": req.tag_ids})
         await db.commit()
 

@@ -100,6 +100,8 @@ class PhotoDetail(PhotoSummary):
     camera: Optional[CameraOut]
     lens: Optional[LensOut]
     tags: list[TagOut] = []
+    # Tags not yet approved on the Tag Review page (read from a file etc.).
+    unverified_tag_ids: list[int] = []
     faces: list[FaceOut] = []
 
 

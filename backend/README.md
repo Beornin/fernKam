@@ -33,7 +33,7 @@ src/fernkam/
 │   ├── schemas.py       Pydantic response models
 │   └── routers/         photos, albums, tags, people, faces/, media, sync/ (scan, metadata,
 │                        maintenance, tasks), dedup, stacks, workflows, semantic, geocode,
-│                        saved_searches, outside_changes, backup, logs, debug
+│                        saved_searches, outside_changes, tag_review, backup, logs, debug
 ├── services/
 │   ├── photo_query.py   The one photo filter/search/sort/keyset-cursor builder (grid, search,
 │   │                    smart albums, debug EXPLAIN)
@@ -51,6 +51,7 @@ src/fernkam/
 ├── task_manager.py      Background task registry (the `tasks` table + in-memory cache)
 ├── face_processor.py    InsightFace detection/embedding, pgvector similarity helpers
 ├── clip_embed.py        CLIP ViT-B/32 image/text towers via onnxruntime (downloaded on first use)
+├── tag_learning.py      per-tag classifiers learned from approved/rejected tags (Tag Review)
 ├── metadata_sync.py     exiftool read (persistent -stay_open process) and XMP write-back
 ├── sync_merge.py        three-way merge of editable metadata between catalogue and file
 ├── library_watch.py     watches LIBRARY_ROOT while running and triggers scans
@@ -84,6 +85,21 @@ records mtime, size and sha256, and reads the file back for the new ancestor. Be
 thread. Its async `awatch()` uses AnyIO's thread pool, whose non-daemon workers kept the
 Granian worker from exiting. Events only say *where*: after a quiet period it calls
 `start_library_scan()` on the smallest folder covering them, so every scan rule applies.
+
+**Tag verification.** `photo_tags.verified_at` is NULL for a tag nobody has checked. Anything
+that links a tag on its own (file reads in `sync_merge`, the scanner, the digiKam importer,
+duplicate merges) leaves it NULL. A tag the user adds or accepts sets it (tag picker,
+`/semantic/apply-tags`, promote with tags, `/tag-review/.../decide`), and a stack's tag sync
+carries approval across members. Rejections live in `tag_rejections`, and the tag is removed.
+`tag_learning` trains only on approved links (a tag's own and its descendants') and
+rejections (its own and its ancestors'). Weak negatives are a random sample of other photos,
+and unverified links are never used. The model is a logistic regression per tag on
+`photos.embedding_v`, stored as raw-embedding coefficients. It is calibrated on
+cross-validation output, and library-wide scores add the tag's prevalence, so a suggestion
+means "more likely than not". Because CLIP vectors are unit length, the HNSW cosine index
+ranks candidates for a linear model directly. Photos in the weak sample are scored by their
+held-out cross-validation score, not by the final model that learned them as negatives. The
+Discover kNN suggestions follow the same rule: approved neighbours only, never a rejected pair.
 
 **Schema.** Alembic owns the core tables (`photos`, `tags`, `photo_tags`, `faces`, `cameras`,
 `lenses`, `photo_stacks`, `saved_searches`, `app_settings`). A few support tables and indexes are
@@ -151,4 +167,5 @@ Standalone scripts; each prints `ok - ...` or raises:
 | `test_sync_merge.py`: three-way metadata merge rules | no |
 | `test_move_match.py`: moved/renamed files matched by content hash | no |
 | `test_scan_root.py`: scans stay inside `LIBRARY_ROOT` | no |
+| `test_tag_learning.py`: tag classifier: calibration, rejections, held-out weak scores | no |
 | `test_no_duplicate_photos.py`: live catalogue has no duplicate paths | yes (`.env`) |

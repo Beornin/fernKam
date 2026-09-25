@@ -26,6 +26,7 @@ onNext?: () => void;
 let detail = $state<PhotoDetail | null>(null);
 let loading = $state(true);
 let liveTags = $state<TagOut[]>([]);
+let liveUnverified = $state<number[]>([]);
 let liveFaces = $state<FaceOut[]>([]);
 let selectedFace = $state<FaceOut | null>(null);
 let allPersonTags = $state<TagOut[]>([]);
@@ -67,6 +68,7 @@ resetZoom();
 if (initialPhoto) {
 detail = initialPhoto;
 liveTags = initialPhoto.tags;
+liveUnverified = initialPhoto.unverified_tag_ids ?? [];
 liveFaces = initialPhoto.faces;
 loading = false;
 } else {
@@ -74,6 +76,7 @@ api.photos.get(photoId, controller.signal).then(d => {
 if (controller.signal.aborted) return;
 detail = d;
 liveTags = d.tags;
+liveUnverified = d.unverified_tag_ids ?? [];
 liveFaces = d.faces;
 loading = false;
 }).catch((e: any) => {
@@ -539,7 +542,7 @@ title="Show on map"
 <!-- Tags (editable) -->
 <div class="px-4 py-3 border-b border-zinc-800">
 <p class="text-xs text-zinc-500 mb-2">Tags</p>
-<TagPicker photoId={detail.id} bind:currentTags={liveTags} />
+<TagPicker photoId={detail.id} bind:currentTags={liveTags} bind:unverified={liveUnverified} />
 </div>
 
 <!-- Faces panel -->

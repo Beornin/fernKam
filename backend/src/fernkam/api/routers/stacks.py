@@ -153,14 +153,19 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
     if not members:
         return {"synced": 0, "errors": 0}
 
-    # Union tags across all members.
+    # Union tags across all members. Members are versions of one shot, so a
+    # tag approved on any of them is approved on all (Tag Review).
     tag_ids: set[int] = set()
+    approved: set[int] = set()
     tags_by_id: dict[int, Tag] = {}
     for m in members:
         for pt in m.photo_tags:
             if pt.tag:
                 tag_ids.add(pt.tag.id)
                 tags_by_id[pt.tag.id] = pt.tag
+                if pt.verified_at is not None:
+                    approved.add(pt.tag.id)
+    now = datetime.now(timezone.utc)
 
     # Union rating (max) and color label across members. Face regions are NOT
     # unioned — bounding boxes are pixel coordinates specific to each file's
@@ -177,9 +182,12 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
         m.rating = union_rating
         if union_color:
             m.color_label = union_color
-        existing_tag_ids = {pt.tag_id for pt in m.photo_tags}
-        for tid in tag_ids - existing_tag_ids:
-            db.add(PhotoTag(photo_id=m.id, tag_id=tid))
+        existing = {pt.tag_id: pt for pt in m.photo_tags}
+        for tid in tag_ids - existing.keys():
+            db.add(PhotoTag(photo_id=m.id, tag_id=tid, verified_at=now if tid in approved else None))
+        for tid in approved & existing.keys():
+            if existing[tid].verified_at is None:
+                existing[tid].verified_at = now
 
         named_faces = [
             f for f in m.faces

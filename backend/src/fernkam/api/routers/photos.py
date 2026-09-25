@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
@@ -205,6 +205,8 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
 
     detail = PhotoDetail.model_validate(row)
     detail.tags = [pt.tag for pt in row.photo_tags if pt.tag]
+    detail.unverified_tag_ids = [pt.tag_id for pt in row.photo_tags
+                                 if pt.tag and pt.verified_at is None and not pt.tag.is_person]
     detail.faces = _enrich_faces(list(row.faces))
     return detail
 
@@ -376,11 +378,17 @@ async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
 
 @router.post("/{photo_id}/tags/{tag_id}", status_code=204)
 async def add_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
-    existing = (await db.execute(
-        select(PhotoTag).where(PhotoTag.photo_id == photo_id, PhotoTag.tag_id == tag_id)
-    )).scalar_one_or_none()
-    if not existing:
-        db.add(PhotoTag(photo_id=photo_id, tag_id=tag_id))
+    """Adding a tag yourself is a decision, so it counts as approved (Tag
+    Review), including when the photo already had it unverified."""
+    await db.execute(text("""
+        INSERT INTO photo_tags (photo_id, tag_id, verified_at) VALUES (:p, :t, now())
+        ON CONFLICT (photo_id, tag_id)
+            DO UPDATE SET verified_at = COALESCE(photo_tags.verified_at, now())
+    """), {"p": photo_id, "t": tag_id})
+    await db.execute(text("DELETE FROM tag_suggestions WHERE photo_id = :p AND tag_id = :t"),
+                     {"p": photo_id, "t": tag_id})
+    await db.execute(text("DELETE FROM tag_rejections WHERE photo_id = :p AND tag_id = :t"),
+                     {"p": photo_id, "t": tag_id})
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
 

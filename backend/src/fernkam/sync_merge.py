@@ -242,9 +242,13 @@ async def apply(db, photo_id: int, state: dict, metadata: dict,
         {**m.updates, "snap": json.dumps(m.snapshot), "id": photo_id},
     )
     for parts in m.add_tags:
+        # Added in another program: unverified until approved on Tag Review.
         tag = await ensure_tag_path(db, parts, tag_cache)
         await db.execute(text(
             "INSERT INTO photo_tags (photo_id, tag_id) VALUES (:p, :t) ON CONFLICT DO NOTHING"
+        ), {"p": photo_id, "t": tag.id})
+        await db.execute(text(
+            "DELETE FROM tag_suggestions WHERE photo_id = :p AND tag_id = :t"
         ), {"p": photo_id, "t": tag.id})
     if m.remove_tags:
         await db.execute(text(

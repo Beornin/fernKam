@@ -232,6 +232,10 @@ class PhotoTag(Base):
 
     photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"), primary_key=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True)
+    # NULL = unverified: read from a file or imported, not yet approved on the
+    # Tag Review page. Only approved tags train the tag models (tag_learning).
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    model_score: Mapped[Optional[float]] = mapped_column(sa.REAL)
 
     photo: Mapped["Photo"] = relationship(back_populates="photo_tags")
     tag: Mapped["Tag"] = relationship(back_populates="photo_tags")

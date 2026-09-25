@@ -26,6 +26,8 @@ export interface PhotoDetail extends PhotoSummary {
   camera: { id: number; make: string | null; model: string | null } | null;
   lens: { id: number; make: string | null; model: string | null } | null;
   tags: TagOut[];
+  /** Tags not yet approved on the Tag Review page. */
+  unverified_tag_ids?: number[];
   faces: FaceOut[];
 }
 
@@ -199,6 +201,70 @@ export interface TagSuggestion {
   path: string;
   weight: number;
   votes: number;
+}
+
+export type TagReviewState = 'unverified' | 'suggested' | 'approved' | 'rejected';
+
+export interface TagReviewSummary {
+  unverified: number;
+  approved: number;
+  suggested: number;
+  rejected: number;
+  models: number;
+  embedded: number;
+  photos: number;
+  min_positives: number;
+}
+
+export interface TagReviewTag {
+  id: number;
+  name: string;
+  path: string;
+  unverified: number;
+  approved: number;
+  suggested: number;
+  rejected: number;
+  learning: boolean;
+}
+
+export interface TagModelStats {
+  trained_at: string;
+  positives: number;
+  negatives: number;
+  cv_agreement: number | null;
+  cv_recall: number | null;
+  reviewed_accepted: number;
+  reviewed_rejected: number;
+  hit_rate: number | null;
+}
+
+export interface TagReviewDetail {
+  id: number;
+  name: string;
+  path: string;
+  counts: Record<TagReviewState, number>;
+  learning_positives: number;
+  learning_negatives: number;
+  min_positives: number;
+  model: TagModelStats | null;
+}
+
+export interface TagReviewPhoto {
+  photo_id: number;
+  filename: string;
+  album_path: string;
+  taken_at: string | null;
+  media_type: string;
+  score: number | null;
+  rejected_before: boolean;
+}
+
+export interface TagDecisionResult {
+  approved: number;
+  rejected: number;
+  files_to_update: number;
+  from_suggestions: { accepted: number; rejected: number };
+  retrained: { suggestions: number; cv_agreement: number | null; cv_recall: number | null } | null;
 }
 
 
@@ -423,6 +489,22 @@ export const api = {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         return r.json() as Promise<{ split: number; into: string; target_id: number }>;
       }),
+  },
+  tagReview: {
+    summary: () => get<TagReviewSummary>('/api/tag-review/summary'),
+    tags: () => get<TagReviewTag[]>('/api/tag-review/tags'),
+    tag: (id: number) => get<TagReviewDetail>(`/api/tag-review/tags/${id}`),
+    photos: (id: number, params: { state: TagReviewState; sort?: string; limit?: number; offset?: number }) =>
+      get<{ total: number; photos: TagReviewPhoto[] }>(`/api/tag-review/tags/${id}/photos`, params),
+    decide: (id: number, body: { approve?: number[]; reject?: number[] }) =>
+      fetch(`/api/tag-review/tags/${id}/decide`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<TagDecisionResult>(r)),
+    train: (id: number) =>
+      fetch(`/api/tag-review/tags/${id}/train`, { method: 'POST' })
+        .then(r => okJson<{ suggestions: number; cv_agreement: number | null; cv_recall: number | null }>(r)),
+    trainAll: () =>
+      fetch('/api/tag-review/train-all', { method: 'POST' })
+        .then(r => okJson<{ task_id: string | null; tags: number; message: string }>(r)),
   },
   outsideChanges: {
     list: (includeDismissed = false) =>

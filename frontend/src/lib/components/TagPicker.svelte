@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { api, type TagOut } from '$lib/api';
-	import { X, Plus, Tag, ChevronRight, Search } from '@lucide/svelte';
+	import { X, Plus, Tag, ChevronRight, Search, Check } from '@lucide/svelte';
 
 	let {
 		photoId,
 		currentTags = $bindable([]),
+		unverified = $bindable([]),
 	}: {
 		photoId: number;
 		currentTags: TagOut[];
+		/** Tag ids on this photo not yet approved (Tag Review). */
+		unverified?: number[];
 	} = $props();
 
 	let allTags = $state<TagOut[]>([]);
@@ -48,6 +51,7 @@
 	async function addTag(tag: TagOut) {
 		await api.photoTags.add(photoId, tag.id);
 		currentTags = [...currentTags, tag];
+		unverified = unverified.filter(id => id !== tag.id);
 		query = '';
 		inputEl?.focus();
 	}
@@ -55,6 +59,12 @@
 	async function removeTag(tag: TagOut) {
 		await api.photoTags.remove(photoId, tag.id);
 		currentTags = currentTags.filter(t => t.id !== tag.id);
+		unverified = unverified.filter(id => id !== tag.id);
+	}
+
+	async function approveTag(tag: TagOut) {
+		await api.tagReview.decide(tag.id, { approve: [photoId] });
+		unverified = unverified.filter(id => id !== tag.id);
 	}
 
 	async function createAndAdd() {
@@ -80,9 +90,22 @@
 	<!-- Current tags -->
 	<div class="flex flex-wrap gap-1 min-h-[24px]">
 		{#each currentTags as tag (tag.id)}
-			<span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-zinc-700 text-zinc-200 group">
-				<Tag size={10} class="shrink-0 text-zinc-400" />
+			{@const pending = unverified.includes(tag.id)}
+			<span
+				class="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full group {pending ? 'border border-dashed border-amber-500/60 text-amber-100 bg-zinc-800' : 'bg-zinc-700 text-zinc-200'}"
+				title={pending ? 'Not approved yet: came from the file or an import. Approve it to let tag learning use it.' : undefined}
+			>
+				<Tag size={10} class="shrink-0 {pending ? 'text-amber-400' : 'text-zinc-400'}" />
 				{tag.name}
+				{#if pending}
+					<button
+						class="text-amber-400 hover:text-emerald-400 transition-colors"
+						onclick={() => approveTag(tag)}
+						aria-label="Approve {tag.name}"
+					>
+						<Check size={10} />
+					</button>
+				{/if}
 				<button
 					class="text-zinc-500 hover:text-red-400 transition-colors"
 					onclick={() => removeTag(tag)}

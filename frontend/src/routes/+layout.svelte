@@ -4,7 +4,7 @@
 import '../app.css';
 import { page } from '$app/stores';
 import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers, Star, Wrench, Settings, ChevronDown, Database,
-	Sparkles, FileDiff
+	Sparkles, FileDiff, Tags
 } from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
 import { thumbSizeStore, statusCountStore } from '$lib/stores';
@@ -68,6 +68,7 @@ const navItems = [
 	{ href: '/photos?tab=labels', label: 'Labels', icon: Star, tab: 'labels' },
 	{ href: '/discover', label: 'Discover', icon: Sparkles, exact: false },
 	{ href: '/review', label: 'Face Review', icon: ScanFace, exact: false },
+	{ href: '/tag-review', label: 'Tag Review', icon: Tags, exact: false },
 	{ href: '/photos?view=map', label: 'Map', icon: MapPin, view: 'map' },
 ];
 

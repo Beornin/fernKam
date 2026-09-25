@@ -6,7 +6,8 @@ vector — and one HNSW index. The text tower projects into the same space, so
 
 Tag propagation deliberately *suggests* rather than writes: the library already
 has 1,415 hand-curated tags across 55k photos, and that curation is the thing
-worth protecting.
+worth protecting. It only learns from tags the user has approved on the Tag
+Review page, the same rule as the per-tag models in tag_learning.
 """
 from __future__ import annotations
 
@@ -234,17 +235,20 @@ async def suggest_tags_for_photo(
             SELECT p.id, 1 - (p.embedding_v <=> src.embedding_v) AS score
             FROM photos p CROSS JOIN src
             WHERE p.embedding_v IS NOT NULL AND p.status = 1 AND p.id <> :pid
-              AND EXISTS (SELECT 1 FROM photo_tags pt WHERE pt.photo_id = p.id)
+              AND EXISTS (SELECT 1 FROM photo_tags pt
+                          WHERE pt.photo_id = p.id AND pt.verified_at IS NOT NULL)
             ORDER BY p.embedding_v <=> src.embedding_v
             LIMIT :k
         )
         SELECT t.id, t.name, t.path::text, SUM(nb.score) AS weight, COUNT(*) AS votes
         FROM nb
-        JOIN photo_tags pt ON pt.photo_id = nb.id
+        JOIN photo_tags pt ON pt.photo_id = nb.id AND pt.verified_at IS NOT NULL
         JOIN tags t ON t.id = pt.tag_id
         WHERE nb.score >= :min_score
           AND NOT EXISTS (SELECT 1 FROM photo_tags mine
                           WHERE mine.photo_id = :pid AND mine.tag_id = t.id)
+          AND NOT EXISTS (SELECT 1 FROM tag_rejections r
+                          WHERE r.photo_id = :pid AND r.tag_id = t.id)
         GROUP BY t.id, t.name, t.path
         ORDER BY weight DESC
         LIMIT :lim
@@ -266,15 +270,21 @@ async def apply_suggested_tags(
     tag_ids: list[int] = Body(...),
 ) -> dict:
     """Attach the accepted tags. Explicit, because suggestions stay suggestions
-    until a human says otherwise."""
+    until a human says otherwise; accepting one approves it (Tag Review)."""
     if not photo_ids or not tag_ids:
         return {"linked": 0}
     res = await db.execute(_sql("""
-        INSERT INTO photo_tags (photo_id, tag_id)
-        SELECT p, t FROM unnest(CAST(:pids AS int[])) p
+        INSERT INTO photo_tags (photo_id, tag_id, verified_at)
+        SELECT p, t, now() FROM unnest(CAST(:pids AS int[])) p
         CROSS JOIN unnest(CAST(:tids AS int[])) t
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (photo_id, tag_id)
+            DO UPDATE SET verified_at = COALESCE(photo_tags.verified_at, now())
     """), {"pids": photo_ids, "tids": tag_ids})
+    for table in ("tag_suggestions", "tag_rejections"):
+        await db.execute(_sql(
+            f"DELETE FROM {table} WHERE photo_id = ANY(CAST(:pids AS int[])) "
+            "AND tag_id = ANY(CAST(:tids AS int[]))"
+        ), {"pids": photo_ids, "tids": tag_ids})
     await db.execute(_sql(
         "UPDATE photos SET file_sync_dirty = true WHERE id = ANY(CAST(:pids AS int[]))"
     ), {"pids": photo_ids})
@@ -322,7 +332,8 @@ async def suggest_tags_bulk(
             CROSS JOIN LATERAL (
                 SELECT o.id, o.embedding_v FROM photos o
                 WHERE o.embedding_v IS NOT NULL AND o.status = 1 AND o.id <> s.id
-                  AND EXISTS (SELECT 1 FROM photo_tags pt WHERE pt.photo_id = o.id)
+                  AND EXISTS (SELECT 1 FROM photo_tags pt
+                              WHERE pt.photo_id = o.id AND pt.verified_at IS NOT NULL)
                 ORDER BY o.embedding_v <=> s.embedding_v
                 LIMIT :k
             ) n
@@ -332,9 +343,11 @@ async def suggest_tags_bulk(
                    SUM(nb.score) AS weight, COUNT(*) AS votes,
                    ROW_NUMBER() OVER (PARTITION BY nb.src_id ORDER BY SUM(nb.score) DESC) AS rn
             FROM nb
-            JOIN photo_tags pt ON pt.photo_id = nb.nb_id
+            JOIN photo_tags pt ON pt.photo_id = nb.nb_id AND pt.verified_at IS NOT NULL
             JOIN tags t ON t.id = pt.tag_id
             WHERE nb.score >= :min_score
+              AND NOT EXISTS (SELECT 1 FROM tag_rejections r
+                              WHERE r.photo_id = nb.src_id AND r.tag_id = t.id)
             GROUP BY nb.src_id, nb.filename, t.id, t.name, t.path
         )
         SELECT src_id, filename, tag_id, name, path, weight, votes

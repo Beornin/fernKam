@@ -717,6 +717,45 @@ server process from exiting on shutdown. It now runs in its own daemon thread.
 
 ---
 
+## Tag Review: tags learn like faces · DONE (first stage)
+
+Phase 2's suggestions learned from every tag in the library, including the ones nobody had
+checked. Tags from files and digiKam are mostly right, but "mostly" is what a model amplifies.
+Now tags work like faces:
+
+| | |
+|---|---|
+| Every existing tag | starts **unverified** (`photo_tags.verified_at IS NULL`) |
+| Tag Review page | per tag: *To verify*, *Suggestions*, *Approved*, *Rejected*; click the wrong ones, Enter approves the rest |
+| Rejecting | removes the tag from the photo (and the file, at the next write-back) and keeps it as a negative example |
+| Learning | one logistic regression per tag on the CLIP embedding, from approved tags and rejections only; starts at 8 approved photos, retrains every 10 decisions |
+| Accuracy | cross-validated recall and agreement with your decisions, plus the live share of suggestions you accepted |
+| Discover kNN | approved neighbours only |
+
+Three things the first version got wrong, each caught by the end-to-end test before shipping:
+
+1. **Under-confident small tags.** With 10 approved photos the model ranked correctly but
+   scored almost nothing above 0.5: 10% recall, no suggestions. Fixed by calibrating on the
+   cross-validation output (Platt scaling).
+2. **The weak-negative sample hides positives.** An untagged heron that lands in the random
+   "probably not a heron" sample is learned as a negative, so the model can no longer find the
+   photos most worth suggesting. Those photos are now scored by the fold that never saw them.
+3. **Balanced odds flood a big library.** Calibrated as if half of all photos had the tag, the
+   0.5 bar let through about 4% of everything: thousands of wrong suggestions at 116k photos.
+   Library-wide scores now add the tag's prevalence (Bayes prior shift).
+
+On synthetic embeddings (a 312-photo test library: 40 tagged herons, 5 wrong tags, 20 untagged
+herons), after approving 10 and rejecting 2: the 3 remaining wrong tags sort first under *Most
+doubtful*, and 16 suggestions are 16 real herons. After the rest of the decisions, all 20 are
+found with no wrong suggestions. In the unit test, 20 rejections of a look-alike class cut its
+false acceptance from 92% to 4%.
+
+Next stages, each learning only from approved tags: a stronger embedding (SigLIP 2) beside
+CLIP, a species specialist (BioCLIP) for wildlife tags, and a local vision-language model that
+checks a suggestion before it reaches the queue.
+
+---
+
 ## Where this ended up
 
 Every phase in this roadmap is implemented.

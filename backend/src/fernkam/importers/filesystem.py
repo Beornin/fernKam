@@ -570,10 +570,12 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
     """The image changed: drop what was computed from its old pixels.
 
     The CLIP embedding is cleared (re-embedded by the scan or the Discover
-    indexer). Faces nobody has reviewed (unconfirmed/suggested) are deleted and
-    the photo is re-queued for detection; confirmed and ignored faces are
-    human decisions and stay, with their crops cleared so they are re-cut from
-    the new pixels. Recorded in "Changed outside fernKam". Does not commit.
+    indexer), and with it the tag models' suggestions and scores for the photo;
+    approved and rejected tags are human decisions and stay. Faces nobody has
+    reviewed (unconfirmed/suggested) are deleted and the photo is re-queued for
+    detection; confirmed and ignored faces stay, with their crops cleared so
+    they are re-cut from the new pixels. Recorded in "Changed outside
+    fernKam". Does not commit.
     """
     from sqlalchemy import text as _text
     from fernkam.sync_merge import record_outside_change
@@ -584,6 +586,9 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
         "DELETE FROM faces WHERE photo_id = ANY(:ids) AND status IN ('unconfirmed', 'suggested')"),
         {"ids": photo_ids})
     await db.execute(_text("UPDATE faces SET crop_data = NULL WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
+    await db.execute(_text("DELETE FROM tag_suggestions WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
+    await db.execute(_text("UPDATE photo_tags SET model_score = NULL WHERE photo_id = ANY(:ids)"),
+                     {"ids": photo_ids})
     for pid in photo_ids:
         await record_outside_change(db, pid, "pixels", {})
 

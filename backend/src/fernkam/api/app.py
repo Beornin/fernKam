@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, outside_changes, people, photos, saved_searches, semantic, stacks, sync, tags, workflows
+from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, outside_changes, people, photos, saved_searches, semantic, stacks, sync, tag_review, tags, workflows
 from fernkam.db.session import get_async_engine
 from fernkam.task_manager import TaskConflict
 
@@ -372,6 +372,7 @@ app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"]
 app.include_router(semantic.router, prefix="/api/semantic", tags=["semantic"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 app.include_router(outside_changes.router, prefix="/api/outside-changes", tags=["outside-changes"])
+app.include_router(tag_review.router, prefix="/api/tag-review", tags=["tag-review"])
 
 
 @app.exception_handler(TaskConflict)

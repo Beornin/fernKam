@@ -15,6 +15,8 @@ The short version:
   preview first or ask for confirmation.
 - **Deleting means the Recycle Bin.** Trash and duplicate auto-clean use the system trash, and
   the catalogue row is kept but hidden (`status = 0`).
+- **Only tags you have checked teach fernKam.** Tags from files and imports start unverified.
+  Approving and rejecting them on **Tag Review** is what the tag models learn from.
 - **Edits made outside fernKam are honoured.** fernKam refreshes from disk at every start and
   watches the library while running. Other programs' changes are merged in, you're told about
   them on **Changed outside fernKam**, and files moved or renamed elsewhere keep their tags.
@@ -81,7 +83,8 @@ Review Mode, *Discover → apply suggested tags*, *Date Inference → apply*.
 
 **What happens:** updates the catalogue and sets `file_sync_dirty` on the photo. Renaming,
 moving or deleting a tag, or removing it from all photos, flags every affected photo the same
-way.
+way. A tag you add yourself (tag picker, accepted suggestion, promote dialog) counts as
+approved. Removing one with the tag picker is not a rejection: only Tag Review records those.
 
 | Database | Files | Disk reads |
 |---|---|---|
@@ -197,6 +200,44 @@ puts it back and flags the photo for write-back. Dismissing an entry changes not
 
 ---
 
+## Tag Review
+
+**User action:** Tag Review (left rail). Pick a tag; work through its tabs:
+
+- **To verify**: photos that carry the tag but nobody has checked it (it came from the file, a
+  digiKam import, or a workflow). Click the wrong ones (or `←` `→` and `X`), then **Enter**
+  approves the rest and rejects the clicked ones. `Space` opens the photo. Once the tag is
+  learning, *Most doubtful first* puts the likely mistakes on the first page.
+- **Suggestions**: photos the tag's model thinks should have it, best first. Same keys: accept
+  the rest, reject the clicked ones, or *Reject all*.
+- **Approved** / **Rejected**: audit what you decided; reject an approved photo, or restore a
+  rejected one.
+
+Unverified tags also show in the lightbox with a dashed outline and a ✓ to approve in place.
+
+**What happens:**
+
+- *Approve*: marks the tag verified (`photo_tags.verified_at`), or adds it if it was a
+  suggestion.
+- *Reject*: removes the tag from the photo and records the rejection (`tag_rejections`). The
+  photo becomes a negative example and is never suggested that tag again.
+- **Learning** starts once a tag has 8 approved photos (counting its sub-tags: an approved
+  *Birds › Heron* also teaches *Birds*). Every 10 new decisions it retrains straight away. It
+  learns from your approved tags, your rejections, and a random sample of other photos as weak
+  negatives. Unverified tags are left out entirely. The panel shows how much of your approved
+  set it finds in testing, how often it agrees with your decisions, and the share of its
+  suggestions you accepted (the real accuracy). **Learn all tags** retrains every tag in the
+  background, which also finds suggestions among newly imported photos.
+
+Suggestions need photos in the search index (Discover). The model's suggestions stay
+suggestions until you accept them.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| `photo_tags.verified_at`, `tag_rejections`, `tag_suggestions`, `tag_models`; added or removed tags flagged "needs sync" | none (deferred to DB → Files) | none |
+
+---
+
 ## Semantic indexing and Discover
 
 **User action:** Discover → index the library; then search by description, *Find visually
@@ -205,7 +246,8 @@ similar*, or review suggested tags.
 **What happens:** computes a CLIP embedding for each photo from its 480 px thumbnail (not the
 original) and stores it in `photos.embedding_v`. The model (~600 MB) downloads on first use.
 Search compares text or photo embeddings against that index. Tag suggestions come from the
-tags of a photo's nearest tagged neighbours, and are only applied when you accept them.
+approved tags of a photo's nearest neighbours, and are only applied when you accept them. A
+re-edited picture loses its embedding and its pending Tag Review suggestions.
 
 | Database | Files | Disk reads |
 |---|---|---|

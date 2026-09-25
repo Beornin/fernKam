@@ -18,10 +18,15 @@ shows it in a native window.
 - **Semantic search** (*Discover*): type "dog on a beach" and get matching photos, even
   untagged ones. It uses CLIP image embeddings in pgvector with an HNSW index. The same index
   finds visually similar photos and near-duplicates, and suggests tags for untagged photos
-  based on how your own library is tagged.
+  based on the tags you have approved.
 - **Faces**: detection and recognition with InsightFace (`buffalo_l`), on the GPU when one is
   available. Includes auto-confirm with a sensitivity slider, clustering of unknown faces so a
   whole group can be named at once, and a review queue.
+- **Tag Review**: tags work like faces. Tags read from files or imported from digiKam start
+  unverified, and you check them one tag at a time: click the wrong photos, press Enter to
+  approve the rest. Once a tag has 8 approved photos, fernKam learns it from your decisions
+  (a classifier per tag on the CLIP embeddings) and suggests it on other photos for you to
+  accept or reject. Every decision retrains it. Unverified tags are never used for learning.
 - **Culling**: keyboard-driven Review Mode (`1`–`5` rate, `0` clear, `X` reject, wheel zoom),
   shift-click range selection, and a right-click menu.
 - **Library tools**: exact (SHA-256) duplicate finder with folder-priority auto-clean, RAW+JPEG
