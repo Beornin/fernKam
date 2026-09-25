@@ -61,6 +61,20 @@ shows it in a native window.
   restore, VACUUM/REINDEX, and an in-app log viewer.
 - **digiKam import**: one-time migration of photos, tags and faces from a digiKam MariaDB.
 
+## Recent changes
+
+- **Tag Review** (left rail): every tag from files or digiKam starts unverified; you approve
+  or reject them like faces, and only those decisions teach fernKam. It then suggests tags
+  using several image models (CLIP, SigLIP 2, BioCLIP 2 for wildlife), where and when the
+  photo was taken (with GBIF species ranges), and a local vision model in Ollama as a second
+  opinion. See [Tag Review models](#tag-review-models).
+- **Honours edits made in other programs**: refresh from disk at startup, a live folder
+  watcher, a field-by-field merge with **Changed outside fernKam** (restore what was
+  replaced), and moved or renamed files keep their tags.
+- **Write-back** goes into the files only (no sidecars), per file, retrying only failures;
+  right-click to reread from or write to files.
+- Upgrading? See [Updating an existing install](#updating-an-existing-install).
+
 ## How it fits together
 
 ```
@@ -69,8 +83,11 @@ fernKam.exe (optional, Windows)          your browser (http://localhost:8000)
         ▼                                         ▼
   backend: FastAPI on Granian ── serves /api, /media and the built UI (frontend/build)
         │            │                 │
-        │            │                 └─ exiftool, ffmpeg, InsightFace + CLIP (onnxruntime, CUDA)
-        │            └─ thumbnail cache on disk (backend/data/thumbnails)
+        │            │                 ├─ exiftool, ffmpeg
+        │            │                 ├─ InsightFace, CLIP, SigLIP 2, BioCLIP 2 (onnxruntime, CUDA)
+        │            │                 ├─ Ollama (optional): local vision model for Tag Review
+        │            │                 └─ GBIF API (optional): species sighting counts
+        │            └─ thumbnail cache and model files on disk (backend/data/)
         ▼
   PostgreSQL 17 + pgvector ── catalogue, tags, faces, embeddings (Docker or native)
 ```
@@ -153,6 +170,59 @@ automatically. The CLIP model (~600 MB) downloads on first use. So does the face
 (~300 MB), on the first scan.
 
 Coming from digiKam? See [Migrating from digiKam](#migrating-from-digikam).
+
+## Tag Review models
+
+Tag Review works with CLIP alone. These make its suggestions much better. All of it is
+optional, runs locally, and is managed from **Tag Review → Models**. With a 24 GB GPU
+(RTX 3090/4090) the recommended set is SigLIP 2 at 512 px, BioCLIP 2 and `qwen3-vl:32b`.
+
+1. **CLIP**: open **Discover** and index the library (~600 MB download). Find-by-name uses
+   its text tower.
+2. **SigLIP 2 (512 px)**: **Install and index** (1.7 GB). Or from `backend/`:
+   `uv run fernkam download-model siglip2_512 --text`, then **Index library** in the panel.
+   The 384 px and base versions are there too, for smaller GPUs or a CPU.
+3. **BioCLIP 2** (wildlife): **Build and index**. It exists only as PyTorch weights, so it is
+   exported to ONNX once, in a throwaway environment that uv creates (PyTorch never enters
+   fernKam's own). This downloads PyTorch and the ~1.7 GB checkpoint. From a terminal:
+
+   ```sh
+   cd backend
+   uv run --with open-clip-torch fernkam export-model bioclip2
+   ```
+
+   The export is kept only if onnxruntime reproduces PyTorch's output. Then **Index library**.
+4. **Vision model**: install [Ollama](https://ollama.com/) and pull one:
+   `ollama pull qwen3-vl:32b` (most accurate that fits 24 GB) or `qwen3-vl:8b` (quick).
+   The Models panel finds it at `http://127.0.0.1:11434` and picks the best one pulled.
+5. **Review**: pick a tag, click the wrong photos, press Enter to approve the rest. After 8
+   approvals the tag learns; the learning panel shows how much it trusts each model. For a
+   species, **Link species…** fetches its GBIF range for the places you photograph.
+   **Learn all tags** (with *+ vision check*) relearns everything in the background.
+
+Model files live in `backend/data/models/`: about 4 GB for the recommended set, 6 GB with
+SigLIP 2's text tower. Indexing runs in the background (progress and Cancel on the Tasks
+page); the 512 px model is the slowest, so a large library takes a while the first time.
+After that, new and re-edited photos are indexed at every scan. Image models free the GPU
+after indexing, so Ollama has room.
+
+## Updating an existing install
+
+```sh
+git pull
+cd backend && uv sync
+cd ../frontend && npm install && npm run build
+cd ../backend && uv run fernkam serve
+```
+
+The server applies new database migrations on start. What to expect the first time:
+
+- All existing tags show as **unverified** in Tag Review. Nothing changes in your files.
+- Each photo's file state is recorded the next time fernKam reads or writes that file (a
+  changed file at a scan, a reread, or just before a write-back). From then on, edits made
+  in other programs are merged instead of overwritten. Until then, a scan never touches that
+  photo's tags.
+- Photos flagged "needs sync" stay flagged; **Maintenance → Write N pending** writes them.
 
 ## Native PostgreSQL
 
@@ -289,7 +359,8 @@ the code layout.
 ```
 fernKam/
 ├── backend/                 FastAPI app, CLI, migrations — see backend/README.md
-│   ├── src/fernkam/
+│   ├── src/fernkam/         incl. tag_learning, embed_models, vision_check, species_range
+│   ├── data/                thumbnails, backups, model files (created at runtime)
 │   ├── alembic/versions/    schema history (applied automatically on startup)
 │   ├── tests/
 │   └── .env.example         every setting, documented
@@ -316,5 +387,18 @@ fernKam/
   means CUDA 12 + cuDNN 9 aren't visible to `onnxruntime-gpu`.
 - **Import refuses a folder**: fernKam catalogues only what's under `LIBRARY_ROOT`. Copy the
   photos into the library first, then import that folder.
+- **Tag Review suggests nothing**: a tag needs 8 approved photos that an image model has
+  indexed. Before that, use **Find by name** (needs CLIP indexed, or a model's text tower).
+- **BioCLIP 2 build fails**: run the export command in a terminal to see why. It needs `uv` on
+  `PATH` and internet access to PyPI and Hugging Face. **Build and index** only appears when
+  the server can find `uv`.
+- **Model download stops**: files download to `backend/data/models/<model>/` with a `.part`
+  suffix and are renamed only when complete, so a broken download is never used. **Install**
+  again downloads that file again.
+- **Vision model not reachable**: start Ollama (`ollama serve`), check `VISION_URL`, and pull a
+  vision model (`ollama list` should show one). Any OpenAI-compatible server works with a URL
+  ending in `/v1`.
+- **Link species… fails**: fernKam could not reach `api.gbif.org` (firewall or offline).
+  Species priors are optional; everything else keeps working.
 - **403 "Cross-site request blocked"**: you're reaching the UI through an address the server
   doesn't recognise (a reverse proxy, a custom hostname). Add that origin to `CORS_ORIGINS`.
