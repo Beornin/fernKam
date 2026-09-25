@@ -806,6 +806,25 @@ and `qwen3-vl:32b` in Ollama for the double-check (`qwen3-vl:8b` when speed matt
 
 Not built yet: using SigLIP 2 for Discover's text search.
 
+### Installed on the real machine (RTX 3090)
+
+Merged into main after the live upgrade: migrations 0027–0031 applied, then the startup
+refresh ran over 118,265 files: 118,263 unchanged, **2 moves matched by SHA-256** (tags kept),
+5 really gone, 0 errors. The cross-site guard returned 403 for foreign and `null` origins
+and 404 (passed) for localhost, and the LAN could not connect.
+
+| Model | State |
+|---|---|
+| SigLIP 2 512 px + text tower | downloaded |
+| BioCLIP 2 | exported. onnxruntime matched PyTorch (cos ≥ 0.999) |
+| `qwen3-vl:32b` | pulled (20 GB), auto-picked over the older vision models |
+
+**Found on first index: batch 32 at 512 px does not fit in 24 GB.** SigLIP's attention at
+1,024 tokens is ~2 GB per layer at that batch. VRAM filled (23.9 of 24.5 GB), Windows spilled
+to system RAM, and indexing fell to **1 photo/s (a 26-hour ETA)**. Batch size is now per
+model: 8 at 512 px and 16 at 384 px, keeping batch × tokens² about constant.
+`FERNKAM_EMBED_BATCH` overrides it for smaller cards.
+
 ---
 
 ## Where this ended up

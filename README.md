@@ -275,6 +275,7 @@ variables override it. The ones you're most likely to touch:
 | `SCAN_ON_STARTUP` | `true` | Refresh from disk in the background at every start |
 | `WATCH_LIBRARY` | `true` | Pick up outside edits while running (`WATCH_LIBRARY_POLLING=true` for network shares) |
 | `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU (`FERNKAM_CLIP_GPU` covers all image models) |
+| `FERNKAM_EMBED_BATCH` | per model (8 at 512 px, 16 at 384 px, else 32) | Images per GPU call when indexing Tag Review models. Lower it if indexing crawls on a smaller card (VRAM spilling into system RAM) |
 | `VISION_URL` | `http://127.0.0.1:11434` | Vision model server for Tag Review: Ollama, or any OpenAI-compatible URL ending in `/v1`. Photos are sent here, so keep it local. |
 | `VISION_MODEL` | best vision model found | Starting choice; pick another on Tag Review → Models |
 | `GBIF_URL` | `https://api.gbif.org/v1` | Species range data for Tag Review (public API, no key; only record counts for boxes around your places are fetched) |

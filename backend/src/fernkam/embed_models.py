@@ -52,6 +52,11 @@ class ModelInfo:
     gpu_recommended: bool = False
     thumb: str = "md"            # thumbnail it reads: md = 480 px, lg = 960 px (for 512 px models)
     recommended_24gb: bool = False
+    # Images per inference call. Attention memory grows with batch x tokens^2:
+    # batch 32 at 512 px (1024 tokens) needs ~2 GB per layer, fills a 24 GB
+    # card, and Windows then spills to system RAM (measured: 1 photo/s).
+    # Keep batch x tokens^2 about constant. FERNKAM_EMBED_BATCH overrides.
+    batch: int = 32
 
 
 MODELS: dict[str, ModelInfo] = {
@@ -61,12 +66,13 @@ MODELS: dict[str, ModelInfo] = {
             "The most detailed: general scenes and objects, and small or distant subjects "
             "(a bird in a big frame) that lower resolutions blur. Reads 960 px thumbnails. Needs a GPU.",
             1152, "download", repo="onnx-community/siglip2-so400m-patch16-512-ONNX",
-            size_mb=1700, text_size_mb=1800, gpu_recommended=True, thumb="lg", recommended_24gb=True),
+            size_mb=1700, text_size_mb=1800, gpu_recommended=True, thumb="lg", recommended_24gb=True,
+            batch=8),
         ModelInfo(
             "siglip2", "SigLIP 2 (so400m, 384 px)",
             "General scenes, objects and activities. Much stronger than CLIP, faster than 512 px.",
             1152, "download", repo="onnx-community/siglip2-so400m-patch14-384-ONNX",
-            size_mb=1700, text_size_mb=1800, gpu_recommended=True),
+            size_mb=1700, text_size_mb=1800, gpu_recommended=True, batch=16),
         ModelInfo(
             "siglip2_base", "SigLIP 2 (base)",
             "The same family at a quarter of the size: stronger than CLIP and fine on a CPU.",
@@ -246,10 +252,9 @@ def _pick_output(sess, preferred: tuple[str, ...]) -> str:
 
 
 class _Runtime:
-    BATCH = 32
-
     def __init__(self, key: str):
         self.key = key
+        self.batch = int(os.getenv("FERNKAM_EMBED_BATCH") or MODELS[key].batch)
         self.lock = threading.Lock()
         self.vision = self.text = self.tok = self.pre = None
         self.text_cfg: dict = {}
@@ -294,9 +299,9 @@ class _Runtime:
         dtype = np.float16 if "float16" in self.v_in.type else np.float32
         srcs = list(sources)
         out: list[Optional[np.ndarray]] = [None] * len(srcs)
-        for start in range(0, len(srcs), self.BATCH):
+        for start in range(0, len(srcs), self.batch):
             batch, keep = [], []
-            for i in range(start, min(start + self.BATCH, len(srcs))):
+            for i in range(start, min(start + self.batch, len(srcs))):
                 s = srcs[i]
                 try:
                     img = s if hasattr(s, "mode") else Image.open(s)

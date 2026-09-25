@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "fernkam-backend",
+      "runtimeExecutable": "backend/.venv/Scripts/fernkam.exe",
+      "runtimeArgs": ["serve"],
+      "port": 8000
     }
   ]
 }
