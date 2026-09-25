@@ -2,9 +2,10 @@
 Port of RemoveNonKeepRAWWorkflow.java
 
 Walks a folder tree and moves any RAW file to the Trash when no matching
-picture (JPG/TIF/etc.) exists in the same directory or that directory's
-jpg/ subfolder. Matching is a substring check: the RAW stem must appear
-inside a picture stem.
+picture (JPG/TIF/etc.) exists where fernKam keeps them: the same directory,
+its jpg/ subfolder, or, for a RAW inside a RAW/ folder (the Portfolio
+convention, see promote_destination), the parent directory and its jpg/.
+Matching is a substring check: the RAW stem must appear inside a picture stem.
 """
 
 import time
@@ -42,13 +43,7 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER, dry_run: bool = True) ->
             jpg_by_dir[f.parent].add(_base_name(f.name))
 
     nef_files = [f for f in all_files if f.suffix.lower() in RAW_EXTENSIONS]
-    to_delete = []
-    for f in nef_files:
-        nef_stem = _base_name(f.name)
-        # Allowed picture directories: same folder, or a jpg/ subfolder of it.
-        candidates: set = jpg_by_dir.get(f.parent, set()) | jpg_by_dir.get(f.parent / "jpg", set())
-        if not any(nef_stem in jpg for jpg in candidates):
-            to_delete.append(f)
+    to_delete = select_orphans(nef_files, jpg_by_dir)
 
     print(f"Found {len(nef_files)} RAW files. {len(to_delete)} have no matching picture.")
 
@@ -77,6 +72,20 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER, dry_run: bool = True) ->
             print(f"Failed to trash {f.name}: {e}")
 
     print(f"Process took: {format_elapsed(start)}")
+
+
+def select_orphans(raw_files: list, pictures_by_dir: dict) -> list:
+    """RAWs with no matching picture in any folder a picture may live in."""
+    orphans = []
+    for f in raw_files:
+        d = f.parent
+        dirs = [d, d / "jpg"]
+        if d.name.upper() == "RAW":   # Portfolio: Album/RAW/x.NEF beside Album/x.jpg
+            dirs += [d.parent, d.parent / "jpg"]
+        stem = _base_name(f.name)
+        if not any(stem in pic for x in dirs for pic in pictures_by_dir.get(x, ())):
+            orphans.append(f)
+    return orphans
 
 
 def _base_name(filename: str) -> str:
