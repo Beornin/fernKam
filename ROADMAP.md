@@ -836,10 +836,20 @@ problem. Two causes, both fixed:
   cancelled or failed index kept ~20 GB until fernKam closed. Anything run next, BioCLIP 2 or
   a vision check, would have crawled too. It is released in a `finally` now.
 
-Not measured yet on the GPU: the running exe still has the old code. On the next launch,
-"Index the rest" should hold a steady speed and flat VRAM. Separately, the GPU was only 47%
-busy even at full speed, because decoding and inference take turns. Running them in parallel
-is the next ~2×. 93% of the `lg` thumbnails it reads were already cached.
+With both fixes the exe ran at **10 photos/s**, but the worker still grew in 2 and 4 GB steps
+(15.3 → 17.3 → 21.4 GB in 25 minutes). A third cause, found by measuring on the real model:
+
+- **Every thread that calls `run()` gets its own GPU memory pool, kept forever.** asyncio's
+  default executor hands successive batches to up to 16 threads. SigLIP 2 at 512 px on one
+  thread held flat at 6,390 MB. Each new thread added **+2,056 MB**, so 6 threads reached
+  18,738 MB. All CLIP and Tag Review model inference now runs on one dedicated thread
+  (`clip_embed.run_session`). The same test with a new thread per call stayed flat at
+  **6,414 MB** and went from 7.5 to 9.1 img/s. `test_embed_models` fails if inference ever runs
+  on more than one thread.
+
+Separately, the GPU was only ~47% busy even at full speed, because decoding and inference take
+turns. Running them in parallel is the next ~2×. 93% of the `lg` thumbnails it reads were
+already cached.
 
 ---
 

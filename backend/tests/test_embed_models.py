@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -111,20 +112,22 @@ for img, v in zip(imgs, vecs):
     assert v.shape == (DIM,) and abs(np.linalg.norm(v) - 1) < 1e-5
     assert np.allclose(v, reference(img), atol=1e-4), "differs from reference"
 
-# 1b. The session only ever sees one batch shape. Each new one makes
-#     onnxruntime keep another set of GPU buffers for the rest of the run.
+# 1b. The session only ever sees one batch shape and one calling thread.
+#     onnxruntime keeps another set of GPU buffers for the rest of the run for
+#     each new shape, and a whole memory pool (+2 GB with SigLIP 2) per thread.
 rt = em.runtime("fake")
 
 
 class _Shapes:
     def __init__(self, s):
-        self.s, self.seen = s, set()
+        self.s, self.seen, self.threads = s, set(), set()
 
     def __getattr__(self, name):
         return getattr(self.s, name)
 
     def run(self, outs, feed):
         self.seen.update(v.shape for v in feed.values())
+        self.threads.add(threading.get_ident())
         return self.s.run(outs, feed)
 
 
@@ -132,7 +135,10 @@ rt.vision = spy = _Shapes(rt.vision)
 for n in (rt.batch + 3, 1, 5):  # a full batch plus a tail, then short calls
     got = em.embed_images("fake", imgs[:n])
     assert all(np.allclose(g, reference(i), atol=1e-4) for g, i in zip(got, imgs[:n]))
+    # ...each from a different thread, as asyncio's executor does
+    th = threading.Thread(target=em.embed_images, args=("fake", imgs[:n])); th.start(); th.join()
 assert len(spy.seen) == 1, f"batch shapes seen: {spy.seen}"
+assert len(spy.threads) == 1, f"inference ran on {len(spy.threads)} threads"
 em.release("fake")
 
 # 2. A float16 tower gets float16 input.

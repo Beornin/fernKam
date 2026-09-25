@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -74,6 +75,19 @@ def ensure_models(progress=None) -> Path:
         urllib.request.urlretrieve(_HF_BASE + remote, tmp)
         tmp.replace(p)  # atomic: a half-downloaded model is never seen as ready
     return d
+
+
+# onnxruntime's CUDA provider keeps a separate memory pool for every thread that
+# calls run(), and never frees it. asyncio's default executor hands successive
+# batches to up to 16 different threads. Measured with SigLIP 2 at 512 px: +2,056
+# MB per new thread, until 24 GB filled and Windows spilled to system RAM. All
+# CLIP and Tag Review model inference runs on this one thread instead.
+_inference_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fernkam-onnx")
+
+
+def run_session(sess, *args):
+    """sess.run(*args) on the shared inference thread."""
+    return _inference_thread.submit(sess.run, *args).result()
 
 
 def _providers() -> list[str]:
@@ -163,7 +177,7 @@ def embed_images(sources: Iterable) -> "list[Optional[np.ndarray]]":
     out: list[Optional[np.ndarray]] = [None] * len(srcs)
     if not batch:
         return out
-    vecs = _get_vision().run(None, {"pixel_values": np.stack(batch)})[0]
+    vecs = run_session(_get_vision(), None, {"pixel_values": np.stack(batch)})[0]
     vecs = _l2(np.asarray(vecs, dtype=np.float32))
     for slot, v in zip(keep, vecs):
         out[slot] = v
@@ -179,7 +193,7 @@ def embed_text(texts: "str | Iterable[str]") -> np.ndarray:
     for i, t in enumerate(items):
         enc = tok.encode(t).ids[:_CONTEXT_LEN]
         ids[i, : len(enc)] = enc
-    vecs = _l2(np.asarray(sess.run(None, {"input_ids": ids})[0], dtype=np.float32))
+    vecs = _l2(np.asarray(run_session(sess, None, {"input_ids": ids})[0], dtype=np.float32))
     return vecs[0] if single else vecs
 
 

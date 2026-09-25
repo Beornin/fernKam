@@ -33,6 +33,8 @@ from typing import Callable, Iterable, Optional
 
 import numpy as np
 
+from fernkam.clip_embed import run_session
+
 logger = logging.getLogger(__name__)
 
 _HF = "https://huggingface.co/{repo}/resolve/main/{path}"
@@ -319,7 +321,7 @@ class _Runtime:
                 # chunk's tail, or one with unreadable photos) add more as a
                 # run goes on, the likely reason SigLIP 2 filled 24 GB mid-run.
                 x = np.concatenate([x, np.repeat(x[-1:], self.batch - n, axis=0)])
-            vecs = sess.run([self.v_out], {self.v_in.name: x})[0][:n]
+            vecs = run_session(sess, [self.v_out], {self.v_in.name: x})[0][:n]
             vecs = _l2(np.asarray(vecs, dtype=np.float32).reshape(n, -1))
             for slot, v in zip(keep, vecs):
                 out[slot] = v
@@ -339,7 +341,7 @@ class _Runtime:
         feed = {"input_ids": ids}
         if "attention_mask" in self.t_inputs:
             feed["attention_mask"] = mask if self.text_cfg.get("mask_padding", True) else np.ones_like(ids)
-        return _l2(np.asarray(sess.run([self.t_out], feed)[0], dtype=np.float32))
+        return _l2(np.asarray(run_session(sess, [self.t_out], feed)[0], dtype=np.float32))
 
     def release(self):
         with self.lock:
