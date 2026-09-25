@@ -6,7 +6,8 @@ heron?" It is slower (about a second per photo on a GPU) and makes different
 mistakes, which is what makes it a useful second opinion.
 
 It talks to Ollama's API (default http://127.0.0.1:11434, any vision model you
-have pulled, e.g. qwen2.5vl:7b or gemma3:12b), or to any OpenAI-compatible
+have pulled: qwen3-vl:32b is the most accurate that fits a 24 GB GPU,
+qwen3-vl:8b the quick one), or to any OpenAI-compatible
 server when VISION_URL ends in /v1 (LM Studio, llama.cpp). The photo goes to
 that URL as a 960 px JPEG, so keep it local.
 
@@ -84,13 +85,15 @@ async def list_models(url: str) -> list[dict]:
 
 
 def pick_model(models: list[dict], wanted: str) -> Optional[str]:
+    """The user's choice if pulled; else the best family pulled, and within
+    it the largest size (on a 24 GB GPU, qwen3-vl:32b over qwen3-vl:8b)."""
     names = [m["name"] for m in models]
     if wanted and wanted in names:
         return wanted
     for pref in _PREFERRED:
-        for n in names:
-            if n.lower().startswith(pref):
-                return n
+        family = [m for m in models if m["name"].lower().startswith(pref)]
+        if family:
+            return max(family, key=lambda m: m.get("size_gb") or 0)["name"]
     return names[0] if names else None
 
 
@@ -180,7 +183,7 @@ async def check_photos(db, tag_id: int, photo_ids: list[int], on_progress=None, 
     if not st["reachable"]:
         raise RuntimeError(f"No vision model server at {st['url']}: {st.get('error', '')}")
     if not st["model"]:
-        raise RuntimeError("The server has no vision model. With Ollama: ollama pull qwen2.5vl:7b")
+        raise RuntimeError("The server has no vision model. With Ollama: ollama pull qwen3-vl:8b")
     model = st["model"]
     thinking = any(m["name"] == model and m.get("thinking") for m in st["models"])
     tag = (await db.execute(text("SELECT path::text FROM tags WHERE id = :t"), {"t": tag_id})).scalar_one()

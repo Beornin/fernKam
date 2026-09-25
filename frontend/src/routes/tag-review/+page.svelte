@@ -13,7 +13,9 @@
 	import { notify } from '$lib/dialog.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 	import TagModelsPanel from '$lib/components/TagModelsPanel.svelte';
-	import { Tags, Search, Check, X, Brain, RefreshCw, AlertTriangle, History, ChevronLeft, ChevronRight, Cpu, Eye, Type } from '@lucide/svelte';
+	import SpeciesLinkDialog from '$lib/components/SpeciesLinkDialog.svelte';
+	import type { GbifTaxon } from '$lib/api';
+	import { Tags, Search, Check, X, Brain, RefreshCw, AlertTriangle, History, ChevronLeft, ChevronRight, Cpu, Eye, Type, Globe } from '@lucide/svelte';
 
 	const PAGE = 60;
 
@@ -38,6 +40,7 @@
 	let learnAllCheck = $state(true);
 	let checking = $state(false);
 	let finding = $state(false);
+	let speciesOpen = $state(false);
 	// Tiles the user clicked. On every tab but Rejected that means "wrong";
 	// on Rejected it means "right after all".
 	let marked = $state(new Set<number>());
@@ -224,6 +227,51 @@
 		}
 	}
 
+	/** Follow a background task, then refresh this tag's panel and photos. */
+	async function followTask(taskId: string) {
+		const id = selectedId;
+		for (let i = 0; i < 400 && selectedId === id; i++) {
+			await new Promise(res => setTimeout(res, 1500));
+			const task = (await api.sync.tasks()).tasks.find(x => x.id === taskId);
+			if (!task || task.status !== 'running') {
+				if (task) result = task.message;
+				break;
+			}
+			result = task.message;
+		}
+		if (selectedId === id) await Promise.all([loadDetail(), loadPhotosKeepMarks()]);
+	}
+
+	async function linkSpecies(t: GbifTaxon) {
+		if (selectedId === null) return;
+		try {
+			const r = await api.tagReview.linkSpecies(selectedId, t);
+			result = `Linked to ${t.common_name ?? t.scientific_name}. Fetching its GBIF range for your places…`;
+			await loadDetail();
+			await followTask(r.task_id);
+		} catch (e) {
+			notify(e instanceof Error ? e.message : String(e), 'danger');
+		}
+	}
+
+	async function refreshSpecies() {
+		if (selectedId === null) return;
+		try {
+			const r = await api.tagReview.refreshSpecies(selectedId);
+			result = 'Fetching GBIF range data for new places…';
+			await followTask(r.task_id);
+		} catch (e) {
+			notify(e instanceof Error ? e.message : String(e), 'danger');
+		}
+	}
+
+	async function unlinkSpecies() {
+		if (selectedId === null) return;
+		await api.tagReview.unlinkSpecies(selectedId);
+		await loadDetail();
+		result = 'Unlinked. Relearn the tag to drop the range prior.';
+	}
+
 	async function learnAll() {
 		learning = true;
 		try {
@@ -256,6 +304,10 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+{#if detail}
+	<SpeciesLinkDialog bind:open={speciesOpen} tagName={detail.name} onLink={linkSpecies} />
+{/if}
 
 <TagModelsPanel bind:open={modelsOpen} onChanged={() => { loadVision(); loadSummary(); if (selectedId !== null) loadDetail(); }} />
 
@@ -424,6 +476,24 @@
 								</span>
 							</div>
 						{/if}
+						<div class="w-full flex items-center gap-1 text-zinc-400">
+							<Globe size={12} class={detail.species ? 'text-emerald-400' : 'text-zinc-600'} />
+							{#if detail.species}
+								<span>
+									Range prior: <b class="text-zinc-200">{detail.species.common_name ?? detail.species.scientific_name}</b>
+									{#if detail.species.common_name}<i class="text-zinc-400">{detail.species.scientific_name}</i>{/if}
+									({detail.species.class_name}) · GBIF data for {detail.species.places_with_data} of {detail.species.places} places
+								</span>
+								{#if detail.species.places_with_data < detail.species.places}
+									<button onclick={refreshSpecies} class="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Update</button>
+								{/if}
+								<button onclick={() => speciesOpen = true} class="px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-200">Change</button>
+								<button onclick={unlinkSpecies} class="px-1.5 py-0.5 rounded text-zinc-500 hover:text-red-400">Unlink</button>
+							{:else}
+								<span class="text-zinc-500">A species? Link it to GBIF so where and when it is recorded becomes a prior.</span>
+								<button onclick={() => speciesOpen = true} class="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Link species…</button>
+							{/if}
+						</div>
 						{#if detail.vision.checked}
 							<div class="w-full flex items-center gap-1 text-zinc-400">
 								<Eye size={12} class="text-sky-400" />
@@ -495,6 +565,15 @@
 											{p.vision === 1 ? 'bg-sky-600/90 text-white' : p.vision === 0 ? 'bg-zinc-900/90 text-red-300' : 'bg-zinc-800/90 text-zinc-300'}"
 											title="Vision model: {p.vision === 1 ? 'yes' : p.vision === 0 ? 'no' : 'unsure'}{p.vision_p !== null ? ` (${pct(p.vision_p)} yes)` : ''}">
 											<Eye size={10} />{p.vision === 1 ? '✓' : p.vision === 0 ? '✗' : '?'}
+										</span>
+									{/if}
+									{#if p.range}
+										<span class="absolute bottom-1 right-1 flex items-center gap-0.5 text-[10px] font-semibold px-1 py-0.5 rounded
+											{p.range.status === 'absent' ? 'bg-red-800/90 text-white' : 'bg-amber-700/90 text-white'}"
+											title={p.range.status === 'absent'
+												? `GBIF: not recorded around here in ${p.range.when} (0 of ${p.range.class.toLocaleString()} records of its class)`
+												: `GBIF: rare around here in ${p.range.when} (${p.range.species} of ${p.range.class.toLocaleString()} records of its class)`}>
+											<Globe size={10} />{p.range.status === 'absent' ? 'not here' : 'rare'}
 										</span>
 									{/if}
 									{#if p.rejected_before}

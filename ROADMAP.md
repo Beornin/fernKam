@@ -782,8 +782,29 @@ Two more fixes found by testing:
   them stalled at 65%. A second training pass that keeps only reliable negatives brought it
   to 94% in simulation, with look-alikes still kept out.
 
-Not built yet: GPS/date priors for species (a heron in Norway in January), and using SigLIP 2
-for Discover's text search.
+### Stage 3: where and when · DONE
+
+| | |
+|---|---|
+| Place expert | closeness to the library's photo clusters (30 km and 300 km scales), learned per tag |
+| Season expert | day of year (two harmonics) and time of day |
+| Range expert (GBIF) | a linked species' share of its class's records around each place, per month; red *not here* / amber *rare* badges |
+
+On synthetic data where herons (Florida, winter) and egrets (Maine, summer) look the same
+to the image model: egrets accepted as herons 61% → **0%** with place and season, herons
+still found at 99%. End to end with a fake GBIF: all five "heron in Norway in January" photos
+flagged *not here* and sorted first under *Most doubtful*; 20/20 untagged herons suggested,
+0 egrets.
+
+Found by the end-to-end test: the reliable-negative pass (stage 2) let context decide which
+random photos were hidden positives, so ordinary photos at the heron's place in season
+dropped out of the negatives and were suggested (8 of them; 1–7.5% in simulation). That call
+is now made on appearance alone (0–0.5%), with a unit test that fails under the old rule.
+
+For a 24 GB GPU the recommended set is SigLIP 2 at 512 px (small, distant subjects), BioCLIP 2,
+and `qwen3-vl:32b` in Ollama for the double-check (`qwen3-vl:8b` when speed matters).
+
+Not built yet: using SigLIP 2 for Discover's text search.
 
 ---
 

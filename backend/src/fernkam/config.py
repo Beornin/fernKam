@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # page; this is only the starting choice (empty = first vision model found).
     vision_url: str = "http://127.0.0.1:11434"   # VISION_URL
     vision_model: str = ""                        # VISION_MODEL
+    # Species range priors (species_range.py): GBIF's public API, no key.
+    # Only aggregate record counts for boxes around the library's places are
+    # fetched.
+    gbif_url: str = "https://api.gbif.org/v1"    # GBIF_URL
 
     # ── Network exposure ──
     # The API has no authentication — it can delete, move and trash originals.

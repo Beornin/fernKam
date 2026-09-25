@@ -58,6 +58,8 @@ src/fernkam/
 ├── embed_index.py       where each model's vectors live; indexing tasks; per-model HNSW
 ├── model_export.py      open_clip weights -> ONNX, verified against PyTorch (run via uv --with)
 ├── vision_check.py      local vision model (Ollama / OpenAI-compatible) double-checks tags
+├── photo_context.py     place and season features (context experts for tag learning)
+├── species_range.py     GBIF species link, per-cell monthly counts, range prior and badges
 ├── metadata_sync.py     exiftool read (persistent -stay_open process) and XMP write-back
 ├── sync_merge.py        three-way merge of editable metadata between catalogue and file
 ├── library_watch.py     watches LIBRARY_ROOT while running and triggers scans
@@ -108,7 +110,21 @@ suggestion means "more likely than not". Vectors are unit length, so each model'
 cosine index ranks candidates for its expert directly; candidates from every model are
 pooled and scored by the whole ensemble. Training runs twice: weak negatives that the
 first pass's held-out score calls positive are left out of the second (reliable negatives
-only) and scored by a model that never saw them. The Discover kNN suggestions follow the
+only) and scored by a model that never saw them. That call is made on appearance alone
+(`CONTEXT_EXPERTS` are masked out): when place, season and range helped decide, every
+ordinary photo at the heron's marsh in season dropped out of the negatives and got
+suggested.
+
+**Context experts** (`photo_context`, `species_range`) are `ContextSpace`s: features computed
+from `latitude`, `longitude` and `taken_at` (and, for range, `gbif_cell_counts`) instead of
+fetched vectors. Place is Gaussian bumps at 30 and 300 km around k-means centres of the
+library's GPS positions; season is two yearly harmonics and one daily. They join
+`fit_ensemble` like image models, but `train_tag` never uses them to search, and a photo
+needs at least one image vector to be scored. GBIF range counts are fetched per 1° cell
+(3°×3° query box, `facet=month`) for the species and for its class, cached with a month-0
+row that marks a cell as fetched even at zero. The features are the species' smoothed share
+of its class's records there (this month and all year), its record count, and "never
+recorded here". The Discover kNN suggestions follow the
 same rule: approved neighbours only, never a rejected pair.
 
 **Image models and vectors.** CLIP's vectors stay in `photos.embedding_v`. Every other model's
@@ -198,4 +214,5 @@ Standalone scripts; each prints `ok - ...` or raises:
 | `test_tag_ensemble.py`: per-tag model weights, missing vectors, reliable-negative pass | no |
 | `test_embed_models.py`: ONNX runtime: preprocessing from config, output pick, fp16, text | no |
 | `test_vision_check.py`: vision client against a fake Ollama / OpenAI server | no |
+| `test_species_priors.py`: place/season/range experts, range verdicts, GBIF client (fake server) | no |
 | `test_no_duplicate_photos.py`: live catalogue has no duplicate paths | yes (`.env`) |

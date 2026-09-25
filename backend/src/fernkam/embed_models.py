@@ -5,7 +5,8 @@ per tag and per model, then learns per tag how much to trust each model (see
 tag_learning). A wildlife model ends up weighted for species tags, a general
 model for scenes, without anyone deciding that by hand.
 
-  siglip2       SigLIP 2 so400m: general scenes and objects, much stronger than CLIP
+  siglip2_512   SigLIP 2 so400m at 512 px: the most detail, for small or distant subjects
+  siglip2       SigLIP 2 so400m at 384 px: general scenes and objects, much stronger than CLIP
   siglip2_base  SigLIP 2 base: the same family, small enough for a CPU
   bioclip2      BioCLIP 2: organisms, trained to tell similar species apart
 
@@ -49,13 +50,21 @@ class ModelInfo:
     size_mb: int = 0             # vision tower, roughly
     text_size_mb: int = 0
     gpu_recommended: bool = False
+    thumb: str = "md"            # thumbnail it reads: md = 480 px, lg = 960 px (for 512 px models)
+    recommended_24gb: bool = False
 
 
 MODELS: dict[str, ModelInfo] = {
     m.key: m for m in (
         ModelInfo(
-            "siglip2", "SigLIP 2 (so400m)",
-            "General scenes, objects and activities. Much stronger than CLIP. Best with a GPU.",
+            "siglip2_512", "SigLIP 2 (so400m, 512 px)",
+            "The most detailed: general scenes and objects, and small or distant subjects "
+            "(a bird in a big frame) that lower resolutions blur. Reads 960 px thumbnails. Needs a GPU.",
+            1152, "download", repo="onnx-community/siglip2-so400m-patch16-512-ONNX",
+            size_mb=1700, text_size_mb=1800, gpu_recommended=True, thumb="lg", recommended_24gb=True),
+        ModelInfo(
+            "siglip2", "SigLIP 2 (so400m, 384 px)",
+            "General scenes, objects and activities. Much stronger than CLIP, faster than 512 px.",
             1152, "download", repo="onnx-community/siglip2-so400m-patch14-384-ONNX",
             size_mb=1700, text_size_mb=1800, gpu_recommended=True),
         ModelInfo(
@@ -68,7 +77,7 @@ MODELS: dict[str, ModelInfo] = {
             "Wildlife. Trained on over 200 million images of organisms to tell similar "
             "species apart. Built once from the official weights.",
             768, "export", weights="hf-hub:imageomics/bioclip-2",
-            size_mb=1200, text_size_mb=500, gpu_recommended=True),
+            size_mb=1200, text_size_mb=500, gpu_recommended=True, recommended_24gb=True),
     )
 }
 

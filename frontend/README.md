@@ -27,7 +27,8 @@ src/
 │   │                       people, labels), map view, lightbox, Review Mode (culling)
 │   ├── review/             Face Review: per-person candidates, unknown-face clusters
 │   ├── tag-review/         Tag Review: verify tags per tag, model suggestions, learning stats,
-│   │                       vision double-check, find by name (models: lib/components/TagModelsPanel)
+│   │                       vision double-check, find by name, species range priors
+│   │                       (lib/components/TagModelsPanel, SpeciesLinkDialog)
 │   ├── discover/           semantic search, similar photos, tag suggestions (CLIP)
 │   ├── smart-albums/       saved searches (keyset-paginated)
 │   ├── duplicates/  stacks/  date-inference/  workflows/

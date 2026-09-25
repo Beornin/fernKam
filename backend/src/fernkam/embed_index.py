@@ -138,12 +138,13 @@ async def embed_photo_rows(bdb, key: str, rows, on_progress=None, is_cancelled=N
     from fernkam.api.routers.semantic import load_photo_image
 
     loop = asyncio.get_running_loop()
+    size = em.MODELS[key].thumb
     ok = skipped = 0
     for start in range(0, len(rows), _BATCH):
         if is_cancelled and await is_cancelled():
             break
         chunk = rows[start:start + _BATCH]
-        imgs = await loop.run_in_executor(None, lambda c=chunk: [load_photo_image(*r) for r in c])
+        imgs = await loop.run_in_executor(None, lambda c=chunk: [load_photo_image(*r, size) for r in c])
         idx = [i for i, im in enumerate(imgs) if im is not None]
         skipped += len(chunk) - len(idx)
         if idx:

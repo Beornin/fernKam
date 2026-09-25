@@ -89,6 +89,10 @@ async def main():
     assert vc.pick_model(models, "qwen2.5vl:7b") == "qwen2.5vl:7b"
     assert vc.pick_model(models, "not-pulled:1b") == "qwen2.5vl:7b"
     assert vc.pick_model([], "") is None
+    pulled = [{"name": "qwen2.5vl:7b", "size_gb": 6.0}, {"name": "qwen3-vl:8b", "size_gb": 6.1},
+              {"name": "qwen3-vl:32b", "size_gb": 20.9}]
+    assert vc.pick_model(pulled, "") == "qwen3-vl:32b"      # newest family, largest size
+    assert vc.pick_model(pulled, "qwen3-vl:8b") == "qwen3-vl:8b"
 
     # 2. Ollama API: the question names the tag with its category, the photo
     #    goes as a JPEG, temperature 0; the answer and P(yes) come back.

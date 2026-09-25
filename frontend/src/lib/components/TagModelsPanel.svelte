@@ -110,6 +110,9 @@
 							{:else}
 								<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">not installed</span>
 							{/if}
+							{#if m.recommended_24gb && info?.gpu}
+								<span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300" title="Recommended with a 24 GB GPU">recommended</span>
+							{/if}
 							{#if m.text_installed && m.source !== 'builtin'}
 								<span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300" title="Can find photos by a tag's name">finds by name</span>
 							{/if}
@@ -187,7 +190,7 @@
 						{#if !info.vision.reachable}
 							<p class="text-amber-300 flex items-center gap-1"><AlertTriangle size={11} /> Not reachable. Is Ollama running? (<span class="font-mono">ollama serve</span>)</p>
 						{:else if !info.vision.models.length}
-							<p class="text-amber-300">Ollama is running but has no vision model. Pull one, e.g. <span class="font-mono">ollama pull qwen2.5vl:7b</span></p>
+							<p class="text-amber-300">Ollama is running but has no vision model. Pull one: <span class="font-mono">ollama pull qwen3-vl:32b</span> (most accurate on 24 GB) or <span class="font-mono">qwen3-vl:8b</span> (quick)</p>
 						{:else}
 							<div class="flex items-center gap-2">
 								<Check size={12} class="text-emerald-400" />

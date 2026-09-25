@@ -276,6 +276,7 @@ export interface ImageModelInfo {
   size_mb?: number;
   text_size_mb?: number;
   gpu_recommended?: boolean;
+  recommended_24gb?: boolean;
   export_command?: string | null;
 }
 
@@ -299,6 +300,38 @@ export interface TagReviewDetail {
   found_by_name: number;
   name_models: string[];
   vision: VisionAgreement;
+  species: TagSpecies | null;
+}
+
+export interface TagSpecies {
+  taxon_key: number;
+  scientific_name: string;
+  common_name: string | null;
+  rank: string | null;
+  class_name: string | null;
+  range_fetched_at: string | null;
+  places: number;
+  places_with_data: number;
+}
+
+export interface GbifTaxon {
+  taxon_key: number;
+  scientific_name: string;
+  common_name: string | null;
+  rank: string;
+  class_key: number;
+  class_name: string | null;
+  family: string | null;
+  synonym: boolean;
+}
+
+/** GBIF says the linked species is not (or hardly) recorded here and then. */
+export interface RangeVerdict {
+  status: 'absent' | 'rare';
+  when: string;
+  species: number;
+  class: number;
+  year: number;
 }
 
 export interface TagReviewPhoto {
@@ -312,6 +345,7 @@ export interface TagReviewPhoto {
   /** Local vision model's answer: 1 yes, 0 no, null unsure/unchecked. */
   vision: number | null;
   vision_p: number | null;
+  range: RangeVerdict | null;
   rejected_before: boolean;
 }
 
@@ -568,6 +602,14 @@ export const api = {
       fetch(`/api/tag-review/tags/${id}/check`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(r => okJson<{ task_id: string | null; queued: number; message: string }>(r)),
     models: () => get<TagModelsInfo>('/api/tag-review/models'),
+    speciesSearch: (q: string) => get<GbifTaxon[]>('/api/tag-review/species-search', { q }),
+    linkSpecies: (id: number, t: GbifTaxon) =>
+      fetch(`/api/tag-review/tags/${id}/species`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) })
+        .then(r => okJson<{ task_id: string }>(r)),
+    refreshSpecies: (id: number) =>
+      fetch(`/api/tag-review/tags/${id}/species/refresh`, { method: 'POST' }).then(r => okJson<{ task_id: string }>(r)),
+    unlinkSpecies: (id: number) =>
+      fetch(`/api/tag-review/tags/${id}/species`, { method: 'DELETE' }).then(r => okJson<{ unlinked: number }>(r)),
     installModel: (key: string) =>
       fetch(`/api/tag-review/models/${key}/install`, { method: 'POST' }).then(r => okJson<{ task_id: string }>(r)),
     installText: (key: string) =>

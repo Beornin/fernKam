@@ -22,6 +22,14 @@ model scenes, because that is what the user's decisions reward. There is one
 stacker per combination of models, so a photo one model has not indexed yet
 is judged by a combiner trained for the models it does have.
 
+Where and when a photo was taken are experts too (photo_context): "place"
+and "season" learn from the user's approvals where and when a tag turns up,
+and "range" (species_range) brings GBIF's records of a linked species, so a
+heron in Norway in January is doubted even on a first trip there. They join
+the same stacking, so each tag learns how much its context matters: a lot
+for a migrant species, nothing for "Sunset". They re-score candidates; only
+image models can find them.
+
 Vectors are unit length, so ranking photos by one expert's w·x is ranking by
 cosine to w, and each model's HNSW index finds its best candidates directly.
 Candidates from every model are pooled and scored by the whole ensemble.
@@ -59,6 +67,8 @@ import numpy as np
 from sqlalchemy import text
 
 from fernkam import embed_index as ei
+from fernkam import photo_context as pc
+from fernkam import species_range as sr
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +81,7 @@ WEAK_WEIGHT = 0.25           # a random photo is only probably not this tag
 THRESHOLD = 0.5
 MAX_SUGGESTIONS = 300        # per tag, best first
 MIN_PREVALENCE = 0.002       # floor for the prior of a newly used tag
+CONTEXT_EXPERTS = {"place", "season", "range"}   # re-score only; never decide who is a negative
 NAME_SUGGESTIONS = 60        # find_by_name: photos per tag
 STACK_L2 = 1e-2
 
@@ -192,6 +203,8 @@ class Ensemble:
     cv_recall: Optional[float] = None
     weak_scores: Optional[np.ndarray] = None   # held-out library-wide score of each weak negative
     fold_count: int = field(default=0)
+    oof_z: Optional[np.ndarray] = field(default=None, repr=False)      # experts' held-out logits
+    oof_avail: Optional[np.ndarray] = field(default=None, repr=False)
 
     def logits(self, vecs: dict[str, np.ndarray], masks: Optional[dict[str, np.ndarray]] = None) -> np.ndarray:
         """Balanced logits for n photos. vecs[space] is (n, dim); masks[space]
@@ -233,8 +246,19 @@ def fit_ensemble(xs: dict[str, np.ndarray], masks: dict[str, np.ndarray], y: np.
     if ens.weak_scores is None:
         return ens
     widx = np.flatnonzero(is_weak)
-    ws = np.clip(ens.weak_scores, 1e-9, 1 - 1e-9)
-    likely = widx[np.log(ws / (1 - ws)) - ens.shift > 0]
+    # Judged on appearance alone: where and when adjust the evidence, but they
+    # must not decide which photos stop counting as negatives. Otherwise every
+    # photo taken at the heron's marsh in season looks like a hidden heron,
+    # drops out, and nothing is left to teach that the place alone is not enough.
+    ctx = [j for j, e in enumerate(ens.experts) if e.space in CONTEXT_EXPERTS]
+    if ctx and len(ctx) < len(ens.experts) and ens.oof_z is not None:
+        avail = ens.oof_avail.copy()
+        avail[:, ctx] = False
+        balanced = _apply_stackers(ens.stackers, ens.oof_z, avail)[widx]
+    else:
+        ws = np.clip(ens.weak_scores, 1e-9, 1 - 1e-9)
+        balanced = np.log(ws / (1 - ws)) - ens.shift
+    likely = widx[balanced > 0]
     if not len(likely):
         return ens
     keep = np.ones(len(y), bool)
@@ -327,6 +351,7 @@ def _fit_once(xs: dict[str, np.ndarray], masks: dict[str, np.ndarray], y: np.nda
 
     z = np.column_stack(z_cols)
     avail = np.column_stack(got_cols)
+    ens.oof_z, ens.oof_avail = z, avail
     if k == 1:
         ens_oof = np.where(avail[:, 0], z[:, 0], 0.0)
     else:
@@ -421,10 +446,41 @@ async def _ids(db, sql: str, params: dict) -> list[int]:
     return [r[0] for r in (await db.execute(text(sql), params)).all()]
 
 
-async def _matrix(db, spaces: list[ei.Space], ids: list[int]) -> tuple[dict, dict]:
+@dataclass
+class Context:
+    """What the context experts need for one tag: the library's place
+    centres and the linked species' GBIF range table."""
+    centers: Optional[np.ndarray] = None
+    range_table: Optional["sr.RangeTable"] = None
+
+
+async def _context_spaces(db, tag_id: int) -> tuple[list, Context]:
+    """Place and season from the library's own GPS and dates; range when the
+    tag is linked to a GBIF species with data fetched."""
+    ctx = Context(await pc.library_centers(db), await sr.RangeTable.load(db, tag_id))
+    spaces: list = []
+    if ctx.centers is not None:
+        spaces.append(pc.place_space(len(ctx.centers)))
+    if (await db.execute(text("SELECT EXISTS (SELECT 1 FROM photos WHERE taken_at IS NOT NULL)"))).scalar():
+        spaces.append(pc.SEASON)
+    if ctx.range_table is not None:
+        spaces.append(sr.RANGE)
+    return spaces, ctx
+
+
+async def _matrix(db, spaces: list, ids: list[int], ctx: Optional[Context] = None) -> tuple[dict, dict]:
     """Vectors of ids in every space: ({space: (n, dim)}, {space: has-vector mask})."""
     xs, masks = {}, {}
+    meta = None
     for sp in spaces:
+        if isinstance(sp, pc.ContextSpace):
+            if meta is None:
+                meta = await pc.photo_meta(db, ids)
+            if sp.key == "range":
+                xs[sp.key], masks[sp.key] = sr.range_vectors(ctx.range_table if ctx else None, meta, ids)
+            else:
+                xs[sp.key], masks[sp.key] = pc.context_vectors(sp, meta, ids, ctx.centers if ctx else None)
+            continue
         got = await ei.fetch_vectors(db, sp, ids)
         x = np.zeros((len(ids), sp.dim), np.float32)
         m = np.zeros(len(ids), bool)
@@ -444,9 +500,11 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
         "SELECT path::text, is_person FROM tags WHERE id = :t"), {"t": tag_id})).first()
     if not tag or tag.is_person:
         return None
-    spaces = await ei.active_spaces(db)
-    if not spaces:
+    image_spaces = await ei.active_spaces(db)
+    if not image_spaces:
         return None
+    context_spaces, ctx = await _context_spaces(db, tag_id)
+    spaces = image_spaces + context_spaces
     path = tag.path
     p = {"path": path, "tid": tag_id}
 
@@ -467,7 +525,7 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
         return None
 
     ids = pos_ids + neg_ids + weak_ids
-    xs, masks = await _matrix(db, spaces, ids)
+    xs, masks = await _matrix(db, spaces, ids, ctx)
     y = np.array([1] * len(pos_ids) + [0] * (len(neg_ids) + len(weak_ids)))
     is_weak = np.array([False] * (len(pos_ids) + len(neg_ids)) + [True] * len(weak_ids))
 
@@ -483,15 +541,19 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
             None, fit_ensemble, xs, masks, y, is_weak, tagged / max(indexed, 1))
     except ValueError:
         return None
-    used = [ei.space(e.space) for e in ens.experts]
+    by_key = {sp.key: sp for sp in spaces}
+    used = [by_key[e.space] for e in ens.experts]
+    used_images = [sp for sp in used if not isinstance(sp, pc.ContextSpace)]
+    if not used_images:
+        return None   # context alone cannot find or judge photos
     n_pos, n_neg = await label_counts(db, path)
 
     # Unverified links: how much the ensemble believes each one.
     linked = await _ids(db, """
         SELECT photo_id FROM photo_tags WHERE tag_id = :tid AND verified_at IS NULL""", p)
     if linked:
-        lx, lm = await _matrix(db, used, linked)
-        seen = np.logical_or.reduce([lm[s.key] for s in used])
+        lx, lm = await _matrix(db, used, linked, ctx)
+        seen = np.logical_or.reduce([lm[s.key] for s in used_images])
         scores = ens.scores(lx, lm, library=False)
         keep = [(pid, float(s)) for pid, s, ok in zip(linked, scores, seen) if ok]
         if keep:
@@ -507,15 +569,15 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
     where = f"{_SUGGESTABLE} AND p.id <> ALL(CAST(:sampled AS bigint[]))"
     pool: set[int] = set()
     for e, sp in zip(ens.experts, used):
-        if e.weight <= 0:
-            continue
+        if e.weight <= 0 or isinstance(sp, pc.ContextSpace):
+            continue   # context experts re-score; they cannot search
         rows = (await db.execute(text(sp.nearest_sql(where)), {
             **p, "w": ei.pgvec(e.coef[:-1]), "k": MAX_SUGGESTIONS, "sampled": weak_ids})).all()
         pool.update(r[0] for r in rows)
     picks: list[tuple[int, float]] = []
     if pool:
         cand = sorted(pool)
-        cx, cm = await _matrix(db, used, cand)
+        cx, cm = await _matrix(db, used, cand, ctx)
         picks = [(pid, float(s)) for pid, s in zip(cand, ens.scores(cx, cm)) if s >= THRESHOLD]
     if ens.weak_scores is not None:
         picks += [(pid, float(s)) for pid, s in zip(weak_ids, ens.weak_scores) if s >= THRESHOLD]
@@ -653,6 +715,15 @@ async def find_by_name(db, tag_id: int) -> dict:
         used.append(key)
     if not fused:
         return {"suggestions": 0, "models": used}
+    # A linked species is not suggested where and when GBIF has no record of it.
+    table = await sr.RangeTable.load(db, tag_id)
+    if table is not None:
+        meta = await pc.photo_meta(db, list(fused))
+        for pid in list(fused):
+            lat, lon, _d, _h, month = meta.get(pid, (None,) * 5)
+            st = table.status(lat, lon, month)
+            if st and st["status"] == "absent":
+                del fused[pid]
     top = sorted(fused.items(), key=lambda t: -t[1])[:NAME_SUGGESTIONS]
     best = len(used) / 60.0    # a photo ranked first by every model
     await db.execute(text("DELETE FROM tag_suggestions WHERE tag_id = :tid AND source = 'name'"), p)

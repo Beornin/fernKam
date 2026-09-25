@@ -236,7 +236,8 @@ suggestions until you accept them.
 
 | Model | Good at | How it arrives |
 |---|---|---|
-| SigLIP 2 (so400m) | general scenes, objects, activities; much stronger than CLIP | download, 1.7 GB |
+| SigLIP 2 (so400m, 512 px) | the same, plus small or distant subjects; reads 960 px thumbnails | download, 1.7 GB |
+| SigLIP 2 (so400m, 384 px) | general scenes, objects, activities; much stronger than CLIP | download, 1.7 GB |
 | SigLIP 2 (base) | the same family, fine on a CPU | download, 370 MB |
 | BioCLIP 2 | wildlife; tells similar species apart | built once from the official weights (about 1.7 GB, plus PyTorch in a throwaway uv environment) |
 
@@ -252,13 +253,26 @@ asked "Does this photo show *Heron* (category: Wildlife > Birds)?" for each phot
 panel shows how often it agreed with you. **Learn all tags** with *+ vision check* also checks
 each tag's best 30 new suggestions. The answers are never used as labels.
 
+**Where and when.** Two more experts learn from your approvals where a tag turns up (closeness
+to the clusters your photos are taken in) and when (day of year, time of day). A photo without
+GPS or a date is judged by what it has. For a species, **Link species…** (the learning panel)
+finds it on GBIF by common or scientific name. fernKam then fetches, for each 1° cell your
+photos are in (up to 800), how many records of the species GBIF holds in the surrounding 3°×3°
+box per month, and the same for its whole class (all birds, say). The species' share of those
+records is the prior: it corrects for places where people simply record a lot. It joins the
+tag's ensemble as a third context expert, so its weight is learned per tag. Photos taken where
+and when the species is not recorded get a red *not here* badge (amber *rare* below 0.2% of the
+class's records), and find-by-name skips them. **Learn all tags** fetches range data for new
+places first. Only aggregate counts are fetched, never anything about your photos beyond the
+boxes asked about.
+
 **Find by name** (a tag that is not learning yet). The models that have a text tower (CLIP,
 and SigLIP 2 once its text tower is added) rank photos by how well they match the tag's name.
 The best 60 appear under Suggestions marked *name*. Approve 8 and the tag starts learning.
 
 | Database | Files | Disk reads |
 |---|---|---|
-| `photo_tags.verified_at`, `tag_rejections`, `tag_suggestions`, `tag_models`, `photo_embeddings`, `tag_checks`; added or removed tags flagged "needs sync" | none (deferred to DB → Files); model files in `backend/data/models/` | thumbnails (models and vision checks read the 480/960 px thumbnails) |
+| `photo_tags.verified_at`, `tag_rejections`, `tag_suggestions`, `tag_models`, `photo_embeddings`, `tag_checks`, `tag_species`, `gbif_cell_counts`; added or removed tags flagged "needs sync" | none (deferred to DB → Files); model files in `backend/data/models/` | thumbnails (models and vision checks read the 480/960 px thumbnails) |
 
 ---
 

@@ -29,7 +29,7 @@ _THUMB_SIZE = "md"
 _BATCH = 64
 
 
-def load_photo_image(pid: int, album: str, fname: str):
+def load_photo_image(pid: int, album: str, fname: str, size: str = _THUMB_SIZE):
     """The picture an image model sees: the cached thumbnail, or one generated
     now for photos the thumbnail backfill never reached. A PIL image or None.
     Shared by CLIP and the extra Tag Review models (embed_index)."""
@@ -37,9 +37,9 @@ def load_photo_image(pid: int, album: str, fname: str):
     from PIL import Image
     from fernkam.thumbnails import generate_thumbnail_bytes, photo_disk_path, read_thumbnail_from_disk
 
-    data = read_thumbnail_from_disk(pid, _THUMB_SIZE)
+    data = read_thumbnail_from_disk(pid, size)
     if data is None:
-        data = generate_thumbnail_bytes(photo_disk_path(album, fname), _THUMB_SIZE)
+        data = generate_thumbnail_bytes(photo_disk_path(album, fname), size)
     if not data:
         return None
     try:

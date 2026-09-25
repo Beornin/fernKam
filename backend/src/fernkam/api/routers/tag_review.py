@@ -20,7 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
-from fernkam import embed_index, embed_models, tag_learning, vision_check
+from fernkam import embed_index, embed_models, photo_context, species_range, tag_learning, vision_check
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,21 @@ async def tag_detail(tag_id: int, db: DB) -> dict:
         "found_by_name": by_name,
         "name_models": await tag_learning.name_models(db),
         "vision": await vision_check.agreement(db, tag_id),
+        "species": await _species(db, tag_id),
     }
+
+
+async def _species(db, tag_id: int) -> dict | None:
+    row = (await db.execute(text("SELECT * FROM tag_species WHERE tag_id = :t"), {"t": tag_id})).first()
+    if not row:
+        return None
+    cells = await species_range.library_cells(db)
+    have = {r[0] for r in (await db.execute(text(
+        "SELECT cell FROM gbif_cell_counts WHERE taxon_key = :k AND month = 0"), {"k": row.taxon_key})).all()}
+    return {"taxon_key": row.taxon_key, "scientific_name": row.scientific_name,
+            "common_name": row.common_name, "rank": row.rank, "class_name": row.class_name,
+            "range_fetched_at": row.range_fetched_at.isoformat() if row.range_fetched_at else None,
+            "places": len(cells), "places_with_data": len(have & set(cells))}
 
 
 @router.get("/tags/{tag_id}/photos")
@@ -181,6 +195,15 @@ async def tag_photos(
         ORDER BY {order}
         LIMIT :limit OFFSET :offset
     """), {"t": tag_id, "limit": limit, "offset": offset})).all()
+    # Where and when GBIF says the linked species is not (or hardly) recorded.
+    ranges: dict[int, dict] = {}
+    table = await species_range.RangeTable.load(db, tag_id)
+    if table is not None and rows:
+        meta = await photo_context.photo_meta(db, [r.id for r in rows])
+        for pid, (lat, lon, _d, _h, month) in meta.items():
+            st = table.status(lat, lon, month)
+            if st:
+                ranges[pid] = st
     return {
         "total": rows[0].total if rows else 0,
         "photos": [
@@ -191,6 +214,7 @@ async def tag_photos(
              "source": r.source,
              "vision": r.vision,
              "vision_p": round(float(r.vision_p), 3) if r.vision_p is not None else None,
+             "range": ranges.get(r.id),
              "rejected_before": r.rejected_before and state != "rejected"}
             for r in rows
         ],
@@ -322,7 +346,7 @@ async def check_tag(
     if not st["reachable"]:
         raise HTTPException(400, f"No vision model server at {st['url']}. Is Ollama running?")
     if not st["model"]:
-        raise HTTPException(400, "The server has no vision model. With Ollama: ollama pull qwen2.5vl:7b")
+        raise HTTPException(400, "The server has no vision model. With Ollama: ollama pull qwen3-vl:8b")
     ids = await vision_check.photos_to_check(db, tag_id, state, limit, st["model"])
     if not ids:
         return {"task_id": None, "queued": 0, "message": "Everything here is already checked"}
@@ -355,6 +379,91 @@ async def check_tag(
     return {"task_id": task_id, "queued": len(ids), "message": "running"}
 
 
+# ── species (GBIF range priors) ──────────────────────────────────────────────
+
+@router.get("/species-search")
+async def species_search(q: str = Query(..., min_length=2)) -> list[dict]:
+    """GBIF taxa for a common or scientific name."""
+    import httpx
+    try:
+        return await species_range.search(q)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Could not reach GBIF ({exc.__class__.__name__}). Is the internet reachable?")
+
+
+async def _start_range_fetch(tag_id: int, name: str) -> str:
+    from fernkam.task_manager import task_manager
+    task_id = await task_manager.create_task("species_range", f"Fetching GBIF range data for {name}…")
+
+    async def run() -> None:
+        from fernkam.db.session import async_session_factory
+
+        async def progress(done: int, total: int) -> None:
+            await task_manager.update_task(task_id, message=f"GBIF range for {name}: {done}/{total} places",
+                                           progress={"done": done, "total": total})
+        try:
+            async with async_session_factory() as bdb:
+                r = await species_range.fetch_range(bdb, tag_id, progress)
+                msg = f"GBIF range for {name}: {r['cells']} places ready"
+                if (await bdb.execute(text("SELECT 1 FROM tag_models WHERE tag_id = :t"), {"t": tag_id})).first():
+                    await task_manager.update_task(task_id, message=f"{msg}; relearning the tag…")
+                    await tag_learning.train_tag(bdb, tag_id)
+                    msg += "; tag relearned with it"
+                await task_manager.update_task(task_id, status="completed", message=msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("GBIF range fetch failed")
+            await task_manager.update_task(task_id, status="failed", message=f"GBIF: {str(exc)[:400]}")
+
+    asyncio.create_task(run(), name=f"fernkam-range-{tag_id}")
+    return task_id
+
+
+@router.post("/tags/{tag_id}/species")
+async def link_species(
+    tag_id: int,
+    db: DB,
+    taxon_key: int = Body(...),
+    scientific_name: str = Body(...),
+    class_key: int = Body(...),
+    common_name: str | None = Body(None),
+    rank: str | None = Body(None),
+    class_name: str | None = Body(None),
+) -> dict:
+    """Link a tag to a GBIF taxon and fetch its range around the library's
+    places (then relearn the tag if it is learning)."""
+    await _tag(db, tag_id)
+    if taxon_key == class_key:
+        raise HTTPException(400, "Link a species, genus or family, not a whole class")
+    await db.execute(text("""
+        INSERT INTO tag_species (tag_id, taxon_key, scientific_name, common_name, rank, class_key, class_name)
+        VALUES (:t, :k, :sn, :cn, :r, :ck, :cl)
+        ON CONFLICT (tag_id) DO UPDATE SET taxon_key = EXCLUDED.taxon_key,
+            scientific_name = EXCLUDED.scientific_name, common_name = EXCLUDED.common_name,
+            rank = EXCLUDED.rank, class_key = EXCLUDED.class_key, class_name = EXCLUDED.class_name,
+            linked_at = now(), range_fetched_at = NULL
+    """), {"t": tag_id, "k": taxon_key, "sn": scientific_name, "cn": common_name, "r": rank,
+           "ck": class_key, "cl": class_name})
+    await db.commit()
+    return {"task_id": await _start_range_fetch(tag_id, common_name or scientific_name)}
+
+
+@router.post("/tags/{tag_id}/species/refresh")
+async def refresh_species(tag_id: int, db: DB) -> dict:
+    """Fetch range data for places added since the last fetch."""
+    row = (await db.execute(text(
+        "SELECT scientific_name, common_name FROM tag_species WHERE tag_id = :t"), {"t": tag_id})).first()
+    if not row:
+        raise HTTPException(400, "This tag is not linked to a species")
+    return {"task_id": await _start_range_fetch(tag_id, row.common_name or row.scientific_name)}
+
+
+@router.delete("/tags/{tag_id}/species")
+async def unlink_species(tag_id: int, db: DB) -> dict:
+    await db.execute(text("DELETE FROM tag_species WHERE tag_id = :t"), {"t": tag_id})
+    await db.commit()
+    return {"unlinked": tag_id}
+
+
 # ── models ───────────────────────────────────────────────────────────────────
 
 @router.get("/models")
@@ -377,6 +486,7 @@ async def models(db: DB) -> dict:
         out.append({
             "key": m.key, "label": m.label, "purpose": m.purpose, "dim": m.dim, "source": m.source,
             "size_mb": m.size_mb, "text_size_mb": m.text_size_mb, "gpu_recommended": m.gpu_recommended,
+            "recommended_24gb": m.recommended_24gb,
             "installed": embed_models.installed(m.key), "text_installed": embed_models.text_installed(m.key),
             "indexed": counts[m.key],
             "export_command": embed_models.export_command(m.key) if m.source == "export" else None,
@@ -471,6 +581,14 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
                     if task and task.status == "cancelled":
                         return
                     try:
+                        linked = (await bdb.execute(text(
+                            "SELECT 1 FROM tag_species WHERE tag_id = :t"), {"t": tid})).first()
+                        if linked:   # places added since the last fetch
+                            try:
+                                await species_range.fetch_range(bdb, tid)
+                            except Exception:  # noqa: BLE001 — learn without fresh range data
+                                logger.warning("GBIF range update for tag %s failed", tid, exc_info=True)
+                                await bdb.rollback()
                         r = await tag_learning.train_tag(bdb, tid)
                         suggestions += (r or {}).get("suggestions", 0)
                     except Exception:  # noqa: BLE001
