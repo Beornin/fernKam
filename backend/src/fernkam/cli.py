@@ -528,7 +528,9 @@ def cmd_verify(
 
 @app.command("serve")
 def cmd_serve(
-    host: str = typer.Option("0.0.0.0", "--host"),
+    # Loopback only by default: the API is unauthenticated and can move, trash
+    # and delete originals. Pass --host 0.0.0.0 to reach it from another device.
+    host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     workers: int = typer.Option(1, "--workers"),
     reload: bool = typer.Option(False, "--reload"),

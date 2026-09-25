@@ -227,13 +227,85 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ── Cross-site protection ──────────────────────────────────────────────────
+# There is no login: anything that can send this server a request can trash
+# originals, move folders or truncate the catalogue. The UI is served by this
+# server (or proxied by the Vite dev server), so it is always same-origin and
+# needs no CORS. The old `allow_origins=["*"]` let any web page open in the
+# user's browser read the library's API — and a cross-site POST needs no CORS
+# at all, so a page could also fire /api/sync/reset-db blind.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _extra_origins() -> set[str]:
+    from fernkam.config import get_settings
+    return {o.strip().rstrip("/") for o in get_settings().cors_origins.split(",") if o.strip()}
+
+
+if _extra_origins():
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=sorted(_extra_origins()),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+def _ip(hostname: str):
+    import ipaddress
+    try:
+        return ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        return None
+
+
+def _is_loopback(hostname: str) -> bool:
+    h = hostname.lower()
+    ip = _ip(h)
+    return h == "localhost" or h.endswith(".localhost") or bool(ip and ip.is_loopback)
+
+
+def _is_local_host(hostname: str) -> bool:
+    """A name a DNS-rebinding page cannot hide behind: an IP literal, localhost,
+    or this machine's own hostname."""
+    import socket
+    h = hostname.lower()
+    me = socket.gethostname().lower()
+    return _ip(h) is not None or _is_loopback(h) or h == me or h.startswith(me + ".")
+
+
+def _origin_allowed(origin: str, host_header: str) -> bool:
+    from urllib.parse import urlsplit
+    if origin.rstrip("/") in _extra_origins():
+        return True
+    parts = urlsplit(origin)
+    if not parts.hostname:
+        return False  # "null": sandboxed iframes, file:// pages
+    # Any page served from this machine's loopback — including the Vite dev
+    # server on :5173, whose proxy rewrites Host to :8000.
+    if _is_loopback(parts.hostname):
+        return True
+    # Same origin as the address we were reached on (LAN access with
+    # --host 0.0.0.0), unless that address is a foreign domain rebound to us.
+    return parts.netloc == host_header and _is_local_host(parts.hostname)
+
+
+@app.middleware("http")
+async def reject_cross_site_writes(request, call_next):
+    """403 any state-changing request a browser sent on behalf of another site.
+
+    Browsers always attach Origin to cross-origin POST/PUT/PATCH/DELETE, so a
+    missing Origin means a non-browser client (curl, scripts) and is allowed.
+    """
+    if request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin is not None and not _origin_allowed(origin, request.headers.get("host", "")):
+            from fastapi.responses import JSONResponse
+            logging.getLogger("fernkam.request").warning(
+                "Blocked cross-site %s %s from Origin %s", request.method, request.url.path, origin)
+            return JSONResponse(status_code=403, content={
+                "detail": f"Cross-site request from {origin} blocked. Add it to CORS_ORIGINS if it is yours."})
+    return await call_next(request)
 
 
 @app.middleware("http")
