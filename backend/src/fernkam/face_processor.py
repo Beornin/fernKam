@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path

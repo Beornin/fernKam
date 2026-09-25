@@ -2,7 +2,6 @@
 
 Run directly: python backend/tests/test_scan_skip.py
 """
-import os
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone

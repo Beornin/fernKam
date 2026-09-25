@@ -12,8 +12,8 @@ from sqlalchemy import exists, func, select, update
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
-from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate, TagOut
-from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
+from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate
+from fernkam.db.models.photos import Face, Photo, PhotoTag
 from fernkam.services.photo_query import PhotoFilters, apply_cursor, apply_sort, build_photo_query, count_photos, encode_cursor
 
 router = APIRouter()

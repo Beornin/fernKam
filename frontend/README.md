@@ -30,6 +30,7 @@ src/
 │   ├── smart-albums/       saved searches (keyset-paginated)
 │   ├── duplicates/  stacks/  date-inference/  workflows/
 │   ├── maintenance/        rescan, DB stats/VACUUM/REINDEX, XMP write-back/refresh, backfills
+│   ├── outside-changes/    edits other programs made to library files; restore replaced values
 │   ├── tasks/  logs/  settings/
 │   ├── albums/ people/     older standalone pages, no longer linked from the nav
 │   └── tags/ map/ timeline/ search/ sync/   legacy URLs that redirect into photos/ or maintenance/

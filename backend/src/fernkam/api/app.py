@@ -115,11 +115,11 @@ async def lifespan(app: FastAPI):
     try:
         engine = get_async_engine()
         async with engine.begin() as conn:
-            result = await conn.execute(text("SELECT 1"))
+            await conn.execute(text("SELECT 1"))
             print("✓ Database connection successful")
     except Exception as e:
         print(f"✗ Database connection failed: {e}")
-        print(f"  Check your PostgreSQL configuration in .env file")
+        print("  Check your PostgreSQL configuration in .env file")
     # Ensure pgvector extension/column/index/backfill are in place
     try:
         from fernkam.db.pgvector_setup import ensure_pgvector
@@ -410,7 +410,6 @@ async def health() -> dict:
 async def shutdown() -> dict:
     """Shutdown the server."""
     # Use signal to shutdown gracefully
-    import asyncio
     import threading
     
     def force_shutdown():

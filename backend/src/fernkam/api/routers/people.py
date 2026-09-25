@@ -1,7 +1,6 @@
 ﻿from __future__ import annotations
 
 from typing import Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import func, select, text, update

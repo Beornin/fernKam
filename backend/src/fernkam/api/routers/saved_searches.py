@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from fernkam.api.deps import DB
 from fernkam.api.schemas import PhotoPage, PhotoSummary

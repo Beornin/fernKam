@@ -8,12 +8,16 @@ The short version:
 - **The catalogue is PostgreSQL. Your photos are never modified unless you ask.** Tagging,
   rating, labelling, captioning and naming faces change the database only. They flag the photo
   as "needs sync".
-- **Writing to files is explicit.** Metadata is written into the files only by
-  **Maintenance → DB → Files** (or a stack's *Sync tags*). Files are moved or deleted only by
+- **Writing to files is explicit.** Metadata is written into the files (embedded XMP; never
+  sidecars) only by **Maintenance → DB → Files**, right-click → *Write metadata to file*, or a
+  stack's *Sync tags*. Files are moved or deleted only by
   the Workflows page, Duplicates auto-clean, promote-to-portfolio and Trash. All of these
   preview first or ask for confirmation.
 - **Deleting means the Recycle Bin.** Trash and duplicate auto-clean use the system trash, and
   the catalogue row is kept but hidden (`status = 0`).
+- **Edits made outside fernKam are honoured.** fernKam refreshes from disk at every start and
+  watches the library while running. Other programs' changes are merged in, you're told about
+  them on **Changed outside fernKam**, and files moved or renamed elsewhere keep their tags.
 - **Only one job that moves or removes files runs at a time.** A second library scan or file
   workflow is refused (HTTP 409) until the first has actually stopped. Searching, face work and
   indexing keep running alongside.
@@ -26,8 +30,11 @@ jobs can be cancelled between batches.
 ## Quick Scan / Import Photos
 
 **User action:** Home → **Quick Scan** (whole library), or **Import Photos** with a folder path.
-Also Maintenance → **Rescan Library**. The folder must be inside `LIBRARY_ROOT`, because photos
-are catalogued by their path relative to it.
+Also Maintenance → **Rescan Library**. It also runs by itself: in the background at every start
+(`SCAN_ON_STARTUP`), and a few seconds after the library watcher sees a change while fernKam is
+running (`WATCH_LIBRARY`; the scan then covers just the smallest folder holding the changes).
+An imported folder must be inside `LIBRARY_ROOT`, because photos are catalogued by their path
+relative to it; one outside it is refused.
 
 **What happens:**
 1. Walks the folder tree and compares each media file with the catalogue by path and
@@ -38,16 +45,24 @@ are catalogued by their path relative to it.
      writes four thumbnail sizes to the disk cache. Videos get a poster frame and a duration
      via ffmpeg.
    - **Changed file** (mtime differs from the one recorded at last sync by more than 2 s):
-     re-reads its metadata into the catalogue.
+     re-reads its metadata and merges it (see *Edits made outside fernKam*), and refreshes its
+     SHA-256. Its thumbnail is rebuilt and compared with the cached one: if the picture itself
+     changed, faces nobody reviewed are dropped and re-detected, confirmed faces get new crops,
+     and the photo is re-embedded for semantic search (at the end of the scan, if the CLIP model
+     is downloaded).
+   - **Moved or renamed file**: a file that disappeared from one path and appeared at another
+     with identical content (SHA-256) keeps its catalogue row. Tags, faces, rating, thumbnails
+     and embedding stay; only the path changes.
    - **Unchanged file**: skipped without opening it. A no-op rescan of ~116k files takes
      seconds.
-   - **File no longer on disk**: its catalogue row is deleted, together with its tags, faces
-     and rating. Safeguards: rows under folders that could not be read are kept, nothing is
+   - **File no longer on disk** (and not found elsewhere): its catalogue row is deleted,
+     together with its tags, faces and rating. Safeguards: rows under folders that could not be read are kept, nothing is
      deleted if the walk found no media at all (drive unplugged, empty `LIBRARY_ROOT`), and a
      row whose path changed during the scan is not deleted.
-2. Face detection runs on each new image as soon as its batch is saved, then one auto-confirm
-   sweep runs at the end (see *Face detection*).
-3. The task reports imported / refreshed / removed / unchanged counts, and a warning if
+2. Face detection runs on each new (or re-edited) image as soon as its batch is saved, then one
+   auto-confirm sweep runs at the end (see *Face detection*). New photos are added to semantic
+   search if the CLIP model is downloaded.
+3. The task reports imported / refreshed / moved / removed / unchanged counts, and a warning if
    removals were skipped.
 
 **Cancel:** stops after the current batch. Photos imported so far are kept, and nothing is
@@ -55,7 +70,7 @@ removed.
 
 | Database | Files | Disk reads |
 |---|---|---|
-| Adds, refreshes and removes photo rows; adds tags/faces from XMP | none (thumbnails go to `backend/data/thumbnails`) | new and changed files only |
+| Adds, refreshes, moves and removes photo rows; merges tags from XMP | none (thumbnails go to `backend/data/thumbnails`) | new and changed files only |
 
 ---
 
@@ -113,36 +128,72 @@ named at once.
 
 ## DB → Files (write metadata to files)
 
-**User action:** Maintenance → **DB → Files**. Stack page → *Sync tags* does the same for one
-stack's members, after merging their tags, best rating and label.
+**User action:** Maintenance → **DB → Files** (pending changes; tick *Rewrite every photo* to
+write all), or right-click a selection → **Write metadata to file**. A stack's *Sync tags* does
+the same for its members, after merging their tags, best rating and label.
 
 **What happens:**
-1. For every image, collects its tags (plus `People/<name>` for each named face), rating,
-   colour label, title, caption and named face regions.
-2. Writes them **into the file itself** (exiftool, overwriting in place; no `.xmp` sidecar) in
-   batches of 200 with 4 exiftool processes. Fields: `Subject`/`Keywords`,
-   `HierarchicalSubject`, `Rating`, `Label`, `Title`, `Description`, and MWG face regions,
-   which digiKam reads.
-3. Clears the "needs sync" flag and records each file's new modification time, so the next scan
-   doesn't mistake the write for an outside edit.
+1. **Checks first whether fernKam is out of date.** Any file whose modification time changed
+   since fernKam last read or wrote it was edited by another program. It's re-read and merged
+   first (see *Edits made outside fernKam*), so that edit is carried into the write rather than
+   overwritten.
+2. For each photo, collects its tags (plus `People/<name>` for each named face), rating, colour
+   label, title, caption and named face regions. A field emptied in fernKam is cleared in the
+   file too, if the file has it.
+3. Writes them **into the file itself** (exiftool, overwriting in place; no sidecars) in batches
+   of 200 with 4 exiftool processes. Fields: `Subject`/`Keywords`, `HierarchicalSubject`,
+   `Rating`, `Label`, `Title`, `Description`, and MWG face regions, which digiKam reads.
+4. For each file actually written: clears "needs sync", records the new modification time,
+   size and SHA-256, and reads the file back to record what it now holds (the merge ancestor).
+   A file exiftool couldn't write stays pending with the reason shown, so the next run retries
+   only the failures.
 
 | Database | Files | Disk reads |
 |---|---|---|
-| "needs sync" cleared; sync time and file mtime recorded | **writes metadata into the originals** | yes |
+| "needs sync" cleared for written files; mtime, size, hash and ancestor recorded | **writes metadata into the originals** | yes |
 
 ## Files → DB (refresh metadata from files)
 
-**User action:** Maintenance → **Files → DB**. Use it to pick up edits made in other software
-(digiKam, Lightroom…).
+**User action:** Maintenance → **Files → DB** (every photo), or right-click a selection →
+**Reread metadata from file**.
 
-**What happens:** re-reads every photo's metadata with exiftool and updates the catalogue
-(dates, camera, lens, GPS, dimensions, rating, label, title, caption). Missing files are
-skipped. A normal scan already does this for files whose modification time changed; this
-forces it for all of them.
+**What happens:** re-reads each photo's metadata with exiftool. Facts only the file knows
+(date, camera, lens, GPS, dimensions) are updated. Rating, label, title, caption and tags are
+merged, the same as during a scan (see *Edits made outside fernKam*). Missing files are skipped.
+Scans and the watcher already do this for files whose modification time changed; this forces
+it.
 
 | Database | Files | Disk reads |
 |---|---|---|
-| Photo metadata overwritten from the files | none | every file |
+| File facts updated; editable fields merged | none | every selected file |
+
+## Edits made outside fernKam
+
+fernKam is meant to be where you tag and organise, but an edit made in another program
+(Lightroom, digiKam, exiftool) is honoured, never silently lost.
+
+**How a field is decided.** For each photo fernKam remembers what the file held the last time it
+read or wrote it (rating, label, title, caption, tags). Compared with that:
+
+| changed in the file | changed in fernKam | result |
+|---|---|---|
+| yes | no | the file's value is taken |
+| no | yes | fernKam's value is kept and written on the next write-back |
+| yes | yes | **the file's value is taken** (outside edit honoured); fernKam's value is kept for restore |
+
+Tags merge as sets: tags added or removed in the file are added or removed here, and tags you
+added or removed in fernKam stay that way. A file that suddenly has none of its metadata is
+treated as damaged: nothing is cleared, and fernKam's values are written back. Face regions are
+not merged; fernKam's faces are what gets written.
+
+**Changed outside fernKam** (status-bar badge, Tools menu) lists every outside edit fernKam
+picked up: fields and tags changed, pictures re-edited, files moved or renamed, files that look
+damaged. Where an outside edit replaced an unsaved fernKam value, **Restore fernKam's value**
+puts it back and flags the photo for write-back. Dismissing an entry changes nothing.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| Merged fields and tags; entries on Changed outside fernKam | none | changed files |
 
 ---
 

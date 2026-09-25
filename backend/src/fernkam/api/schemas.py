@@ -64,14 +64,6 @@ class BatchDetectResult(BaseModel):
     details: list[dict] = []
 
 
-class PersonOut(BaseModel):
-    id: int
-    tag_id: int
-    name: str
-    face_count: int = 0
-    avatar_face_id: Optional[str] = None
-
-
 class PhotoSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

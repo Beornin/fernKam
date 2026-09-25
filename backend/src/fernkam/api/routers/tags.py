@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, text
 
 from fernkam.api.deps import DB
 from fernkam.api.schemas import TagOut
-from fernkam.db.models.photos import Photo, PhotoTag, Tag
+from fernkam.db.models.photos import PhotoTag, Tag
 
 router = APIRouter()
 

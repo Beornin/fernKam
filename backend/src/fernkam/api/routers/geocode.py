@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Query
 from sqlalchemy import select, text

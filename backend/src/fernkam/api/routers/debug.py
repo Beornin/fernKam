@@ -14,7 +14,7 @@ from sqlalchemy import func, select, text
 from fernkam.api.deps import DB
 from fernkam.config import get_settings
 from fernkam.db.models.photos import Photo
-from fernkam.services.photo_query import PhotoFilters, build_photo_query, count_photos
+from fernkam.services.photo_query import PhotoFilters, build_photo_query
 
 router = APIRouter()
 

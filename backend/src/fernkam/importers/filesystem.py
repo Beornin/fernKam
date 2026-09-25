@@ -26,7 +26,6 @@ log = logging.getLogger(__name__)
 
 # Parallelism tuning — auto-scaled to CPU count, overridable by env vars.
 _CPUS = os.cpu_count() or 4
-METADATA_CONCURRENCY = int(os.getenv("FERNKAM_META_CONCURRENCY", str(min(32, _CPUS * 2))))
 THUMB_CONCURRENCY = int(os.getenv("FERNKAM_THUMB_CONCURRENCY", str(max(4, _CPUS))))
 BATCH_COMMIT_SIZE = 50      # photos committed per transaction
 # Tolerance when comparing a file's on-disk mtime against the mtime recorded at
@@ -105,7 +104,7 @@ async def _gen_thumbs_for_photo(
     media_type: str,
 ) -> tuple[int, dict[str, bytes]]:
     """Generate all thumbnail sizes for one photo using a thread executor."""
-    from fernkam.thumbnails import generate_thumbnail_bytes, probe_video_duration
+    from fernkam.thumbnails import generate_thumbnail_bytes
     if media_type == "video":
         loop = asyncio.get_event_loop()
         async with sem:
@@ -353,7 +352,6 @@ async def scan_library(
     log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
 
     # ── Phase 2: import in batches with concurrent metadata reads ──────────
-    meta_sem = asyncio.Semaphore(METADATA_CONCURRENCY)
     added_ids: list[int] = []
 
     for batch_start in range(0, len(new_files), BATCH_COMMIT_SIZE):

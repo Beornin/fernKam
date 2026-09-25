@@ -11,7 +11,6 @@ from sqlalchemy.orm import selectinload
 from fernkam.api.deps import DB
 from fernkam.api.schemas import AlbumNode
 from fernkam.db.models.photos import Face, Photo, PhotoStack, PhotoTag, Tag
-from fernkam.media_types import is_raw
 
 router = APIRouter()
 
@@ -37,7 +36,6 @@ async def list_stacks(
 
     items = []
     for s in rows:
-        raw_count = 1 if s.has_raw else 0
         items.append({
             "id": s.id,
             "album_path": s.album_path,

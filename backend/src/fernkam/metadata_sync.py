@@ -1,9 +1,10 @@
 """Bidirectional metadata sync between image files (XMP) and the database.
 
 DigiKam parity:
-  - DB → File  : write tags, rating, caption, face regions to XMP/sidecar
+  - DB → File  : write tags, rating, caption, face regions into the file itself
+                 (embedded XMP; no sidecar files are ever written)
   - File → DB  : read XMP from file and update DB (pick up external edits)
-  - Conflict resolution: last-writer-wins by default; optionally prefer DB or File
+  - Conflicts  : three-way merge against photos.synced_meta (see sync_merge)
 
 File format (DigiKam-compatible XMP):
   - XMP:Subject / XMP:HierarchicalSubject (tags)
@@ -102,7 +103,6 @@ def _run_et(args: list[str], timeout: int = 120) -> Optional[dict]:
 async def read_file_metadata_async(file_path: Path) -> dict:
     """Async wrapper - runs blocking exiftool in thread executor."""
     import asyncio
-    from functools import partial
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, read_file_metadata, file_path)
 

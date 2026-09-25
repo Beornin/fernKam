@@ -44,7 +44,9 @@ async def list_outside_changes(
 
 @router.get("/count")
 async def count_outside_changes(db: DB) -> dict:
-    n = (await db.execute(text("SELECT count(*) FROM outside_changes WHERE NOT dismissed"))).scalar_one()
+    # Photos, not entries: one photo edited three times is one thing to look at.
+    n = (await db.execute(text(
+        "SELECT count(DISTINCT photo_id) FROM outside_changes WHERE NOT dismissed"))).scalar_one()
     return {"open": n}
 
 

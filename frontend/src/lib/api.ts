@@ -436,7 +436,7 @@ export const api = {
         .then(r => okJson<{ dismissed: number }>(r)),
   },
   sync: {
-    writeMetadata: (body?: { dirty_only?: boolean; album_path?: string }) =>
+    writeMetadata: (body?: { dirty_only?: boolean; album_path?: string; photo_ids?: number[] }) =>
       fetch('/api/sync/write-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string; scope?: string }>),
     refreshMetadata: (body?: { album_path?: string; photo_ids?: number[] }) =>
       fetch('/api/sync/refresh-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ status: string; task_id: string | null; queued: number; message: string }>),

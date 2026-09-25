@@ -3,7 +3,8 @@
 A self-hosted photo and video organizer for one person and one big library, built as a
 faster replacement for digiKam. Your files stay where they are on disk; fernKam keeps a
 PostgreSQL catalogue next to them for search, faces, tags and culling. It writes changes back
-to the files as XMP when you ask it to.
+into the files (embedded XMP) when you ask it to, and picks up edits other programs make to
+them.
 
 It runs as a local web app (FastAPI + SvelteKit). An optional Windows launcher (`fernKam.exe`)
 shows it in a native window.
@@ -27,8 +28,17 @@ shows it in a native window.
   stacks, date inference for undated photos, reverse geocoding (offline), and pipeline
   workflows (sort, move stray RAWs, remove unkept RAWs, promote to portfolio). Every workflow
   has a dry-run preview.
-- **XMP sync**: tags, ratings, labels, captions and named face regions are written to the files
-  in a digiKam-compatible format, and can be read back in.
+- **Metadata in the files**: tags, ratings, labels, captions and named face regions are written
+  into the files as embedded XMP, in a digiKam-compatible format. Only photos with unsaved
+  changes are written, and a file that can't be written stays pending for the next run.
+  Right-click any selection to reread it from, or write it to, its files.
+- **Stays in sync with other programs**: fernKam refreshes from disk at startup and watches the
+  library while running. An edit made elsewhere (Lightroom, digiKam, exiftool) is merged field by
+  field: changes only in the file are taken, unsaved fernKam edits survive, and where both
+  changed the same field the outside edit wins. You see all of it on **Changed outside
+  fernKam**, with one-click restore of any fernKam value that was replaced. Files moved or
+  renamed outside fernKam keep their tags, faces and ratings (matched by content hash, as in
+  digiKam). A re-edited picture gets fresh thumbnails, faces and search embedding.
 - **Maintenance**: background tasks you can watch and cancel, one-click database backup and
   restore, VACUUM/REINDEX, and an in-app log viewer.
 - **digiKam import**: one-time migration of photos, tags and faces from a digiKam MariaDB.
@@ -115,10 +125,13 @@ cd backend
 uv run fernkam serve
 ```
 
-Open <http://localhost:8000>. On the Home page, **Quick Scan** imports everything under
-`LIBRARY_ROOT`: metadata, thumbnails, and face detection as it goes. For semantic search, open
-**Discover** and start indexing. The CLIP model (~600 MB) downloads on first use. So does the
-face model (~300 MB), on the first scan.
+Open <http://localhost:8000>. The first start scans everything under `LIBRARY_ROOT` in the
+background (metadata, thumbnails, and face detection as it goes); watch it in the status bar.
+After that, every start refreshes whatever changed on disk, and the library is watched while
+fernKam runs. **Quick Scan** on the Home page runs the same scan on demand. For semantic search,
+open **Discover** and start indexing; after that, new and re-edited photos are indexed
+automatically. The CLIP model (~600 MB) downloads on first use. So does the face model
+(~300 MB), on the first scan.
 
 Coming from digiKam? See [Migrating from digiKam](#migrating-from-digikam).
 
@@ -170,6 +183,8 @@ variables override it. The ones you're most likely to touch:
 | `PG_DOCKER_CONTAINER` | unset | `fernkam-db` when using Docker, so backups run inside the container |
 | `EXIFTOOL_PATH`, `FFMPEG_PATH` | from `PATH` | Explicit tool locations |
 | `THUMB_CACHE_DIR` | `data/thumbnails` | Relative to `backend/` |
+| `SCAN_ON_STARTUP` | `true` | Refresh from disk in the background at every start |
+| `WATCH_LIBRARY` | `true` | Pick up outside edits while running (`WATCH_LIBRARY_POLLING=true` for network shares) |
 | `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU |
 | `CORS_ORIGINS` | none | Extra browser origins allowed to make changes (see below) |
 | `DEBUG` | `false` | Enables `/api/debug` query plans and SQL echo |
@@ -277,5 +292,7 @@ fernKam/
   `FERNKAM_DB_PORT=5433 docker compose up -d` and `uv run fernkam setup-db --docker --port 5433`.
 - **Faces/CLIP are slow**: check `preflight`'s onnxruntime line. `CPUExecutionProvider` only
   means CUDA 12 + cuDNN 9 aren't visible to `onnxruntime-gpu`.
+- **Import refuses a folder**: fernKam catalogues only what's under `LIBRARY_ROOT`. Copy the
+  photos into the library first, then import that folder.
 - **403 "Cross-site request blocked"**: you're reaching the UI through an address the server
   doesn't recognise (a reverse proxy, a custom hostname). Add that origin to `CORS_ORIGINS`.

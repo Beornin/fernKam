@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     mysql_url: str = "mysql+pymysql://root@localhost:3306/digikam"
 
     # App
-    app_name: str = "fernKam"
     debug: bool = False
     library_root: str = "D:/Pictures and Videos"
 
@@ -48,15 +47,13 @@ class Settings(BaseSettings):
 
     # Face matching thresholds. Every field in this class is read from the env
     # var of the same name, upper-cased, with no prefix — e.g. SUGGEST_THRESH.
-    # Unused: the auto-confirm threshold and k-NN margin now come from the face
-    # sensitivity slider on the Settings page (faces/_helpers.py).
-    auto_confirm_thresh: float = 0.85  # AUTO_CONFIRM_THRESH
+    # The auto-confirm threshold and k-NN margin are not here: they come from
+    # the face sensitivity slider on the Settings page (faces/_helpers.py).
     suggest_thresh: float = 0.5        # SUGGEST_THRESH
 
     # k-NN voting for auto-confirm sweep
     knn_k: int = 15                    # KNN_K: confirmed neighbours per face
     knn_min_votes: int = 2             # KNN_MIN_VOTES: min votes for top person
-    knn_margin: float = 0.05           # KNN_MARGIN: unused, see above
 
     # Detection quality gate (0 = disabled)
     min_det_score: float = 0.5         # MIN_DET_SCORE
@@ -80,10 +77,7 @@ class Settings(BaseSettings):
     # changes"): edits, additions, moves and deletions made by other programs
     # are picked up within seconds. Polling is for network shares that don't
     # deliver change notifications.
-    # Off by default for now: with it on, the server does not exit on SIGTERM
-    # (the watcher thread outlives shutdown), which would hang closing the
-    # launcher window. Being fixed; the startup refresh covers the gap.
-    watch_library: bool = False               # WATCH_LIBRARY
+    watch_library: bool = True                # WATCH_LIBRARY
     watch_library_polling: bool = False       # WATCH_LIBRARY_POLLING
 
     # ── Network exposure ──

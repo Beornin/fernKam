@@ -139,6 +139,7 @@ async def write_metadata_all(
     db: DB,
     dirty_only: bool = Body(True),
     album_path: Optional[str] = Body(None),
+    photo_ids: Optional[list[int]] = Body(None),
     batch_size: int = Body(200),
     concurrency: int = Body(4),
 ) -> dict:
@@ -152,12 +153,13 @@ async def write_metadata_all(
 
     - dirty_only: only photos with changes not yet written (default); false
       rewrites every photo
+    - photo_ids: exactly these photos, pending or not (right-click → Write
+      metadata to file); overrides dirty_only
     - album_path: restrict to one album subtree
     - batch_size: photos per exiftool call (default 200; tune up for speed)
     - concurrency: parallel exiftool workers (default 4)
     """
     import asyncio
-    import os as _os
     from fernkam.task_manager import task_manager
 
     q = (
@@ -166,7 +168,9 @@ async def write_metadata_all(
         .where(Photo.media_type == "image")
         .order_by(Photo.id.asc())
     )
-    if dirty_only:
+    if photo_ids:
+        q = q.where(Photo.id.in_(photo_ids))
+    elif dirty_only:
         q = q.where(Photo.file_sync_dirty == True)  # noqa: E712
     if album_path:
         q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
@@ -175,7 +179,8 @@ async def write_metadata_all(
     if not photo_ids:
         return {"task_id": None, "queued": 0, "message": "No photos to process"}
 
-    scope = f"album {album_path}" if album_path else ("dirty" if dirty_only else "all")
+    scope = ("selection" if photo_ids else f"album {album_path}" if album_path
+             else "dirty" if dirty_only else "all")
     task_id = await task_manager.create_task(
         "write_metadata",
         f"Queued {len(photo_ids):,} photos ({scope}) for metadata write-back…",

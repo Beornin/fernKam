@@ -9,12 +9,11 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 from sqlalchemy import select, update
 
 from fernkam.api.schemas import FaceOut
-from fernkam.db.models.photos import Face, Photo, Tag
+from fernkam.db.models.photos import Face, Tag
 
 logger = logging.getLogger(__name__)
 

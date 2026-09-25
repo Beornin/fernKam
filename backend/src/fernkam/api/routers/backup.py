@@ -233,7 +233,7 @@ async def restore_backup(body: RestoreRequest) -> dict:
                     cmd.insert(-1, f"--use-list={list_path}")
                 result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
-                return {"ok": True, "message": f"Restored successfully. Restart the server to reload fresh data."}
+                return {"ok": True, "message": "Restored successfully. Restart the server to reload fresh data."}
             return {"ok": False, "message": f"pg_restore failed: {result.stderr.strip()}"}
         except subprocess.TimeoutExpired:
             return {"ok": False, "message": "Restore timed out after 5 minutes."}

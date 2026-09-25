@@ -434,7 +434,7 @@ def cmd_import_digikam(
         batch_size=batch_size,
         resume=resume,
     )
-    stats = importer.run()
+    importer.run()
 
     if dry_run:
         console.print("\n[bold yellow]Dry-run complete. Run with --commit to persist.[/bold yellow]")

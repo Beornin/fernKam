@@ -32,7 +32,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 log = structlog.get_logger(__name__)
 console = Console()
@@ -568,7 +568,6 @@ class DigiKamImporter:
           faceToTrain       → needs training data
           ignoredFace       → user ignored this detection
         """
-        FACE_PROPS = ("tagRegion", "autodetectedFace", "autodetectedPerson", "faceToTrain", "ignoredFace")
         STATUS_MAP = {
             "tagRegion": "confirmed",
             "autodetectedFace": "unconfirmed",

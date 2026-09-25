@@ -693,6 +693,30 @@ Bugs found and fixed along the way, each reproduced first:
 
 ---
 
+## Files as the shared truth · DONE
+
+fernKam is the main place to tag and organise, but other programs still touch the same files.
+Before this, a file changed elsewhere kept its old thumbnail and search entry, and a rescan
+could silently overwrite in-app edits that had not been written back yet.
+
+| | Now |
+|---|---|
+| Outside edits while fernKam is closed | a scan on startup reads them in (`SCAN_ON_STARTUP`) |
+| Outside edits while it runs | a folder watcher scans the changed folder a few seconds later (`WATCH_LIBRARY`) |
+| File and fernKam both changed a field | three-way merge against the last-synced snapshot; the file wins, the replaced value is kept for **Restore** on the *Changed outside fernKam* page |
+| Pixels edited | thumbnail rebuilt, faces and the CLIP embedding reset |
+| File moved or renamed | same row kept (matched by sha256), tags/faces/ratings survive |
+| Write-back | checks for outside edits first; per-file results, so only files that failed are retried |
+| Import from a folder outside the library | refused; scans stay inside `LIBRARY_ROOT` |
+| Selected photos | right-click → *Reread metadata from file* / *Write metadata to file* |
+
+Metadata goes into the files themselves (embedded XMP/EXIF). No sidecar files are written.
+
+Found while building it: the watcher's AnyIO worker threads are non-daemon, which kept the
+server process from exiting on shutdown. It now runs in its own daemon thread.
+
+---
+
 ## Where this ended up
 
 Every phase in this roadmap is implemented.

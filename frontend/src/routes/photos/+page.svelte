@@ -73,6 +73,7 @@
 		listAbort?.abort();
 		const controller = new AbortController();
 		listAbort = controller;
+		void reloadTick; // bumped after "Reread metadata from file"
 
 		loading = true;
 		api.photos.list({
@@ -399,6 +400,40 @@
 	function menuSimilar() {
 		const m = menu; menu = null;
 		if (m) goto(`/discover?similar=${m.photo.id}`);
+	}
+
+	// digiKam's "Reread Metadata From File" / "Write Metadata to File", on the
+	// selection (or the photo right-clicked when nothing is selected).
+	let reloadTick = $state(0);
+
+	async function waitForTask(taskId: string): Promise<{ status: string; message: string }> {
+		for (;;) {
+			await new Promise(r => setTimeout(r, 800));
+			const t = (await api.sync.tasks()).tasks.find((x: { id: string }) => x.id === taskId);
+			if (t && t.status !== 'running') return t;
+		}
+	}
+
+	async function menuFileSync(direction: 'reread' | 'write') {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		const n = `${ids.length} photo${ids.length === 1 ? '' : 's'}`;
+		try {
+			const r = direction === 'reread'
+				? await api.sync.refreshMetadata({ photo_ids: ids })
+				: await api.sync.writeMetadata({ photo_ids: ids });
+			if (!r.task_id) { flashGridMsg(r.message); return; }
+			flashGridMsg(direction === 'reread' ? `Rereading ${n} from file…` : `Writing ${n} to file…`);
+			const done = await waitForTask(r.task_id);
+			// Failures deserve a dialog; a clean run just flashes.
+			const problem = done.status !== 'completed' || /could not be written|[1-9]\d* errors?/.test(done.message);
+			if (problem) notify(done.message);
+			else flashGridMsg(done.message);
+			if (direction === 'reread') reloadTick++;
+		} catch (e) {
+			notify(`${direction === 'reread' ? 'Reread' : 'Write'} failed: ${e}`);
+		}
 	}
 
 	// ── Grid cull loop (Roadmap 4.1) ────────────────────────────────────────
@@ -981,5 +1016,8 @@
 		<button class={menuItem} onclick={menuReject}>Reject (red label)</button>
 		<div class="my-1 border-t border-zinc-800"></div>
 		<button class={menuItem} onclick={menuReveal}>Reveal in File Explorer</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={() => menuFileSync('reread')}>Reread metadata from file</button>
+		<button class={menuItem} onclick={() => menuFileSync('write')}>Write metadata to file</button>
 	</ContextMenu>
 {/if}

@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select, text, update as sa_update
+from sqlalchemy import select, text, update as sa_update
 
 from fernkam.api.deps import DB
 from fernkam.config import get_settings
-from fernkam.db.models.photos import Photo, PhotoTag, Tag
+from fernkam.db.models.photos import Photo, Tag
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
