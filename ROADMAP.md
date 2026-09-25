@@ -823,7 +823,10 @@ and 404 (passed) for localhost, and the LAN could not connect.
 1,024 tokens is ~2 GB per layer at that batch. VRAM filled (23.9 of 24.5 GB), Windows spilled
 to system RAM, and indexing fell to **1 photo/s (a 26-hour ETA)**. Batch size is now per
 model: 8 at 512 px and 16 at 384 px, keeping batch × tokens² about constant.
-`FERNKAM_EMBED_BATCH` overrides it for smaller cards.
+`FERNKAM_EMBED_BATCH` overrides it for smaller cards. Measured after the change: **7.5 photos/s**
+(32 → 704 in 90 s), so the library takes about 4½ hours instead of days. The GPU is still only
+47% busy and the worker uses half a core, because decoding and inference take turns. Running
+them in parallel is the next ~2×. 93% of the `lg` thumbnails it reads were already cached.
 
 ---
 
