@@ -656,6 +656,43 @@ return type and broke two call sites, which the typechecker caught.
 
 ---
 
+## Setup from scratch, and a correctness pass · DONE
+
+The library had only ever been built incrementally on one machine, so a fresh install had never
+actually been tried. Trying it found three separate blockers, each fatal on its own:
+
+1. `alembic upgrade head` ignored `backend/.env` and used a password hardcoded in
+   `alembic.ini`. `alembic/env.py` only read `os.environ`, never the `.env` file.
+2. Migration `0016` created `ix_photos_exif_gin` without `IF NOT EXISTS`, and `0001`/`0011`
+   had already created it. **The migration chain had never run on an empty database.**
+3. `scripts/init-db.sql` left `CREATE EXTENSION vector` commented out. pgvector is not a
+   trusted extension, so migration `0025`, running as `fernkam_user`, died with
+   `permission denied`.
+
+Now: `docker compose up -d` (PostgreSQL 17 + pgvector 0.8.6, extensions created on first
+start) or a native server, then `uv run fernkam setup-db [--docker]`. That creates the role,
+database and extensions, writes `.env`, and migrates. Verified from nothing on both paths, plus
+the server's own startup auto-migration on an empty database. Backups gained a
+`PG_DOCKER_CONTAINER` mode, so the Docker path needs no host `pg_dump`. Native restores no
+longer fail on superuser-owned extensions.
+
+Bugs found and fixed along the way, each reproduced first:
+
+| | Effect | Measured |
+|---|---|---|
+| Photo sorts had no `id` tiebreaker, though the keyset cursor assumed one | pages skipped/repeated photos | 3,000 rows, `rating_desc` cursor: **2,074 missing, 601 repeated → 0 / 0** |
+| XMP write-back didn't record the file's new mtime | next scan re-read every written file and **reverted in-app edits** made since | rating 5 set after a write-back came back as 3 → stays 5 |
+| Scan deleted rows for folders it could not read, or for an unplugged drive | tags/faces/ratings lost | empty root: 54 rows kept, reason shown |
+| Task guard check-then-insert wasn't atomic; Cancel released it while work continued | two file jobs at once | double-click → exactly one 409 |
+| Library scan ignored Cancel | — | stops between batches, nothing removed |
+| *Sync stack tags* used the server's pooled engine from another event loop | workflow failed, even in Preview | `got Future attached to a different loop` → runs |
+| Workflow output capture swapped the process-wide `sys.stdout` | other prints leaked in; overlap could silence the server | captured per thread |
+| Face detection held a DB connection through decode + GPU queue | pool pressure during scans | peak idle-in-transaction on 4 cores: 4 → 2 (scales with CPU count) |
+| Every video was fully transcoded with libx264, even browser-playable MP4 | a CPU core per view, no seeking | H.264 MP4 served directly with Range (47 ms) |
+| API bound to `0.0.0.0` with `allow_origins=["*"]` and no auth | any web page could POST `/api/sync/reset-db` | cross-site and DNS-rebinding writes → 403 |
+
+---
+
 ## Where this ended up
 
 Every phase in this roadmap is implemented.
