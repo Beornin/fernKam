@@ -475,6 +475,14 @@ async def _detect_and_suggest(photo_id: int, db: DB) -> tuple[list[FaceOut], int
 
     loop = asyncio.get_event_loop()
 
+    # Hand the connection back before the slow part. Everything so far was a
+    # read, but the session's open transaction would otherwise pin a pooled
+    # connection "idle in transaction" through the decode and the wait for the
+    # single FACE_EXECUTOR worker — and a scan runs FERNKAM_FACE_CONCURRENCY
+    # (default max(4, CPU count)) of these at once, draining the 50-connection
+    # pool the UI shares for no throughput gain.
+    await db.commit()
+
     # ── Step 1: Decode image (default pool — runs in parallel with other decodes) ──
     img_bgr = await loop.run_in_executor(None, decode_image, src)
     if img_bgr is None:

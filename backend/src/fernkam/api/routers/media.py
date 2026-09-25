@@ -268,9 +268,15 @@ async def _stream_transcode(src: Path, ffmpeg_path: str) -> AsyncIterator[bytes]
         await proc.wait()
 
 
-@router.get("/video/{photo_id}")
-async def serve_video_transcoded(photo_id: int, db: DB) -> StreamingResponse:
-    """Serve video transcoded to H.264/AAC for browser compatibility."""
+@router.get("/video/{photo_id}", response_model=None)
+async def serve_video_transcoded(photo_id: int, db: DB) -> StreamingResponse | FileResponse:
+    """Serve a video the browser can play: the original file when it already
+    is H.264 MP4, otherwise a live H.264/AAC transcode.
+
+    Every video used to be transcoded, including the MP4s browsers play
+    natively — a full libx264 encode per view, and a fragmented stream the
+    player cannot seek ahead in. The original is served with Range support.
+    """
     photo = await _get_photo(photo_id, db)
     src = photo_disk_path(photo.album_path, photo.filename)
     if not src.exists():
@@ -278,10 +284,13 @@ async def serve_video_transcoded(photo_id: int, db: DB) -> StreamingResponse:
     ext = src.suffix.lower()
     if ext not in VIDEO_EXTENSIONS:
         raise HTTPException(400, "Not a video file")
-    from fernkam.thumbnails import _resolve_ffmpeg
+    from fernkam.thumbnails import _resolve_ffmpeg, browser_playable_video
+    if await asyncio.get_running_loop().run_in_executor(None, browser_playable_video, src):
+        return FileResponse(src, media_type="video/mp4",
+                            headers={"Cache-Control": "private, max-age=3600"})
     ffmpeg = _resolve_ffmpeg()
     if not ffmpeg:
-        raise HTTPException(503, "ffmpeg not available — install it or set FERNKAM_FFMPEG_PATH")
+        raise HTTPException(503, "ffmpeg not available — install it or set FFMPEG_PATH in backend/.env")
     return StreamingResponse(
         _stream_transcode(src, ffmpeg),
         media_type="video/mp4",

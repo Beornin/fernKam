@@ -176,23 +176,53 @@ def _resolve_ffmpeg() -> str | None:
     return found  # None if not found anywhere
 
 
-def probe_video_duration(src: Path) -> float | None:
-    """Return video duration in seconds using ffprobe, or None on failure."""
-    import shutil, json as _json
+def _resolve_ffprobe() -> str | None:
+    """ffprobe next to the resolved ffmpeg (same install), else on PATH."""
+    import shutil
     ffmpeg = _resolve_ffmpeg()
     if not ffmpeg:
         return None
-    ffprobe = str(Path(ffmpeg).with_name("ffprobe"))
-    if not Path(ffprobe).exists():
-        found = shutil.which("ffprobe")
-        if not found:
-            return None
-        ffprobe = found
+    sibling = Path(ffmpeg).with_name("ffprobe" + Path(ffmpeg).suffix)
+    return str(sibling) if sibling.exists() else shutil.which("ffprobe")
+
+
+def browser_playable_video(src: Path) -> bool:
+    """True for H.264 in an MP4 container with AAC/MP3 (or no) audio — what
+    every Chromium build, and so the pywebview window, plays natively.
+    Blocking (ffprobe, ~50 ms); call via run_in_executor."""
+    import json as _json
+    if src.suffix.lower() not in (".mp4", ".m4v"):
+        return False
+    ffprobe = _resolve_ffprobe()
+    if not ffprobe:
+        return False
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+             "-of", "json", str(src)],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+        streams = _json.loads(result.stdout).get("streams", [])
+    except Exception:
+        return False
+    video = [s.get("codec_name") for s in streams if s.get("codec_type") == "video"]
+    audio = [s.get("codec_name") for s in streams if s.get("codec_type") == "audio"]
+    return video[:1] == ["h264"] and all(a in ("aac", "mp3") for a in audio)
+
+
+def probe_video_duration(src: Path) -> float | None:
+    """Return video duration in seconds using ffprobe, or None on failure."""
+    import json as _json
+    ffprobe = _resolve_ffprobe()
+    if not ffprobe:
+        return None
     try:
         result = subprocess.run(
             [
                 ffprobe, "-v", "quiet", "-print_format", "json",
-                "-show_streams", "-select_streams", "v:0", str(src),
+                "-show_streams", "-show_format", "-select_streams", "v:0", str(src),
             ],
             capture_output=True, timeout=15,
         )
@@ -202,7 +232,9 @@ def probe_video_duration(src: Path) -> float | None:
         streams = data.get("streams", [])
         if streams and "duration" in streams[0]:
             return float(streams[0]["duration"])
-        return None
+        # Matroska/WebM (and some AVI) only record duration on the container.
+        fmt_duration = data.get("format", {}).get("duration")
+        return float(fmt_duration) if fmt_duration else None
     except Exception:
         return None
 
