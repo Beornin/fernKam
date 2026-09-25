@@ -111,6 +111,30 @@ for img, v in zip(imgs, vecs):
     assert v.shape == (DIM,) and abs(np.linalg.norm(v) - 1) < 1e-5
     assert np.allclose(v, reference(img), atol=1e-4), "differs from reference"
 
+# 1b. The session only ever sees one batch shape. Each new one makes
+#     onnxruntime keep another set of GPU buffers for the rest of the run.
+rt = em.runtime("fake")
+
+
+class _Shapes:
+    def __init__(self, s):
+        self.s, self.seen = s, set()
+
+    def __getattr__(self, name):
+        return getattr(self.s, name)
+
+    def run(self, outs, feed):
+        self.seen.update(v.shape for v in feed.values())
+        return self.s.run(outs, feed)
+
+
+rt.vision = spy = _Shapes(rt.vision)
+for n in (rt.batch + 3, 1, 5):  # a full batch plus a tail, then short calls
+    got = em.embed_images("fake", imgs[:n])
+    assert all(np.allclose(g, reference(i), atol=1e-4) for g, i in zip(got, imgs[:n]))
+assert len(spy.seen) == 1, f"batch shapes seen: {spy.seen}"
+em.release("fake")
+
 # 2. A float16 tower gets float16 input.
 install("fake16", squash, fp16=True)
 v16 = em.embed_images("fake16", imgs[:3])

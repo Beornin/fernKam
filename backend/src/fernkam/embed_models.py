@@ -311,8 +311,16 @@ class _Runtime:
                     logger.debug("[%s] skip %s: %s", self.key, s, exc)
             if not batch:
                 continue
-            vecs = sess.run([self.v_out], {self.v_in.name: np.stack(batch).astype(dtype)})[0]
-            vecs = _l2(np.asarray(vecs, dtype=np.float32).reshape(len(batch), -1))
+            x, n = np.stack(batch).astype(dtype), len(batch)
+            if n < self.batch:
+                # Always the same input shape. onnxruntime plans and keeps a
+                # separate set of GPU buffers (and cuDNN benchmarks a new
+                # workspace) for every batch size it sees. Short batches (a
+                # chunk's tail, or one with unreadable photos) add more as a
+                # run goes on, the likely reason SigLIP 2 filled 24 GB mid-run.
+                x = np.concatenate([x, np.repeat(x[-1:], self.batch - n, axis=0)])
+            vecs = sess.run([self.v_out], {self.v_in.name: x})[0][:n]
+            vecs = _l2(np.asarray(vecs, dtype=np.float32).reshape(n, -1))
             for slot, v in zip(keep, vecs):
                 out[slot] = v
         return out

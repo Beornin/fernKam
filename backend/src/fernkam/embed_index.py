@@ -275,7 +275,6 @@ async def start_install(key: str, index: bool = True) -> str:
                     return
                 await task_manager.update_task(task_id, message=f"Building {info.label} search index…")
                 await ensure_hnsw(bdb, key)
-            em.release(key)   # give the GPU back, e.g. to a local vision model
             await task_manager.update_task(
                 task_id, status="completed",
                 message=f"{info.label}: indexed {ok:,} photos ({skipped} unreadable). "
@@ -286,6 +285,10 @@ async def start_install(key: str, index: bool = True) -> str:
         except Exception as exc:  # noqa: BLE001
             logger.exception("installing %s failed", key)
             await task_manager.update_task(task_id, status="failed", message=str(exc)[:500])
+        finally:
+            # Give the GPU back (e.g. to a local vision model), also after a
+            # cancel or a failure. A cancelled run used to keep its ~20 GB.
+            em.release(key)
 
     asyncio.create_task(run(), name=f"fernkam-model-{key}-{task_id}")
     return task_id

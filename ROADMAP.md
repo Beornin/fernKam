@@ -824,9 +824,22 @@ and 404 (passed) for localhost, and the LAN could not connect.
 to system RAM, and indexing fell to **1 photo/s (a 26-hour ETA)**. Batch size is now per
 model: 8 at 512 px and 16 at 384 px, keeping batch × tokens² about constant.
 `FERNKAM_EMBED_BATCH` overrides it for smaller cards. Measured after the change: **7.5 photos/s**
-(32 → 704 in 90 s), so the library takes about 4½ hours instead of days. The GPU is still only
-47% busy and the worker uses half a core, because decoding and inference take turns. Running
-them in parallel is the next ~2×. 93% of the `lg` thumbnails it reads were already cached.
+at first (32 → 704 in 90 s). **That didn't last.** After 1,856 photos VRAM was full again
+(24.1 of 24.5 GB) and the speed was back to 1 photo/s. A smaller batch only postponed the
+problem. Two causes, both fixed:
+
+- **Every new batch size cost memory for the rest of the run.** Unreadable photos are dropped
+  from a chunk before inference, so batch sizes varied. onnxruntime keeps a buffer plan (and
+  cuDNN a benchmarked workspace) for each input shape it sees. Batches are now padded to one
+  fixed shape. The test counts the shapes the session receives: 4 before, 1 after.
+- **Cancelling never gave the GPU back.** The release sat on the success path only, so a
+  cancelled or failed index kept ~20 GB until fernKam closed. Anything run next, BioCLIP 2 or
+  a vision check, would have crawled too. It is released in a `finally` now.
+
+Not measured yet on the GPU: the running exe still has the old code. On the next launch,
+"Index the rest" should hold a steady speed and flat VRAM. Separately, the GPU was only 47%
+busy even at full speed, because decoding and inference take turns. Running them in parallel
+is the next ~2×. 93% of the `lg` thumbnails it reads were already cached.
 
 ---
 
