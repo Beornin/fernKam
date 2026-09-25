@@ -649,6 +649,41 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
                 pass
 
 
+def _current_mtimes(paths: list[str]) -> dict[str, datetime]:
+    """Blocking: on-disk mtime of each path that still exists."""
+    out: dict[str, datetime] = {}
+    for p in paths:
+        try:
+            out[p] = datetime.fromtimestamp(os.stat(p).st_mtime, tz=timezone.utc)
+        except OSError:
+            pass
+    return out
+
+
+async def mark_files_synced(db, written: list[tuple[int, str]]) -> None:
+    """Record a successful XMP write-back for (photo_id, file path) pairs.
+
+    Clears the dirty flag and stores each file's *new* mtime as
+    file_modified_at_sync. Without the mtime, every written file looked
+    externally modified to the next library scan, which re-read it with
+    exiftool and copied its fields back over the database — reverting any
+    rating or caption changed in the app since the write-back.
+    Does not commit.
+    """
+    import asyncio
+    from sqlalchemy import text
+
+    if not written:
+        return
+    mtimes = await asyncio.get_running_loop().run_in_executor(
+        None, _current_mtimes, [path for _, path in written])
+    now = datetime.now(timezone.utc)
+    await db.execute(text(
+        "UPDATE photos SET meta_synced_at = :now, file_sync_dirty = false, "
+        "file_modified_at_sync = COALESCE(:mt, file_modified_at_sync) WHERE id = :pid"
+    ), [{"pid": pid, "mt": mtimes.get(path), "now": now} for pid, path in written])
+
+
 # ═══════════════════════════ DB ↔ FILE SYNC ══════════════════════════════════
 
 class SyncResult:

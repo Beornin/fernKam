@@ -10,6 +10,8 @@ import asyncio
 import io
 import contextlib
 import logging
+import sys
+import threading
 from typing import Optional
 
 from fastapi import APIRouter
@@ -56,10 +58,56 @@ class SyncStackTagsRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+class _ThreadStdout:
+    """sys.stdout replacement that sends a thread's writes to its own buffer.
+
+    contextlib.redirect_stdout swaps the *process-wide* sys.stdout, so while a
+    workflow ran in its worker thread every other print in the server (scan
+    and face-scan progress, other requests) landed in that workflow's output,
+    and two overlapping workflows restored each other's buffers — leaving
+    sys.stdout pointing at a dead StringIO and the server silent from then on.
+    Anything but write/flush (encoding, isatty, fileno, ...) is the real stream's.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._local = threading.local()
+
+    def _target(self):
+        return getattr(self._local, "buf", None) or self._real
+
+    def write(self, s: str) -> int:
+        return self._target().write(s)
+
+    def flush(self) -> None:
+        self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @contextlib.contextmanager
+    def capture(self):
+        buf = io.StringIO()
+        self._local.buf = buf
+        try:
+            yield buf
+        finally:
+            self._local.buf = None
+
+
+_stdout_router_lock = threading.Lock()
+
+
+def _thread_stdout() -> _ThreadStdout:
+    with _stdout_router_lock:
+        if not isinstance(sys.stdout, _ThreadStdout):
+            sys.stdout = _ThreadStdout(sys.stdout)
+        return sys.stdout
+
+
 def _capture_run(fn, **kwargs) -> str:
-    """Run *fn* with **kwargs, capturing all print() output, return as string."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    """Run *fn* with **kwargs, capturing this thread's print() output."""
+    with _thread_stdout().capture() as buf:
         try:
             fn(**kwargs)
         except Exception as exc:
@@ -349,6 +397,10 @@ async def promote_to_portfolio(req: PromoteRequest, db: DB) -> dict:
     library_root = Path(s.library_root)
     dest_album = s.portfolio_folder + (f"/{req.subfolder.strip('/')}" if req.subfolder else "")
     dest_dir = library_root / dest_album
+    portfolio_dir = (library_root / s.portfolio_folder).resolve()
+    if not dest_dir.resolve().is_relative_to(portfolio_dir):
+        from fastapi import HTTPException
+        raise HTTPException(400, "subfolder must stay inside the portfolio folder")
 
     # Expand the selection to whole stacks.
     rows = (await db.execute(_sql("""
@@ -386,6 +438,11 @@ async def promote_to_portfolio(req: PromoteRequest, db: DB) -> dict:
         return {"dry_run": True, "dest_album": dest_album, "would_move": len(movable),
                 "conflicts": len(conflicts), "carried_with_stack": sum(1 for p in movable if p["carried"]),
                 "plan": plan[:200]}
+
+    # Moving files while a scan walks the library is the race the task guard
+    # exists for: the scan can see the old path empty and delete the row.
+    from fernkam.task_manager import task_manager
+    task_manager.ensure_no_file_task()
 
     import shutil
     moved, errors = 0, []

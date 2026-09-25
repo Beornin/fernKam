@@ -50,23 +50,12 @@
 		importing = true;
 		importResult = null;
 		try {
-			// Convert backslashes to forward slashes for JSON
-			const normalizedPath = importPath.replace(/\\/g, '/');
-			const res = await fetch('/api/sync/scan-library', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ custom_path: normalizedPath })
-			});
-			const data = await res.json();
-			if (data.error) {
-				importResult = `Error: ${data.error}`;
-			} else if (data.status === "running") {
-				importResult = `Scan started in background. Check Tasks page for progress.`;
-				showImportModal = false; // Close modal after starting
-			} else {
-				importResult = `Added: ${data.added}, Updated: ${data.updated}, Skipped: ${data.skipped}, Errors: ${data.errors}`;
-				showImportModal = false; // Close modal after completion
-			}
+			// Convert backslashes to forward slashes for JSON. scanLibrary throws
+			// with the server's message on a refusal (409 while another scan or
+			// file workflow is running) instead of reporting "Added: undefined".
+			await api.sync.scanLibrary({ custom_path: importPath.replace(/\\/g, '/') });
+			importResult = `Scan started in background. Check Tasks page for progress.`;
+			showImportModal = false; // Close modal after starting
 		} catch (e) {
 			importResult = `Import failed: ${e}`;
 		} finally {
@@ -78,19 +67,8 @@
 		quickScanning = true;
 		quickScanResult = null;
 		try {
-			const res = await fetch('/api/sync/scan-library', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({})
-			});
-			const data = await res.json();
-			if (data.error) {
-				quickScanResult = `Error: ${data.error}`;
-			} else if (data.status === "running") {
-				quickScanResult = `Scan started in background. Check the Tasks page for progress.`;
-			} else {
-				quickScanResult = `Added: ${data.added}, Updated: ${data.updated}, Skipped: ${data.skipped}, Errors: ${data.errors}`;
-			}
+			await api.sync.scanLibrary();
+			quickScanResult = `Scan started in background. Check the Tasks page for progress.`;
 		} catch (e) {
 			quickScanResult = `Scan failed: ${e}`;
 		} finally {

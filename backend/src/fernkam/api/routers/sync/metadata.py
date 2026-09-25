@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
@@ -162,7 +161,7 @@ async def write_metadata_all(
     async def run_write():
         import time as _time
         from fernkam.db.session import async_session_factory
-        from fernkam.metadata_sync import build_photo_payload, write_metadata_batch
+        from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
 
         t_start = _time.time()
         total = len(photo_ids)
@@ -204,12 +203,8 @@ async def write_metadata_all(
                     )
 
                     if b_ok and written_ids:
-                        now = datetime.now(timezone.utc)
-                        await bdb.execute(
-                            update(Photo)
-                            .where(Photo.id.in_(written_ids))
-                            .values(meta_synced_at=now, file_sync_dirty=False)
-                        )
+                        await mark_files_synced(
+                            bdb, [(pid, p["SourceFile"]) for pid, p in zip(written_ids, payloads)])
                         await bdb.commit()
 
                     return b_ok, b_err

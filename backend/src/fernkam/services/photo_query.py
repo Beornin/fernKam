@@ -85,14 +85,22 @@ class PhotoFilters:
 
 
 # Whitelisted sort expressions (keyed by the API `sort` string).
+#
+# Every sort ends in an `id` tiebreaker running the same direction as the
+# keyset predicates in apply_cursor(). Without it, rows that tie on the sort
+# key (burst shots sharing a second, undated photos, the ~all rating-0 rows,
+# IMG_0001.jpg in many folders) come back in arbitrary order, so both OFFSET
+# and cursor pages skip or repeat photos — measured on 3,000 rows, the
+# rating_desc cursor missed 2,074 of them. It also lets taken_at_desc use the
+# (taken_at DESC NULLS LAST, id DESC) index built for exactly this.
 SORT_OPTIONS = {
-    "taken_at_desc": Photo.taken_at.desc().nulls_last(),
-    "taken_at_asc": Photo.taken_at.asc().nulls_last(),
-    "rating_desc": Photo.rating.desc(),
-    "filename_asc": Photo.filename.asc(),
-    "imported_at_desc": Photo.imported_at.desc(),
+    "taken_at_desc": (Photo.taken_at.desc().nulls_last(), Photo.id.desc()),
+    "taken_at_asc": (Photo.taken_at.asc().nulls_last(), Photo.id.asc()),
+    "rating_desc": (Photo.rating.desc(), Photo.id.desc()),
+    "filename_asc": (Photo.filename.asc(), Photo.id.asc()),
+    "imported_at_desc": (Photo.imported_at.desc().nulls_last(), Photo.id.desc()),
 }
-DEFAULT_SORT = Photo.taken_at.desc().nulls_last()
+DEFAULT_SORT = SORT_OPTIONS["taken_at_desc"]
 
 
 async def _tag_subtree_ids(db: AsyncSession, tag_id: int) -> list[int]:
@@ -224,7 +232,7 @@ async def build_photo_query(f: PhotoFilters, db: AsyncSession) -> Select:
 
 def apply_sort(q: Select, sort: str) -> Select:
     """Apply a whitelisted ORDER BY to the query."""
-    return q.order_by(SORT_OPTIONS.get(sort, DEFAULT_SORT))
+    return q.order_by(*SORT_OPTIONS.get(sort, DEFAULT_SORT))
 
 
 # ── Keyset (seek) cursor helpers ─────────────────────────────────────────────
@@ -279,14 +287,16 @@ def apply_cursor(q: Select, cursor: str) -> Select:
             else:
                 return q.where(Photo.taken_at.is_(None), Photo.id > cid)
 
-    elif sort == "imported_at_desc":
+    elif sort == "imported_at_desc":  # NULLs last, like taken_at_desc
         ia_str = d.get("ia")
         if ia_str:
             ia = datetime.fromisoformat(ia_str)
             return q.where(or_(
                 Photo.imported_at < ia,
                 and_(Photo.imported_at == ia, Photo.id < cid),
+                Photo.imported_at.is_(None),
             ))
+        return q.where(Photo.imported_at.is_(None), Photo.id < cid)
 
     elif sort == "rating_desc":
         r: int = d.get("r", 0)

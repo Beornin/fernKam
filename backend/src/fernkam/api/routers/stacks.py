@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
@@ -132,7 +132,7 @@ async def set_cover(stack_id: int, db: DB, photo_id: int = Body(..., embed=True)
 @router.post("/{stack_id}/sync-tags")
 async def sync_stack_tags(stack_id: int, db: DB) -> dict:
     """Union tags/rating/color-label/face-regions across all members, write to every member."""
-    from fernkam.metadata_sync import build_photo_payload, write_metadata_batch
+    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
 
     stack = (await db.execute(select(PhotoStack).where(PhotoStack.id == stack_id))).scalar_one_or_none()
     if not stack:
@@ -165,8 +165,8 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
     color_candidates = [m.color_label for m in members if m.color_label]
     union_color = color_candidates[0] if color_candidates else 0
 
-    now = datetime.now(timezone.utc)
     payloads = []
+    written: list[tuple[int, str]] = []
     for m in members:
         # Apply the union in-DB first so build_photo_payload sees merged state.
         m.rating = union_rating
@@ -183,6 +183,7 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
         p = build_photo_payload(m, list(tags_by_id.values()), named_faces)
         if p:
             payloads.append(p)
+            written.append((m.id, p["SourceFile"]))
 
     await db.flush()
 
@@ -193,11 +194,7 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
         ok, errors = await loop.run_in_executor(None, write_metadata_batch, payloads)
 
     if ok:
-        member_ids = [m.id for m in members]
-        await db.execute(
-            update(Photo).where(Photo.id.in_(member_ids))
-            .values(meta_synced_at=now, file_sync_dirty=False)
-        )
+        await mark_files_synced(db, written)
 
     await db.commit()
     return {"synced": ok, "errors": errors, "members": len(members)}

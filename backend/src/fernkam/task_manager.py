@@ -5,6 +5,7 @@ On restart, running tasks are loaded from DB so they remain visible.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -64,6 +65,12 @@ class TaskManager:
 
     def __init__(self):
         self._cache: dict[str, Task] = {}
+        # File-mutating tasks whose work has not finished yet, whatever their
+        # status says. Cancelling only flips the status; a workflow running
+        # in a thread cannot be interrupted, so the guard must hold until the
+        # work reports completed/failed, not until someone clicks Cancel.
+        self._busy_file_tasks: dict[str, Task] = {}
+        self._create_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -111,13 +118,30 @@ class TaskManager:
         file-mutating task is already running. Enforced here rather than at
         each call site so a new endpoint cannot forget it.
         """
-        from fernkam.db.models.tasks import BackgroundTask
-        from sqlalchemy import insert
-
-        if task_type in FILE_MUTATING_TASKS:
+        if task_type not in FILE_MUTATING_TASKS:
+            return await self._insert_task(task_type, message)
+        # The check and the insert must be atomic: get_running_tasks() awaits
+        # the database, so two clicks in quick succession could both pass the
+        # check before either row existed.
+        async with self._create_lock:
+            self.ensure_no_file_task()
             for running in await self.get_running_tasks():
                 if running.task_type in FILE_MUTATING_TASKS:
                     raise TaskConflict(running)
+            task_id = await self._insert_task(task_type, message)
+            self._busy_file_tasks[task_id] = self._cache[task_id]
+            return task_id
+
+    def ensure_no_file_task(self) -> None:
+        """Raise TaskConflict if a file-mutating task's work is still running
+        in this process. For endpoints that move files synchronously (not as a
+        task) but must not race a scan."""
+        for busy in self._busy_file_tasks.values():
+            raise TaskConflict(busy)
+
+    async def _insert_task(self, task_type: str, message: str) -> str:
+        from fernkam.db.models.tasks import BackgroundTask
+        from sqlalchemy import insert
 
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -149,6 +173,12 @@ class TaskManager:
         task = self._cache.get(task_id)
         if task is None:
             return
+
+        # The work itself has stopped when it reports completed/failed, or
+        # re-reports "cancelled" to acknowledge a cancel (cancel_task() sets
+        # the first "cancelled" while the work may still be running).
+        if status in ("completed", "failed") or (status == "cancelled" and task.status == "cancelled"):
+            self._busy_file_tasks.pop(task_id, None)
 
         now = datetime.now(timezone.utc)
         values: dict = {}

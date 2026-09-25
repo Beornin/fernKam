@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.config import get_settings
@@ -32,6 +32,13 @@ BATCH_COMMIT_SIZE = 50      # photos committed per transaction
 # and network shares round differently), so anything inside this window counts
 # as unchanged rather than triggering a needless metadata re-read.
 MTIME_SLACK_SECONDS = 2.0
+
+
+class ScanCancelled(Exception):
+    """Raised from a progress callback to stop a scan between batches.
+
+    Everything committed so far stays; the removed-files phase never runs, so
+    a cancelled scan cannot delete rows based on a partial walk."""
 
 
 def _sha256_path(path: Path) -> Optional[str]:
@@ -145,6 +152,51 @@ def _stat_walk_batch(
     return new_files, existing_to_update, disk_keys, unchanged
 
 
+def _select_removed(
+    existing_photos: dict[tuple[str, str], tuple[int, Optional[datetime]]],
+    disk_keys: set[tuple[str, str]],
+    main_library: Path,
+    scope_root: Path,
+    unreadable_dirs: list[Path],
+) -> tuple[list[tuple[int, str, str]], Optional[str]]:
+    """Decide which catalogue rows the scan should delete as "file removed".
+
+    Returns (rows as (id, album_path, filename), reason_if_deletion_skipped).
+    Deleting a row cascades to its tags, faces and rating, so this errs hard
+    on the side of keeping rows:
+
+    - Folders os.walk could not list (permissions, a flaky network share or USB
+      drive) are skipped silently by os.walk. Their photos were not *seen*,
+      which is not the same as gone, so rows under them are kept.
+    - A walk that found no media at all while the catalogue has rows in scope
+      means the library is unmounted or LIBRARY_ROOT points at an empty
+      folder; nothing is deleted.
+    """
+    def album_dir(album_path: str) -> Path:
+        rel = album_path.strip("/")
+        return main_library / rel if rel else main_library
+
+    in_scope = []
+    for key, (photo_id, _synced) in existing_photos.items():
+        d = album_dir(key[0])
+        if scope_root != main_library and not d.is_relative_to(scope_root):
+            continue
+        in_scope.append((key, photo_id, d))
+
+    if in_scope and not disk_keys:
+        return [], (f"found no media files under {scope_root}, but the catalogue has "
+                    f"{len(in_scope):,} photos there — is the drive connected?")
+
+    removed = []
+    for key, photo_id, d in in_scope:
+        if key in disk_keys:
+            continue
+        if any(d == bad or d.is_relative_to(bad) for bad in unreadable_dirs):
+            continue
+        removed.append((photo_id, key[0], key[1]))
+    return removed, None
+
+
 async def scan_library(
     db: AsyncSession,
     custom_path: Optional[str] = None,
@@ -193,8 +245,15 @@ async def scan_library(
     walk_last_report = time.monotonic()
     loop = asyncio.get_event_loop()
 
+    unreadable_dirs: list[Path] = []
+
+    def _walk_error(err: OSError) -> None:
+        log.warning("[SCAN] cannot read %s: %s — its photos will not be removed", err.filename, err)
+        if err.filename:
+            unreadable_dirs.append(Path(err.filename))
+
     for scan_dir in scan_dirs:
-        for root, dirs, files in os.walk(scan_dir):
+        for root, dirs, files in os.walk(scan_dir, onerror=_walk_error):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
 
             # The per-file stat() calls (up to 120k on a full library) are the
@@ -335,22 +394,28 @@ async def scan_library(
             await progress_callback(stats)
 
     # ── Phase 3: delete removed files ─────────────────────────────────────
-    gone_ids: list[int] = []
-    for key, (photo_id, _synced_at) in existing_photos.items():
-        if key in disk_keys:
-            continue
-        album_path_str, _ = key
-        if custom_path:
-            photo_abs = main_library / album_path_str
-            try:
-                photo_abs.relative_to(library_root)
-            except ValueError:
-                continue
-        gone_ids.append(photo_id)
+    removed, skip_reason = _select_removed(
+        existing_photos, disk_keys, main_library, library_root, unreadable_dirs)
+    if skip_reason:
+        log.warning("[SCAN] not removing any photos: %s", skip_reason)
+        stats["deletion_skipped"] = skip_reason
+    if unreadable_dirs:
+        stats["unreadable_dirs"] = len(unreadable_dirs)
 
-    if gone_ids:
-        await db.execute(sa_delete(Photo).where(Photo.id.in_(gone_ids)))
-        stats["deleted"] = len(gone_ids)
+    gone_ids: list[int] = []
+    # Match on the path as well as the id: a row moved during the scan (e.g.
+    # promote-to-portfolio) keeps its id but not its old path, and must not be
+    # deleted just because its old path is now empty. Chunked because asyncpg
+    # caps a statement at 32,767 bind parameters.
+    for i in range(0, len(removed), 5000):
+        chunk = removed[i:i + 5000]
+        res = await db.execute(
+            sa_delete(Photo)
+            .where(tuple_(Photo.id, Photo.album_path, Photo.filename).in_(chunk))
+            .returning(Photo.id)
+        )
+        gone_ids.extend(r[0] for r in res)
+    stats["deleted"] = len(gone_ids)
 
     await db.commit()
 

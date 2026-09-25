@@ -89,6 +89,21 @@ async def create_tag(
     )
 
 
+async def _mark_tagged_photos_dirty(db, tag_id: int) -> None:
+    """Flag every photo carrying this tag or a descendant — as a tag or as a
+    named face — for XMP write-back. Those files still hold the old Subject /
+    HierarchicalSubject / region names; photo-level edits set this flag, but
+    tag-level ones did not, so an incremental write-back never updated them."""
+    await db.execute(text("""
+        WITH subtree AS (
+            SELECT id FROM tags WHERE path <@ (SELECT path FROM tags WHERE id = :id)
+        )
+        UPDATE photos SET file_sync_dirty = true
+        WHERE id IN (SELECT photo_id FROM photo_tags WHERE tag_id IN (SELECT id FROM subtree))
+           OR id IN (SELECT photo_id FROM faces WHERE person_tag_id IN (SELECT id FROM subtree))
+    """), {"id": tag_id})
+
+
 @router.patch("/{tag_id}", response_model=TagOut)
 async def update_tag(
     tag_id: int,
@@ -131,7 +146,9 @@ async def update_tag(
             text("UPDATE tags SET path = CAST(:new_prefix || subpath(path, nlevel(:old_path)) AS ltree) WHERE path <@ :old_path AND id != :id"),
             {"new_prefix": new_path, "old_path": old_path, "id": tag_id}
         )
-    
+
+    if name is not None or parent_id is not None:
+        await _mark_tagged_photos_dirty(db, tag_id)
     await db.commit()
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
@@ -143,6 +160,10 @@ async def update_tag(
 @router.delete("/{tag_id}/from-photos", status_code=200)
 async def remove_tag_from_photos(tag_id: int, db: DB) -> dict:
     """Remove this tag from all photos without deleting the tag itself."""
+    await db.execute(text(
+        "UPDATE photos SET file_sync_dirty = true "
+        "WHERE id IN (SELECT photo_id FROM photo_tags WHERE tag_id = :id)"
+    ), {"id": tag_id})
     result = await db.execute(delete(PhotoTag).where(PhotoTag.tag_id == tag_id))
     await db.commit()
     return {"removed": result.rowcount}
@@ -150,6 +171,7 @@ async def remove_tag_from_photos(tag_id: int, db: DB) -> dict:
 
 @router.delete("/{tag_id}", status_code=204)
 async def delete_tag(tag_id: int, db: DB) -> None:
+    await _mark_tagged_photos_dirty(db, tag_id)
     await db.execute(delete(PhotoTag).where(PhotoTag.tag_id == tag_id))
     await db.execute(delete(Tag).where(Tag.id == tag_id))
     await db.commit()

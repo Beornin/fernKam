@@ -57,6 +57,7 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
         from fernkam.db.session import async_session_factory
         from fernkam.api.routers.photos import _detect_and_suggest
         from fernkam.api.routers.faces import _auto_confirm_sweep
+        from fernkam.importers.filesystem import ScanCancelled
 
         async with async_session_factory() as bg_db:
             try:
@@ -85,6 +86,13 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     face_tasks.append(t)
 
                 async def on_progress(stats: dict) -> None:
+                    # Called during the walk and after every committed batch —
+                    # the safe points to honour Cancel. The final call (after
+                    # removals, carrying added_ids) is too late to stop anything.
+                    if "added_ids" not in stats:
+                        current = await task_manager.get_task(task_id)
+                        if current and current.status == "cancelled":
+                            raise ScanCancelled()
                     if stats.get("phase") == "scanning":
                         await task_manager.update_task(task_id,
                             message=f"Scanning… {stats['scanned']:,} files checked | {stats['current_dir']}")
@@ -148,11 +156,23 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     "Scan completed: added=%d faces=%d errors=%d total_s=%.1f ms_per=%0.f",
                     added, face_count, errors, t_total, per_photo_ms,
                 )
+                warnings = ""
+                if stats.get("deletion_skipped"):
+                    warnings += f" — removals skipped: {stats['deletion_skipped']}"
+                if stats.get("unreadable_dirs"):
+                    warnings += (f" — {stats['unreadable_dirs']} folder(s) could not be read; "
+                                 f"their photos were kept")
                 await task_manager.update_task(task_id, status="completed",
                     message=(f"Done: +{added} imported, {stats.get('updated', 0)} refreshed, "
                              f"{deleted} removed, {stats.get('skipped', 0):,} unchanged, "
-                             f"{face_count} faces detected"),
+                             f"{face_count} faces detected{warnings}"),
                     progress={**stats, "faces_detected": face_count, "total_s": round(t_total, 1)})
+            except ScanCancelled:
+                await bg_db.rollback()
+                print("[SCAN-LIBRARY] Cancelled", flush=True)
+                await task_manager.update_task(
+                    task_id, status="cancelled",
+                    message="Cancelled — photos imported before stopping were kept; nothing was removed")
             except Exception as e:
                 print(f"[SCAN-LIBRARY] ERROR: {e}", flush=True)
                 print(tb.format_exc(), flush=True)

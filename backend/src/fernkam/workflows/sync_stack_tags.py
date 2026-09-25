@@ -21,8 +21,24 @@ def run(album_path: Optional[str] = None, dry_run: bool = True) -> None:
 
 
 async def _run_async(album_path: Optional[str], dry_run: bool = True) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+    from fernkam.config import get_settings
+
+    # run() executes in a worker thread under its own asyncio.run() loop (see
+    # api/routers/workflows.py). The app's shared engine pools asyncpg
+    # connections bound to the server's loop, and touching them from this loop
+    # fails with "got Future attached to a different loop" — so this run gets
+    # its own unpooled engine, disposed before the loop closes.
+    engine = create_async_engine(get_settings().pg_url, poolclass=NullPool)
+    try:
+        await _sync(async_sessionmaker(engine, expire_on_commit=False), album_path, dry_run)
+    finally:
+        await engine.dispose()
+
+
+async def _sync(async_session_factory, album_path: Optional[str], dry_run: bool) -> None:
     from fernkam.db.models.photos import PhotoStack
-    from fernkam.db.session import async_session_factory
     from fernkam.services.stacks import detect_stacks
     from sqlalchemy import select
 
