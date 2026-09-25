@@ -1,13 +1,31 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/ — .env, alembic.ini and the default data/ directory live here.
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+ENV_FILE = BACKEND_DIR / ".env"
+
+# Export .env into the process environment as well as into Settings. Several
+# knobs are read straight from os.environ (FERNKAM_FACE_GPU, FERNKAM_*_CONCURRENCY,
+# FERNKAM_CLIP_DIR, ...), and so were the migration URLs; without this they
+# silently ignored .env and only worked as real environment variables.
+# override=False: a variable set in the real environment still wins.
+load_dotenv(ENV_FILE, override=False)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Absolute, so running from the repo root (or anywhere) reads backend/.env
+    # rather than whatever .env happens to be in the working directory.
+    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
-    # PostgreSQL
-    pg_url: str = "postgresql+asyncpg://fernkam_user:changeme@localhost:5432/fernkam"
-    pg_url_sync: str = "postgresql+psycopg2://fernkam_user:changeme@localhost:5432/fernkam"
+    # PostgreSQL. The defaults match docker-compose.yml. PG_URL_SYNC is
+    # optional: when unset it is derived from PG_URL.
+    pg_url: str = "postgresql+asyncpg://fernkam_user:fernkam@localhost:5432/fernkam"
+    pg_url_sync: str = ""
 
     # DigiKam MariaDB (import only)
     mysql_url: str = "mysql+pymysql://root@localhost:3306/digikam"
@@ -28,31 +46,45 @@ class Settings(BaseSettings):
     ffmpeg_path: str = ""
     exiftool_path: str = ""
 
-    # Face matching thresholds (override via env vars)
-    auto_confirm_thresh: float = 0.85  # FERNKAM_AUTO_CONFIRM_THRESH
-    suggest_thresh: float = 0.5        # FERNKAM_SUGGEST_THRESH
+    # Face matching thresholds. Every field in this class is read from the env
+    # var of the same name, upper-cased, with no prefix — e.g. SUGGEST_THRESH.
+    # Unused: the auto-confirm threshold and k-NN margin now come from the face
+    # sensitivity slider on the Settings page (faces/_helpers.py).
+    auto_confirm_thresh: float = 0.85  # AUTO_CONFIRM_THRESH
+    suggest_thresh: float = 0.5        # SUGGEST_THRESH
 
     # k-NN voting for auto-confirm sweep
-    knn_k: int = 15                    # FERNKAM_KNN_K: confirmed neighbours per face
-    knn_min_votes: int = 2             # FERNKAM_KNN_MIN_VOTES: min votes for top person
-    knn_margin: float = 0.05           # FERNKAM_KNN_MARGIN: min score gap between top-2
+    knn_k: int = 15                    # KNN_K: confirmed neighbours per face
+    knn_min_votes: int = 2             # KNN_MIN_VOTES: min votes for top person
+    knn_margin: float = 0.05           # KNN_MARGIN: unused, see above
 
     # Detection quality gate (0 = disabled)
-    min_det_score: float = 0.5         # FERNKAM_MIN_DET_SCORE
-    min_face_px: int = 30              # FERNKAM_MIN_FACE_PX: ignore crops smaller than this
-    min_blur_score: float = 10.0        # FERNKAM_MIN_BLUR_SCORE: Laplacian variance (0=disabled)
+    min_det_score: float = 0.5         # MIN_DET_SCORE
+    min_face_px: int = 30              # MIN_FACE_PX: ignore crops smaller than this
+    min_blur_score: float = 10.0       # MIN_BLUR_SCORE: Laplacian variance (0=disabled)
 
     # Minimum best_match_score for a confirmed face to be used as a k-NN reference
-    min_ref_score: float = 0.55        # FERNKAM_MIN_REF_SCORE
+    min_ref_score: float = 0.55        # MIN_REF_SCORE
 
     # Person birth dates — JSON map of person name → ISO date string
     # Faces suggested for these people on photos taken BEFORE their birth date are dropped.
     # Example: PERSON_MIN_DATES='{"Alice": "2018-03-22", "Bob": "2024-05-18"}'
     person_min_dates: str = "{}"  # PERSON_MIN_DATES
 
-    # Extensions
-    has_pgvector: bool = False
-    has_postgis: bool = False
+    # ── Network exposure ──
+    # The API has no authentication — it can delete, move and trash originals.
+    # Browsers attach an Origin header to cross-site POSTs; api/app.py rejects
+    # state-changing requests whose Origin is neither this server itself nor
+    # listed here, so a random web page cannot drive the API through the
+    # user's browser. The Vite dev server proxies /api, so it is same-origin
+    # and needs no entry. Comma-separated, e.g. "http://192.168.1.20:5173".
+    cors_origins: str = ""                    # CORS_ORIGINS
+
+    # ── Backups ──
+    # Name of a Docker container running the database (docker-compose.yml
+    # names it "fernkam-db"). When set, backup/restore run pg_dump/pg_restore
+    # inside that container, so the host needs no matching PostgreSQL client.
+    pg_docker_container: str = ""             # PG_DOCKER_CONTAINER
 
     # ── Postgres per-database tuning, applied at startup (see db/index_setup.py) ──
     # These are set with ALTER DATABASE (scoped to fernKam's own database only,
@@ -86,6 +118,21 @@ class Settings(BaseSettings):
     # the stage view and the dedup tier logic cannot drift apart.
     raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
     portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
+
+    @field_validator("thumb_cache_dir", "backup_dir")
+    @classmethod
+    def _anchor_to_backend(cls, v: str) -> str:
+        # Relative paths used to resolve against the working directory, so
+        # starting the server from the repo root instead of backend/ quietly
+        # began a second, empty thumbnail cache (and regenerated every tile).
+        p = Path(v)
+        return str(p if p.is_absolute() else BACKEND_DIR / p)
+
+    @model_validator(mode="after")
+    def _derive_sync_url(self) -> "Settings":
+        if not self.pg_url_sync:
+            self.pg_url_sync = self.pg_url.replace("+asyncpg", "+psycopg2")
+        return self
 
 
 @lru_cache

@@ -1,0 +1,51 @@
+# PostgreSQL 17 + pgvector for fernKam — the easiest way to get a database.
+#
+#   docker compose up -d                                  # start (and create on first run)
+#   cd backend && uv run fernkam setup-db --docker        # write .env + migrate
+#
+# Only the database runs in Docker. The backend, GPU work and your photo
+# library stay on the host. Data lives in the `fernkam-pgdata` volume, which
+# survives `docker compose down`; `docker compose down -v` deletes it.
+#
+# Optional overrides (shell environment, or a .env file next to this one):
+#   FERNKAM_DB_PASSWORD   default "fernkam" — the port is bound to 127.0.0.1 only
+#   FERNKAM_DB_PORT       default 5432 — change it if a native PostgreSQL already uses 5432
+#   FERNKAM_DB_SHARED_BUFFERS / FERNKAM_DB_MAINTENANCE_WORK_MEM   memory tuning, see below
+name: fernkam
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: fernkam-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fernkam_user
+      POSTGRES_PASSWORD: ${FERNKAM_DB_PASSWORD:-fernkam}
+      POSTGRES_DB: fernkam
+    ports:
+      # Loopback only: nothing else on the network can reach the database.
+      - "127.0.0.1:${FERNKAM_DB_PORT:-5432}:5432"
+    volumes:
+      - fernkam-pgdata:/var/lib/postgresql/data
+      - ./scripts/docker-initdb:/docker-entrypoint-initdb.d:ro
+    # shared_buffers: Postgres ships with 128MB; ~25% of what you can spare is
+    # typical. maintenance_work_mem: HNSW index builds (faces, CLIP) are much
+    # faster when the graph fits in it. Per-database planner settings
+    # (random_page_cost, work_mem, ...) are applied by the app at startup.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${FERNKAM_DB_SHARED_BUFFERS:-1GB}
+      - -c
+      - maintenance_work_mem=${FERNKAM_DB_MAINTENANCE_WORK_MEM:-1GB}
+    # Docker's default 64MB /dev/shm is too small for parallel queries and
+    # the shared_buffers above.
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fernkam_user -d fernkam"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  fernkam-pgdata:

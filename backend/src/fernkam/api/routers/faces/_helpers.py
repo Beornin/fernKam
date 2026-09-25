@@ -99,7 +99,7 @@ def _adaptive_auto_confirm_thresh(base: float, face_count: int, floor: float = 0
 
 
 async def _resolve_person_min_dates(db) -> "dict[int, object]":
-    """Return {person_tag_id: datetime.date} from FERNKAM_PERSON_MIN_DATES config.
+    """Return {person_tag_id: datetime.date} from PERSON_MIN_DATES config.
 
     Looks up person names in the Tag table so callers work with integer IDs.
     Returns an empty dict if the config is unset or unparseable.

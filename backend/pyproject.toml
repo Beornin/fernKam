@@ -19,6 +19,7 @@ dependencies = [
     "psycopg2-binary>=2.9.12",
     "pydantic-settings>=2.14.1",
     "pymysql>=1.2.0",
+    "python-dotenv>=1.0.0",
     "python-multipart>=0.0.29",
     "rawpy>=0.23.0",
     "exifread>=3.0.0",
@@ -44,6 +45,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "granian[reload]>=2.7.4",  # `fernkam serve --reload`
     "hatchling>=1.29.0",
 ]
 

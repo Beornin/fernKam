@@ -562,7 +562,7 @@
 			</div>
 			<p class="text-sm text-zinc-400 mb-4">
 				Marks unconfirmed faces with low detection score (&lt;0.5) or tiny bounding box (&lt;30 px) as ignored.
-				Reduces review queue noise. Configurable via <code class="text-rose-300">FERNKAM_MIN_DET_SCORE</code> / <code class="text-rose-300">FERNKAM_MIN_FACE_PX</code>.
+				Reduces review queue noise. Configurable via <code class="text-rose-300">MIN_DET_SCORE</code> / <code class="text-rose-300">MIN_FACE_PX</code> in backend/.env.
 			</p>
 			<button
 				onclick={async () => {

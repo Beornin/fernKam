@@ -60,25 +60,14 @@ def _run_migrations() -> None:
     (created by the old ensure_* helpers before migrations took over), those
     tables are dropped first so alembic can own them cleanly.
     """
-    import os as _os
-    from pathlib import Path as _Path
     from alembic.config import Config as _AlembicConfig
     from alembic import command as _alembic_cmd
+    from fernkam.config import BACKEND_DIR, get_settings
 
-    # Locate alembic.ini relative to this file's package root
-    backend_dir = _Path(__file__).parent.parent.parent.parent  # …/backend/
-    ini_path = backend_dir / "alembic.ini"
-
-    cfg = _AlembicConfig(str(ini_path))
-
-    # Allow env-var override (same logic as alembic/env.py)
-    db_url = _os.environ.get("PG_URL_SYNC") or _os.environ.get("PG_URL") or ""
-    if db_url:
-        if "+asyncpg" in db_url:
-            db_url = db_url.replace("+asyncpg", "+psycopg2")
-        cfg.set_main_option("sqlalchemy.url", db_url)
-
-    sync_url = cfg.get_main_option("sqlalchemy.url")
+    cfg = _AlembicConfig(str(BACKEND_DIR / "alembic.ini"))
+    # alembic/env.py sets the URL from the same settings; this copy is for the
+    # bootstrap check below.
+    sync_url = get_settings().pg_url_sync.replace("+asyncpg", "+psycopg2")
 
     # ── Bootstrap guard ───────────────────────────────────────────────────────
     # If alembic_version doesn't exist this is either a brand-new DB or one

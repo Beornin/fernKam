@@ -21,8 +21,12 @@ def upgrade() -> None:
         ["exif"],
         postgresql_using="gin",
         postgresql_where="exif IS NOT NULL",
+        # 0001 and 0011 already create this index, so on a fresh database it
+        # exists by the time this runs; without IF NOT EXISTS the whole
+        # migration chain aborts here.
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_photos_exif_gin", table_name="photos")
+    op.drop_index("ix_photos_exif_gin", table_name="photos", if_exists=True)

@@ -330,7 +330,7 @@ async def auto_confirm_all_faces(
 async def drop_pre_birth_suggestions(db: DB) -> dict:
     """Reset suggested faces that violate person birth-date constraints.
 
-    For each person in FERNKAM_PERSON_MIN_DATES, any face with status='suggested'
+    For each person in PERSON_MIN_DATES, any face with status='suggested'
     pointing to that person on a photo whose taken_at is BEFORE the birth date is
     reset to status='unconfirmed' with person_tag_id cleared.
     """

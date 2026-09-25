@@ -51,17 +51,44 @@ def _parsed_db():
     return urlparse(get_settings().pg_url_sync)
 
 
+def _docker_container() -> str:
+    from fernkam.config import get_settings
+    return get_settings().pg_docker_container.strip()
+
+
+def _docker_cmd(tool: str, parsed, *args: str, stdin: bool = False) -> list[str] | None:
+    """pg_dump/pg_restore run inside the database container (PG_DOCKER_CONTAINER).
+
+    Avoids needing a host PostgreSQL client at all — and a matching one, since
+    pg_dump refuses to dump a newer server. Connects over the container's own
+    socket, where the official image trusts local connections.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        return None
+    return [docker, "exec", *(["-i"] if stdin else []), _docker_container(),
+            tool, "-U", parsed.username or "postgres", *args]
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.post("/create")
 async def create_backup() -> dict:
     """Run pg_dump and save a custom-format .dump file in a datestamped subfolder."""
-    pg_dump = _find_tool("pg_dump", _PG_DUMP_CANDIDATES)
-    if not pg_dump:
-        return {"ok": False, "message": "pg_dump not found. Add PostgreSQL bin to your PATH."}
+    parsed = _parsed_db()
+    dbname = parsed.path.lstrip("/")
+    if _docker_container():
+        cmd = _docker_cmd("pg_dump", parsed, "-F", "c", dbname)
+        if not cmd:
+            return {"ok": False, "message": "PG_DOCKER_CONTAINER is set but `docker` is not on PATH."}
+    else:
+        pg_dump = _find_tool("pg_dump", _PG_DUMP_CANDIDATES)
+        if not pg_dump:
+            return {"ok": False, "message": "pg_dump not found. Add PostgreSQL bin to your PATH, "
+                                            "or set PG_DOCKER_CONTAINER if the database runs in Docker."}
+        cmd = None
 
     backup_dir = _backup_dir()
-    parsed = _parsed_db()
     now = datetime.now()
     dated_dir = backup_dir / now.strftime("%Y-%m-%d")
     dated_dir.mkdir(parents=True, exist_ok=True)
@@ -71,19 +98,30 @@ async def create_backup() -> dict:
     if parsed.password:
         env["PGPASSWORD"] = parsed.password
 
-    cmd = [
-        pg_dump,
-        "-h", parsed.hostname or "localhost",
-        "-p", str(parsed.port or 5432),
-        "-U", parsed.username or "postgres",
-        "-F", "c",
-        "-f", str(backup_file),
-        parsed.path.lstrip("/"),
-    ]
+    if cmd is None:
+        cmd = [
+            pg_dump,
+            "-h", parsed.hostname or "localhost",
+            "-p", str(parsed.port or 5432),
+            "-U", parsed.username or "postgres",
+            "-F", "c",
+            "-f", str(backup_file),
+            dbname,
+        ]
+        dump_to_stdout = False
+    else:
+        dump_to_stdout = True  # the dump is written inside the container's stdout, not a host path
 
     def _run() -> dict:
         try:
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+            if dump_to_stdout:
+                with open(backup_file, "wb") as out:
+                    result = subprocess.run(cmd, env=env, stdout=out, stderr=subprocess.PIPE, timeout=300)
+                result.stderr = result.stderr.decode(errors="replace")
+                if result.returncode != 0:
+                    backup_file.unlink(missing_ok=True)
+            else:
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
                 size_kb = backup_file.stat().st_size // 1024
                 return {
@@ -142,29 +180,58 @@ async def restore_backup(body: RestoreRequest) -> dict:
     if not Path(body.backup_path).is_file():
         return {"ok": False, "message": "Backup file not found."}
 
-    pg_restore = _find_tool("pg_restore", _PG_RESTORE_CANDIDATES)
-    if not pg_restore:
-        return {"ok": False, "message": "pg_restore not found. Add PostgreSQL bin to your PATH."}
-
     parsed = _parsed_db()
+    dbname = parsed.path.lstrip("/")
     env = os.environ.copy()
     if parsed.password:
         env["PGPASSWORD"] = parsed.password
 
-    cmd = [
-        pg_restore,
-        "-h", parsed.hostname or "localhost",
-        "-p", str(parsed.port or 5432),
-        "-U", parsed.username or "postgres",
-        "-d", parsed.path.lstrip("/"),
-        "--clean", "--if-exists",
-        "-F", "c",
-        body.backup_path,
-    ]
+    if _docker_container():
+        cmd = _docker_cmd("pg_restore", parsed, "-d", dbname, "--clean", "--if-exists", "-F", "c", stdin=True)
+        if not cmd:
+            return {"ok": False, "message": "PG_DOCKER_CONTAINER is set but `docker` is not on PATH."}
+        restore_from_stdin = True
+    else:
+        pg_restore = _find_tool("pg_restore", _PG_RESTORE_CANDIDATES)
+        if not pg_restore:
+            return {"ok": False, "message": "pg_restore not found. Add PostgreSQL bin to your PATH, "
+                                            "or set PG_DOCKER_CONTAINER if the database runs in Docker."}
+        cmd = [
+            pg_restore,
+            "-h", parsed.hostname or "localhost",
+            "-p", str(parsed.port or 5432),
+            "-U", parsed.username or "postgres",
+            "-d", dbname,
+            "--clean", "--if-exists",
+            "-F", "c",
+            body.backup_path,
+        ]
+        restore_from_stdin = False
 
     def _run() -> dict:
+        list_path = None
         try:
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+            if restore_from_stdin:
+                with open(body.backup_path, "rb") as src:
+                    result = subprocess.run(cmd, env=env, stdin=src, capture_output=True, timeout=300)
+                result.stderr = result.stderr.decode(errors="replace")
+            else:
+                # Leave extensions out of the restore. They belong to the
+                # superuser that created them (`fernkam setup-db`), so --clean's
+                # DROP EXTENSION fails for the app's own non-superuser role and
+                # the whole restore reported failure; they already exist in
+                # the target database anyway.
+                toc = subprocess.run([pg_restore, "-l", body.backup_path],
+                                     capture_output=True, text=True, timeout=60)
+                if toc.returncode == 0:
+                    import re
+                    import tempfile
+                    keep = [ln for ln in toc.stdout.splitlines() if not re.search(r"\bEXTENSION\b", ln)]
+                    fd, list_path = tempfile.mkstemp(suffix=".list")
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write("\n".join(keep) + "\n")
+                    cmd.insert(-1, f"--use-list={list_path}")
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
                 return {"ok": True, "message": f"Restored successfully. Restart the server to reload fresh data."}
             return {"ok": False, "message": f"pg_restore failed: {result.stderr.strip()}"}
@@ -172,5 +239,8 @@ async def restore_backup(body: RestoreRequest) -> dict:
             return {"ok": False, "message": "Restore timed out after 5 minutes."}
         except Exception as exc:
             return {"ok": False, "message": f"Restore error: {exc}"}
+        finally:
+            if list_path:
+                os.unlink(list_path)
 
     return await asyncio.to_thread(_run)

@@ -1,7 +1,7 @@
 """Debug / DBA endpoints — EXPLAIN ANALYZE on hot queries.
 
 Phase 0B verification: validate that indexes are hit and date filters are sargable.
-Only enabled when FERNKAM_DEBUG=true (default: off).
+Only enabled when DEBUG=true in backend/.env (default: off).
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ router = APIRouter()
 
 def _require_debug():
     if not getattr(get_settings(), "debug", False):
-        raise HTTPException(403, "Set FERNKAM_DEBUG=true to enable debug endpoints")
+        raise HTTPException(403, "Set DEBUG=true in backend/.env to enable debug endpoints")
 
 
 @router.get("/explain/photos")
@@ -45,7 +45,7 @@ async def explain_photos(
     """Run EXPLAIN (ANALYZE, BUFFERS) on the main photo query.
 
     Returns the Postgres query plan so you can verify index usage and sargability.
-    Enable with FERNKAM_DEBUG=true.
+    Enable with DEBUG=true.
     """
     _require_debug()
     filters = PhotoFilters(

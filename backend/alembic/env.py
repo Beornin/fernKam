@@ -1,4 +1,3 @@
-import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -9,12 +8,16 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from env if set
-db_url = os.environ.get("PG_URL_SYNC") or os.environ.get("PG_URL")
-if db_url and "+asyncpg" in db_url:
-    db_url = db_url.replace("+asyncpg", "+psycopg2")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+# The database URL always comes from the app's settings (backend/.env, with real
+# environment variables taking precedence) — never from alembic.ini, so running
+# `alembic upgrade head` and starting the server can't target different
+# databases or credentials.
+from fernkam.config import get_settings
+
+config.set_main_option(
+    "sqlalchemy.url",
+    get_settings().pg_url_sync.replace("+asyncpg", "+psycopg2").replace("%", "%%"),
+)
 
 from fernkam.db.base import Base
 import fernkam.db.models  # noqa: F401 — registers all models
