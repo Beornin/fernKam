@@ -13,6 +13,8 @@ uv run fernkam preflight [--digikam]     # environment checks; exit code 1 on a 
 uv run fernkam serve [--reload] [--host 0.0.0.0] [--port 8000]
 uv run fernkam import-digikam [--commit] # one-time digiKam MariaDB import (dry run by default)
 uv run fernkam verify                    # digiKam vs fernKam row counts
+uv run fernkam download-model siglip2 [--text]            # same as Tag Review → Models → Install
+uv run --with open-clip-torch fernkam export-model bioclip2  # build BioCLIP 2's ONNX once
 
 uv run alembic upgrade head              # the server also does this on every start
 uv run alembic revision -m "..."         # new migration in alembic/versions/
@@ -51,7 +53,11 @@ src/fernkam/
 ├── task_manager.py      Background task registry (the `tasks` table + in-memory cache)
 ├── face_processor.py    InsightFace detection/embedding, pgvector similarity helpers
 ├── clip_embed.py        CLIP ViT-B/32 image/text towers via onnxruntime (downloaded on first use)
-├── tag_learning.py      per-tag classifiers learned from approved/rejected tags (Tag Review)
+├── tag_learning.py      per-tag ensembles learned from approved/rejected tags (Tag Review)
+├── embed_models.py      extra image models (SigLIP 2, BioCLIP 2): registry, download, ONNX runtime
+├── embed_index.py       where each model's vectors live; indexing tasks; per-model HNSW
+├── model_export.py      open_clip weights -> ONNX, verified against PyTorch (run via uv --with)
+├── vision_check.py      local vision model (Ollama / OpenAI-compatible) double-checks tags
 ├── metadata_sync.py     exiftool read (persistent -stay_open process) and XMP write-back
 ├── sync_merge.py        three-way merge of editable metadata between catalogue and file
 ├── library_watch.py     watches LIBRARY_ROOT while running and triggers scans
@@ -93,13 +99,34 @@ duplicate merges) leaves it NULL. A tag the user adds or accepts sets it (tag pi
 carries approval across members. Rejections live in `tag_rejections`, and the tag is removed.
 `tag_learning` trains only on approved links (a tag's own and its descendants') and
 rejections (its own and its ancestors'). Weak negatives are a random sample of other photos,
-and unverified links are never used. The model is a logistic regression per tag on
-`photos.embedding_v`, stored as raw-embedding coefficients. It is calibrated on
-cross-validation output, and library-wide scores add the tag's prevalence, so a suggestion
-means "more likely than not". Because CLIP vectors are unit length, the HNSW cosine index
-ranks candidates for a linear model directly. Photos in the weak sample are scored by their
-held-out cross-validation score, not by the final model that learned them as negatives. The
-Discover kNN suggestions follow the same rule: approved neighbours only, never a rejected pair.
+and unverified links are never used. Each image model is an expert: a logistic regression per tag
+on that model's vectors, calibrated on its cross-validation output. A non-negative stacker
+per combination of experts learns how much to trust each one for that tag. A photo only
+some models have indexed is scored by the stacker for exactly those models, so a missing
+vector never silently lowers its score. Library-wide scores add the tag's prevalence, so a
+suggestion means "more likely than not". Vectors are unit length, so each model's HNSW
+cosine index ranks candidates for its expert directly; candidates from every model are
+pooled and scored by the whole ensemble. Training runs twice: weak negatives that the
+first pass's held-out score calls positive are left out of the second (reliable negatives
+only) and scored by a model that never saw them. The Discover kNN suggestions follow the
+same rule: approved neighbours only, never a rejected pair.
+
+**Image models and vectors.** CLIP's vectors stay in `photos.embedding_v`. Every other model's
+live in `photo_embeddings (photo_id, model, v)`, where `v` has no fixed dimension. Each model
+gets a partial expression index, `hnsw ((v::vector(dim))) WHERE model = 'key'`, built after
+its first indexing run (then `ANALYZE`, or the planner sorts every row instead). Model keys
+come from `embed_models.MODELS` and are written into SQL as literals: a partial index is
+only used when the query's `WHERE` matches its predicate literally. `embed_models` reads
+each model's `preprocessor_config.json` rather than hard-coding sizes and means; exports
+record torchvision's crop rounding (`"torchvision": true`). SigLIP 2 comes as ready ONNX from
+onnx-community. BioCLIP 2 has only PyTorch weights, so `model_export.py` exports it once in
+a uv throwaway environment and refuses the result unless onnxruntime reproduces PyTorch
+(cosine ≥ 0.999 for images and text). Pixel changes drop a photo's `photo_embeddings` and
+`tag_checks` rows along with its CLIP vector.
+
+**The vision model never labels.** `vision_check` asks a yes/no question per photo and
+stores the answer (and P(yes) when the server returns token probabilities) in `tag_checks`.
+It is shown and compared with the user's decisions, and nothing in `tag_learning` reads it.
 
 **Schema.** Alembic owns the core tables (`photos`, `tags`, `photo_tags`, `faces`, `cameras`,
 `lenses`, `photo_stacks`, `saved_searches`, `app_settings`). A few support tables and indexes are
@@ -168,4 +195,7 @@ Standalone scripts; each prints `ok - ...` or raises:
 | `test_move_match.py`: moved/renamed files matched by content hash | no |
 | `test_scan_root.py`: scans stay inside `LIBRARY_ROOT` | no |
 | `test_tag_learning.py`: tag classifier: calibration, rejections, held-out weak scores | no |
+| `test_tag_ensemble.py`: per-tag model weights, missing vectors, reliable-negative pass | no |
+| `test_embed_models.py`: ONNX runtime: preprocessing from config, output pick, fp16, text | no |
+| `test_vision_check.py`: vision client against a fake Ollama / OpenAI server | no |
 | `test_no_duplicate_photos.py`: live catalogue has no duplicate paths | yes (`.env`) |

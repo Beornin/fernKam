@@ -2,11 +2,14 @@
 
 Every tag starts unverified. The user works through one tag at a time:
   unverified   tags already on photos (from files, digiKam, workflows)
-  suggested    photos the tag's model thinks should have it
-  approved     checked and right; these train the model
+  suggested    photos the tag's models think should have it (or, before the
+               tag is learning, photos found by its name)
+  approved     checked and right; these train the models
   rejected     checked and wrong; removed from the photo, and a negative example
 
-Approving or rejecting is the only way labels reach tag_learning.
+Approving or rejecting is the only way labels reach tag_learning. The image
+models (embed_models / embed_index) and the local vision model (vision_check)
+are managed from here too.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
-from fernkam import tag_learning
+from fernkam import embed_index, embed_models, tag_learning, vision_check
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,8 @@ def _model_out(row) -> dict | None:
         # Of the suggestions the user has judged, the share that were right:
         # the model's real accuracy, measured by the review itself.
         "hit_rate": row.reviewed_accepted / reviewed if reviewed else None,
+        # Per image model: its weight for this tag and its own numbers.
+        "experts": row.experts or [],
     }
 
 
@@ -66,15 +71,16 @@ async def summary(db: DB) -> dict:
           (SELECT count(*) FROM tag_suggestions) AS suggested,
           (SELECT count(*) FROM tag_rejections) AS rejected,
           (SELECT count(*) FROM tag_models) AS models,
-          (SELECT count(*) FILTER (WHERE embedding_v IS NOT NULL) FROM photos WHERE status = 1) AS embedded,
+          (SELECT count(*) FROM photos p WHERE p.status = 1 AND {tag_learning._HAS_VECTOR}) AS embedded,
           (SELECT count(*) FROM photos WHERE status = 1) AS photos
-    """))).one()
+    """.replace("{tag_learning._HAS_VECTOR}", tag_learning._HAS_VECTOR)))).one()
     return {**row._asdict(), "min_positives": tag_learning.MIN_POSITIVES}
 
 
 @router.get("/tags")
 async def list_tags(db: DB) -> list[dict]:
-    """Every tag with something to review or already reviewed, busiest first."""
+    """Every tag, busiest first. Tags nobody has used yet come last: they can
+    still be found by name."""
     rows = (await db.execute(text("""
         WITH c AS (
             SELECT tag_id,
@@ -94,8 +100,8 @@ async def list_tags(db: DB) -> list[dict]:
         LEFT JOIN r ON r.tag_id = t.id
         LEFT JOIN tag_models m ON m.tag_id = t.id
         WHERE NOT t.is_person
-          AND (c.tag_id IS NOT NULL OR s.tag_id IS NOT NULL OR r.tag_id IS NOT NULL)
-        ORDER BY COALESCE(c.unverified, 0) + COALESCE(s.n, 0) DESC, t.path
+        ORDER BY COALESCE(c.unverified, 0) + COALESCE(s.n, 0) DESC,
+                 (c.tag_id IS NULL AND r.tag_id IS NULL), t.path
     """))).all()
     return [
         {"id": r.id, "name": r.name, "path": r.path, "unverified": r.unverified,
@@ -118,6 +124,8 @@ async def tag_detail(tag_id: int, db: DB) -> dict:
     model = (await db.execute(text(
         "SELECT * FROM tag_models WHERE tag_id = :t"), {"t": tag_id})).first()
     positives, negatives = await tag_learning.label_counts(db, tag.path)
+    by_name = (await db.execute(text(
+        "SELECT count(*) FROM tag_suggestions WHERE tag_id = :t AND source = 'name'"), {"t": tag_id})).scalar_one()
     return {
         "id": tag.id, "name": tag.name, "path": tag.path,
         "counts": counts._asdict(),
@@ -125,6 +133,9 @@ async def tag_detail(tag_id: int, db: DB) -> dict:
         "learning_positives": positives, "learning_negatives": negatives,
         "min_positives": tag_learning.MIN_POSITIVES,
         "model": _model_out(model),
+        "found_by_name": by_name,
+        "name_models": await tag_learning.name_models(db),
+        "vision": await vision_check.agreement(db, tag_id),
     }
 
 
@@ -133,7 +144,7 @@ async def tag_photos(
     tag_id: int,
     db: DB,
     state: State = Query("unverified"),
-    sort: Literal["date", "doubtful", "score", "recent"] = Query("date"),
+    sort: Literal["date", "doubtful", "score", "recent", "vision_yes", "vision_no"] = Query("date"),
     limit: int = Query(60, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> dict:
@@ -153,12 +164,19 @@ async def tag_photos(
         src = ("tag_rejections x", "x.tag_id = :t", "NULL::real")
         order = "x.rejected_at DESC, p.id DESC"
     table, where, score = src
+    if sort == "vision_yes":     # what the vision model confirms, first
+        order = f"c.verdict DESC NULLS LAST, c.p_yes DESC NULLS LAST, {score} DESC NULLS LAST, p.id"
+    elif sort == "vision_no":    # what it disputes, first
+        order = f"c.verdict ASC NULLS LAST, c.p_yes ASC NULLS LAST, {score} ASC NULLS LAST, p.id"
+    source = "x.source" if state == "suggested" else "NULL"
     rows = (await db.execute(text(f"""
         SELECT p.id, p.filename, p.album_path, p.taken_at, p.media_type, {score} AS score,
+               {source} AS source, c.verdict AS vision, c.p_yes AS vision_p,
                EXISTS (SELECT 1 FROM tag_rejections r
                        WHERE r.photo_id = p.id AND r.tag_id = :t) AS rejected_before,
                count(*) OVER () AS total
         FROM {table} JOIN photos p ON p.id = x.photo_id
+        LEFT JOIN tag_checks c ON c.photo_id = p.id AND c.tag_id = :t
         WHERE {where} AND p.status = 1
         ORDER BY {order}
         LIMIT :limit OFFSET :offset
@@ -170,6 +188,9 @@ async def tag_photos(
              "taken_at": r.taken_at.isoformat() if r.taken_at else None,
              "media_type": r.media_type,
              "score": round(float(r.score), 4) if r.score is not None else None,
+             "source": r.source,
+             "vision": r.vision,
+             "vision_p": round(float(r.vision_p), 3) if r.vision_p is not None else None,
              "rejected_before": r.rejected_before and state != "rejected"}
             for r in rows
         ],
@@ -199,10 +220,12 @@ async def decide(
     to_write: set[int] = set()
     from_suggestions = {"accepted": 0, "rejected": 0}
 
+    # Only the models' own suggestions count toward their hit rate, not
+    # photos found by the tag's name.
     if approve:
-        from_suggestions["accepted"] = len((await db.execute(text(
+        from_suggestions["accepted"] = sum(r.source == "model" for r in (await db.execute(text(
             "DELETE FROM tag_suggestions WHERE tag_id = :t AND photo_id = ANY(CAST(:a AS bigint[])) "
-            "RETURNING photo_id"), p)).all())
+            "RETURNING photo_id, source"), p)).all())
         linked = (await db.execute(text("""
             INSERT INTO photo_tags (photo_id, tag_id, verified_at)
             SELECT id, :t, now() FROM photos WHERE id = ANY(CAST(:a AS bigint[]))
@@ -215,9 +238,9 @@ async def decide(
             "DELETE FROM tag_rejections WHERE tag_id = :t AND photo_id = ANY(CAST(:a AS bigint[]))"), p)
 
     if reject:
-        from_suggestions["rejected"] = len((await db.execute(text(
+        from_suggestions["rejected"] = sum(r.source == "model" for r in (await db.execute(text(
             "DELETE FROM tag_suggestions WHERE tag_id = :t AND photo_id = ANY(CAST(:r AS bigint[])) "
-            "RETURNING photo_id"), p)).all())
+            "RETURNING photo_id, source"), p)).all())
         removed = {r.photo_id for r in (await db.execute(text(
             "DELETE FROM photo_tags WHERE tag_id = :t AND photo_id = ANY(CAST(:r AS bigint[])) "
             "RETURNING photo_id"), p)).all()}
@@ -265,15 +288,169 @@ async def train(tag_id: int, db: DB) -> dict:
     if result is None:
         positives, _ = await tag_learning.label_counts(db, tag.path)
         raise HTTPException(400, (
-            f"Needs {tag_learning.MIN_POSITIVES} approved photos with a search index entry "
+            f"Needs {tag_learning.MIN_POSITIVES} approved photos that an image model has indexed "
             f"to learn from; {positives} approved so far"))
     return result
 
 
+@router.post("/tags/{tag_id}/find-by-name")
+async def find_by_name(tag_id: int, db: DB) -> dict:
+    """Search for a tag by its name, before it has enough approved photos to
+    learn from."""
+    await _tag(db, tag_id)
+    r = await tag_learning.find_by_name(db, tag_id)
+    if r.get("learning"):
+        raise HTTPException(400, "This tag is already learning from your decisions")
+    if not r["models"]:
+        raise HTTPException(400, "No image model with a text tower is indexed. "
+                                 "Index CLIP on Discover, or add a model's text tower under Models.")
+    return r
+
+
+@router.post("/tags/{tag_id}/check")
+async def check_tag(
+    tag_id: int,
+    db: DB,
+    state: Literal["suggested", "unverified"] = Body("suggested", embed=True),
+    limit: int = Body(300, embed=True, ge=1, le=2000),
+) -> dict:
+    """Ask the local vision model about this tab's photos, as a background task."""
+    from fernkam.task_manager import task_manager
+
+    tag = await _tag(db, tag_id)
+    st = await vision_check.status(db)
+    if not st["reachable"]:
+        raise HTTPException(400, f"No vision model server at {st['url']}. Is Ollama running?")
+    if not st["model"]:
+        raise HTTPException(400, "The server has no vision model. With Ollama: ollama pull qwen2.5vl:7b")
+    ids = await vision_check.photos_to_check(db, tag_id, state, limit, st["model"])
+    if not ids:
+        return {"task_id": None, "queued": 0, "message": "Everything here is already checked"}
+    task_id = await task_manager.create_task(
+        "vision_check", f"Asking {st['model']} about {len(ids)} photos for {tag.name}…")
+
+    async def run() -> None:
+        from fernkam.db.session import async_session_factory
+
+        async def is_cancelled() -> bool:
+            t = await task_manager.get_task(task_id)
+            return bool(t and t.status == "cancelled")
+
+        async def on_progress(done, total, yes, no):
+            await task_manager.update_task(
+                task_id, message=f"{st['model']} on {tag.name}: {done}/{total} ({yes} yes, {no} no)",
+                progress={"done": done, "total": total})
+        try:
+            async with async_session_factory() as bdb:
+                r = await vision_check.check_photos(bdb, tag_id, ids, on_progress, is_cancelled)
+            await task_manager.update_task(
+                task_id, status="completed",
+                message=f"{r['model']} checked {r['checked']} photos for {tag.name}: "
+                        f"{r['yes']} yes, {r['no']} no" + (f", {r['failed']} failed" if r["failed"] else ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("vision check failed")
+            await task_manager.update_task(task_id, status="failed", message=str(exc)[:500])
+
+    asyncio.create_task(run(), name=f"fernkam-vision-{task_id}")
+    return {"task_id": task_id, "queued": len(ids), "message": "running"}
+
+
+# ── models ───────────────────────────────────────────────────────────────────
+
+@router.get("/models")
+async def models(db: DB) -> dict:
+    """The image models (CLIP and the extra ones) and the vision model."""
+    import shutil
+    from fernkam import clip_embed
+    try:
+        import onnxruntime as ort
+        gpu = "CUDAExecutionProvider" in ort.get_available_providers()
+    except Exception:  # noqa: BLE001
+        gpu = False
+    counts = await embed_index.indexed_counts(db)
+    total = (await db.execute(text(
+        "SELECT count(*) FROM photos WHERE status = 1 AND media_type IN ('image', 'video')"))).scalar_one()
+    out = [{"key": "clip", "label": "CLIP", "purpose": "The search index behind Discover. Fast, general.",
+            "installed": clip_embed.models_downloaded(), "text_installed": clip_embed.models_downloaded(),
+            "indexed": counts["clip"], "source": "builtin"}]
+    for m in embed_models.MODELS.values():
+        out.append({
+            "key": m.key, "label": m.label, "purpose": m.purpose, "dim": m.dim, "source": m.source,
+            "size_mb": m.size_mb, "text_size_mb": m.text_size_mb, "gpu_recommended": m.gpu_recommended,
+            "installed": embed_models.installed(m.key), "text_installed": embed_models.text_installed(m.key),
+            "indexed": counts[m.key],
+            "export_command": embed_models.export_command(m.key) if m.source == "export" else None,
+        })
+    return {"models": out, "photos": total, "gpu": gpu, "uv_available": shutil.which("uv") is not None,
+            "vision": {**await vision_check.status(db), "agreement": await vision_check.agreement(db)}}
+
+
+@router.post("/models/{key}/install")
+async def install_model(key: str) -> dict:
+    """Download (or build) a model if needed and index the library with it."""
+    import shutil
+    if key not in embed_models.MODELS:
+        raise HTTPException(404, "Unknown model")
+    m = embed_models.MODELS[key]
+    if m.source == "export" and not embed_models.installed(key) and not shutil.which("uv"):
+        raise HTTPException(400, f"Build it once from a terminal in backend/: {embed_models.export_command(key)}")
+    return {"task_id": await embed_index.start_install(key)}
+
+
+@router.post("/models/{key}/text")
+async def install_text_tower(key: str) -> dict:
+    """Download a model's text tower, for finding photos by a tag's name."""
+    from fernkam.task_manager import task_manager
+    if key not in embed_models.MODELS:
+        raise HTTPException(404, "Unknown model")
+    m = embed_models.MODELS[key]
+    if m.source != "download":
+        raise HTTPException(400, f"{m.label}'s text tower comes with its build")
+    task_id = await task_manager.create_task("model_install", f"Downloading {m.label} text tower…")
+
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, lambda: embed_models.download(
+                key, text=True, progress=embed_index._threadsafe_progress(task_id, loop)))
+            await task_manager.update_task(task_id, status="completed",
+                                           message=f"{m.label} can now find photos by name")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("text tower download failed")
+            await task_manager.update_task(task_id, status="failed", message=str(exc)[:500])
+
+    asyncio.create_task(run(), name=f"fernkam-text-{key}")
+    return {"task_id": task_id}
+
+
+@router.delete("/models/{key}")
+async def remove_model(key: str, db: DB) -> dict:
+    if key not in embed_models.MODELS:
+        raise HTTPException(404, "Unknown model")
+    await embed_index.remove(db, key)
+    return {"removed": key}
+
+
+@router.post("/vision")
+async def set_vision(
+    db: DB,
+    model: str | None = Body(None, embed=True),
+    url: str | None = Body(None, embed=True),
+) -> dict:
+    """Pick the vision model (and optionally the server)."""
+    from fernkam.db.app_settings import set_setting
+    if url is not None:
+        await set_setting(db, "vision_url", url.strip())
+    if model is not None:
+        await set_setting(db, "vision_model", model.strip())
+    return await vision_check.status(db)
+
+
 @router.post("/train-all")
-async def train_all(db: DB) -> dict:
+async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
     """Relearn every tag with enough approved photos, as a background task.
-    Also picks up newly imported photos for suggestions."""
+    Also picks up newly imported photos for suggestions. With check=true, the
+    vision model then double-checks each tag's best new suggestions."""
     from fernkam.task_manager import task_manager
 
     tag_ids = await tag_learning.trainable_tags(db)
@@ -307,6 +484,8 @@ async def train_all(db: DB) -> dict:
             msg = f"Learned {done - failed} tags; {suggestions:,} suggestions to review"
             if failed:
                 msg += f" ({failed} failed, see Logs)"
+            if check:
+                msg += await _check_after_learning(task_id, tag_ids)
             await task_manager.update_task(task_id, status="completed", message=msg,
                                            progress={"done": done, "total": len(tag_ids)})
         except Exception as exc:  # noqa: BLE001
@@ -315,3 +494,33 @@ async def train_all(db: DB) -> dict:
 
     asyncio.create_task(_run(), name=f"fernkam-tag-learning-{task_id}")
     return {"task_id": task_id, "tags": len(tag_ids), "message": "running"}
+
+
+CHECK_PER_TAG = 30
+
+
+async def _check_after_learning(task_id: str, tag_ids: list[int]) -> str:
+    """Learn all → vision check: each tag's best unchecked suggestions."""
+    from fernkam.db.session import async_session_factory
+    from fernkam.task_manager import task_manager
+
+    async with async_session_factory() as bdb:
+        st = await vision_check.status(bdb)
+        if not st["reachable"] or not st["model"]:
+            return "; vision check skipped (no vision model reachable)"
+        checked = 0
+        for i, tid in enumerate(tag_ids):
+            t = await task_manager.get_task(task_id)
+            if t and t.status == "cancelled":
+                break
+            ids = await vision_check.photos_to_check(bdb, tid, "suggested", CHECK_PER_TAG, st["model"])
+            if not ids:
+                continue
+            await task_manager.update_task(
+                task_id, message=f"Double-checking with {st['model']}… tag {i + 1}/{len(tag_ids)}")
+            try:
+                checked += (await vision_check.check_photos(bdb, tid, ids))["checked"]
+            except Exception:  # noqa: BLE001
+                logger.exception("vision check after learning failed")
+                return f"; vision check stopped after {checked} photos (see Logs)"
+    return f"; {st['model']} double-checked {checked} suggestions"

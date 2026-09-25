@@ -188,6 +188,12 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                             embedded_n, _ = await embed_rows(bg_db, [tuple(r) for r in rows])
                         except Exception as ee:
                             logger.warning("[SCAN] search-index update failed: %s", ee)
+                    # And with every Tag Review model the user has indexed.
+                    try:
+                        from fernkam import embed_index
+                        await embed_index.refresh_photos(bg_db, refresh_ids)
+                    except Exception as ee:
+                        logger.warning("[SCAN] Tag Review model update failed: %s", ee)
 
                 t_total = _time.time() - t_start
                 per_photo_ms = (t_total / max(1, added)) * 1000.0

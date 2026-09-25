@@ -29,6 +29,27 @@ _THUMB_SIZE = "md"
 _BATCH = 64
 
 
+def load_photo_image(pid: int, album: str, fname: str):
+    """The picture an image model sees: the cached thumbnail, or one generated
+    now for photos the thumbnail backfill never reached. A PIL image or None.
+    Shared by CLIP and the extra Tag Review models (embed_index)."""
+    import io
+    from PIL import Image
+    from fernkam.thumbnails import generate_thumbnail_bytes, photo_disk_path, read_thumbnail_from_disk
+
+    data = read_thumbnail_from_disk(pid, _THUMB_SIZE)
+    if data is None:
+        data = generate_thumbnail_bytes(photo_disk_path(album, fname), _THUMB_SIZE)
+    if not data:
+        return None
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        return img
+    except Exception:
+        return None
+
+
 async def embed_rows(bdb, rows, on_progress=None, is_cancelled=None) -> tuple[int, int]:
     """CLIP-embed (id, album_path, filename) rows into photos.embedding_v.
 
@@ -36,32 +57,16 @@ async def embed_rows(bdb, rows, on_progress=None, is_cancelled=None) -> tuple[in
     re-edited photos). Returns (embedded, skipped as unreadable). Commits per
     batch.
     """
-    import io
-    from PIL import Image
     from fernkam import clip_embed as ce
-    from fernkam.thumbnails import generate_thumbnail_bytes, photo_disk_path, read_thumbnail_from_disk
 
     loop = asyncio.get_event_loop()
     ok = skipped = 0
-
-    def _load(pid: int, album: str, fname: str):
-        """Thumbnail first; fall back to generating one for photos the
-        thumbnail backfill never reached. Returns a PIL image or None."""
-        data = read_thumbnail_from_disk(pid, _THUMB_SIZE)
-        if data is None:
-            data = generate_thumbnail_bytes(photo_disk_path(album, fname), _THUMB_SIZE)
-        if not data:
-            return None
-        try:
-            return Image.open(io.BytesIO(data))
-        except Exception:
-            return None
 
     for start in range(0, len(rows), _BATCH):
         if is_cancelled and await is_cancelled():
             break
         chunk = rows[start:start + _BATCH]
-        imgs = await loop.run_in_executor(None, lambda c=chunk: [_load(r[0], r[1], r[2]) for r in c])
+        imgs = await loop.run_in_executor(None, lambda c=chunk: [load_photo_image(r[0], r[1], r[2]) for r in c])
         idx = [i for i, im in enumerate(imgs) if im is not None]
         skipped += len(chunk) - len(idx)
         if idx:

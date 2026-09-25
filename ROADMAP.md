@@ -750,9 +750,40 @@ doubtful*, and 16 suggestions are 16 real herons. After the rest of the decision
 found with no wrong suggestions. In the unit test, 20 rejections of a look-alike class cut its
 false acceptance from 92% to 4%.
 
-Next stages, each learning only from approved tags: a stronger embedding (SigLIP 2) beside
-CLIP, a species specialist (BioCLIP) for wildlife tags, and a local vision-language model that
-checks a suggestion before it reaches the queue.
+### Stage 2: several models, a species specialist, a second opinion · DONE
+
+| | |
+|---|---|
+| SigLIP 2 (so400m / base) | downloaded as ONNX from onnx-community, indexed into `photo_embeddings` |
+| BioCLIP 2 | exported once from the official weights (`uv run --with open-clip-torch fernkam export-model bioclip2`), checked against PyTorch before it is kept |
+| Per-tag ensemble | one expert per model, non-negative stacking per tag and per combination of available models |
+| Local vision model | Ollama (or any OpenAI-compatible server) answers yes/no per suggestion; shown, sortable, measured against your decisions, never a label |
+| Find by name | text towers rank photos for a tag before it has approved photos |
+
+The export path was checked for real with open_clip's ViT-B/16 and ViT-L/14 (BioCLIP 2's
+architecture), with random weights since this environment cannot download checkpoints: onnxruntime
+reproduced PyTorch exactly (cosine 1.000 on images and text), and fernKam's own preprocessing
+matched open_clip's after aligning torchvision's resize and crop rounding.
+
+On synthetic vectors where egrets look like herons to the general model:
+
+| | general model alone | with the species model |
+|---|---|---|
+| egrets accepted as herons (unit test, new photos) | 20% | **0%** |
+| weight the ensemble gives it, per tag | | species 0.50 vs general 0.13; noise model 0.00 |
+| end to end, 312-photo library, round 1 | | 16/20 untagged herons suggested, 0 egrets |
+| end to end, after 40 approvals | | 18/20, 0 egrets |
+
+Two more fixes found by testing:
+- Photos without a species vector at first scored low, because "missing" counted as a
+  neutral vote. Now there is one stacker per combination of models, so they are judged by the
+  models they have.
+- On a small library the random negative sample held most untagged herons, and recall of
+  them stalled at 65%. A second training pass that keeps only reliable negatives brought it
+  to 94% in simulation, with look-alikes still kept out.
+
+Not built yet: GPS/date priors for species (a heron in Norway in January), and using SigLIP 2
+for Discover's text search.
 
 ---
 

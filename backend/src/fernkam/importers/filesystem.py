@@ -570,7 +570,8 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
     """The image changed: drop what was computed from its old pixels.
 
     The CLIP embedding is cleared (re-embedded by the scan or the Discover
-    indexer), and with it the tag models' suggestions and scores for the photo;
+    indexer), and with it the other image models' vectors, the tag models'
+    suggestions and scores, and the vision model's checks for the photo;
     approved and rejected tags are human decisions and stay. Faces nobody has
     reviewed (unconfirmed/suggested) are deleted and the photo is re-queued for
     detection; confirmed and ignored faces stay, with their crops cleared so
@@ -586,6 +587,8 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
         "DELETE FROM faces WHERE photo_id = ANY(:ids) AND status IN ('unconfirmed', 'suggested')"),
         {"ids": photo_ids})
     await db.execute(_text("UPDATE faces SET crop_data = NULL WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
+    await db.execute(_text("DELETE FROM photo_embeddings WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
+    await db.execute(_text("DELETE FROM tag_checks WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
     await db.execute(_text("DELETE FROM tag_suggestions WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
     await db.execute(_text("UPDATE photo_tags SET model_score = NULL WHERE photo_id = ANY(:ids)"),
                      {"ids": photo_ids})

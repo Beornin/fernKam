@@ -26,7 +26,8 @@ src/
 │   ├── photos/             main grid. Sidebar tabs (albums, tags, search, timeline,
 │   │                       people, labels), map view, lightbox, Review Mode (culling)
 │   ├── review/             Face Review: per-person candidates, unknown-face clusters
-│   ├── tag-review/         Tag Review: verify tags per tag, model suggestions, learning stats
+│   ├── tag-review/         Tag Review: verify tags per tag, model suggestions, learning stats,
+│   │                       vision double-check, find by name (models: lib/components/TagModelsPanel)
 │   ├── discover/           semantic search, similar photos, tag suggestions (CLIP)
 │   ├── smart-albums/       saved searches (keyset-paginated)
 │   ├── duplicates/  stacks/  date-inference/  workflows/

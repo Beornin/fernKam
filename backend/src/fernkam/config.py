@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     watch_library: bool = True                # WATCH_LIBRARY
     watch_library_polling: bool = False       # WATCH_LIBRARY_POLLING
 
+    # ── Tag Review: local vision model ──
+    # A vision-language model double-checks tag suggestions (vision_check.py).
+    # Ollama's own API by default; a URL ending in /v1 is treated as any
+    # OpenAI-compatible server (LM Studio, llama.cpp). Photos are sent to this
+    # URL, so keep it on this machine. The model is picked on the Tag Review
+    # page; this is only the starting choice (empty = first vision model found).
+    vision_url: str = "http://127.0.0.1:11434"   # VISION_URL
+    vision_model: str = ""                        # VISION_MODEL
+
     # ── Network exposure ──
     # The API has no authentication — it can delete, move and trash originals.
     # Browsers attach an Origin header to cross-site POSTs; api/app.py rejects

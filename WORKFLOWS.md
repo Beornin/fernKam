@@ -232,9 +232,33 @@ Unverified tags also show in the lightbox with a dashed outline and a ✓ to app
 Suggestions need photos in the search index (Discover). The model's suggestions stay
 suggestions until you accept them.
 
+**More image models** (Tag Review → **Models**). Beside CLIP you can add:
+
+| Model | Good at | How it arrives |
+|---|---|---|
+| SigLIP 2 (so400m) | general scenes, objects, activities; much stronger than CLIP | download, 1.7 GB |
+| SigLIP 2 (base) | the same family, fine on a CPU | download, 370 MB |
+| BioCLIP 2 | wildlife; tells similar species apart | built once from the official weights (about 1.7 GB, plus PyTorch in a throwaway uv environment) |
+
+Installing a model indexes the library with it (a background task; new and re-edited photos
+are added at every scan). Each tag then learns one classifier per model, and a combiner
+learns how much to trust each model *for that tag*. The learning panel shows the split
+("Trusts CLIP 29% · BioCLIP 2 71%"). A photo that one model has not indexed yet is judged by
+the models it has. **Relearn** tags (or **Learn all tags**) after adding a model.
+
+**Double-check** (a tag's Suggestions or To verify tab). A local vision model (Ollama) is
+asked "Does this photo show *Heron* (category: Wildlife > Birds)?" for each photo, using a
+960 px JPEG. Answers show as ✓/✗ on the photos, and you can sort by them. After you decide, the
+panel shows how often it agreed with you. **Learn all tags** with *+ vision check* also checks
+each tag's best 30 new suggestions. The answers are never used as labels.
+
+**Find by name** (a tag that is not learning yet). The models that have a text tower (CLIP,
+and SigLIP 2 once its text tower is added) rank photos by how well they match the tag's name.
+The best 60 appear under Suggestions marked *name*. Approve 8 and the tag starts learning.
+
 | Database | Files | Disk reads |
 |---|---|---|
-| `photo_tags.verified_at`, `tag_rejections`, `tag_suggestions`, `tag_models`; added or removed tags flagged "needs sync" | none (deferred to DB → Files) | none |
+| `photo_tags.verified_at`, `tag_rejections`, `tag_suggestions`, `tag_models`, `photo_embeddings`, `tag_checks`; added or removed tags flagged "needs sync" | none (deferred to DB → Files); model files in `backend/data/models/` | thumbnails (models and vision checks read the 480/960 px thumbnails) |
 
 ---
 

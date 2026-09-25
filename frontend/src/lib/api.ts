@@ -227,6 +227,15 @@ export interface TagReviewTag {
   learning: boolean;
 }
 
+export interface TagExpert {
+  space: string;
+  label: string;
+  weight: number;
+  cv_recall: number | null;
+  cv_agreement: number | null;
+  photos: number;
+}
+
 export interface TagModelStats {
   trained_at: string;
   positives: number;
@@ -236,6 +245,46 @@ export interface TagModelStats {
   reviewed_accepted: number;
   reviewed_rejected: number;
   hit_rate: number | null;
+  experts: TagExpert[];
+}
+
+export interface VisionAgreement {
+  agreed: number;
+  judged: number;
+  checked: number;
+  rate: number | null;
+}
+
+export interface VisionStatus {
+  url: string;
+  reachable: boolean;
+  error?: string;
+  models: { name: string; size_gb: number | null; thinking?: boolean }[];
+  model: string | null;
+  api?: 'ollama' | 'openai';
+}
+
+export interface ImageModelInfo {
+  key: string;
+  label: string;
+  purpose: string;
+  source: 'builtin' | 'download' | 'export';
+  installed: boolean;
+  text_installed: boolean;
+  indexed: number;
+  dim?: number;
+  size_mb?: number;
+  text_size_mb?: number;
+  gpu_recommended?: boolean;
+  export_command?: string | null;
+}
+
+export interface TagModelsInfo {
+  models: ImageModelInfo[];
+  photos: number;
+  gpu: boolean;
+  uv_available: boolean;
+  vision: VisionStatus & { agreement: VisionAgreement };
 }
 
 export interface TagReviewDetail {
@@ -247,6 +296,9 @@ export interface TagReviewDetail {
   learning_negatives: number;
   min_positives: number;
   model: TagModelStats | null;
+  found_by_name: number;
+  name_models: string[];
+  vision: VisionAgreement;
 }
 
 export interface TagReviewPhoto {
@@ -256,6 +308,10 @@ export interface TagReviewPhoto {
   taken_at: string | null;
   media_type: string;
   score: number | null;
+  source: 'model' | 'name' | null;
+  /** Local vision model's answer: 1 yes, 0 no, null unsure/unchecked. */
+  vision: number | null;
+  vision_p: number | null;
   rejected_before: boolean;
 }
 
@@ -502,9 +558,25 @@ export const api = {
     train: (id: number) =>
       fetch(`/api/tag-review/tags/${id}/train`, { method: 'POST' })
         .then(r => okJson<{ suggestions: number; cv_agreement: number | null; cv_recall: number | null }>(r)),
-    trainAll: () =>
-      fetch('/api/tag-review/train-all', { method: 'POST' })
+    trainAll: (check = false) =>
+      fetch('/api/tag-review/train-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ check }) })
         .then(r => okJson<{ task_id: string | null; tags: number; message: string }>(r)),
+    findByName: (id: number) =>
+      fetch(`/api/tag-review/tags/${id}/find-by-name`, { method: 'POST' })
+        .then(r => okJson<{ suggestions: number; models: string[] }>(r)),
+    check: (id: number, body: { state: 'suggested' | 'unverified'; limit?: number }) =>
+      fetch(`/api/tag-review/tags/${id}/check`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<{ task_id: string | null; queued: number; message: string }>(r)),
+    models: () => get<TagModelsInfo>('/api/tag-review/models'),
+    installModel: (key: string) =>
+      fetch(`/api/tag-review/models/${key}/install`, { method: 'POST' }).then(r => okJson<{ task_id: string }>(r)),
+    installText: (key: string) =>
+      fetch(`/api/tag-review/models/${key}/text`, { method: 'POST' }).then(r => okJson<{ task_id: string }>(r)),
+    removeModel: (key: string) =>
+      fetch(`/api/tag-review/models/${key}`, { method: 'DELETE' }).then(r => okJson<{ removed: string }>(r)),
+    setVision: (body: { model?: string; url?: string }) =>
+      fetch('/api/tag-review/vision', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<VisionStatus>(r)),
   },
   outsideChanges: {
     list: (includeDismissed = false) =>

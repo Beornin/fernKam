@@ -12,7 +12,8 @@
 	} from '$lib/api';
 	import { notify } from '$lib/dialog.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
-	import { Tags, Search, Check, X, Brain, RefreshCw, AlertTriangle, History, ChevronLeft, ChevronRight } from '@lucide/svelte';
+	import TagModelsPanel from '$lib/components/TagModelsPanel.svelte';
+	import { Tags, Search, Check, X, Brain, RefreshCw, AlertTriangle, History, ChevronLeft, ChevronRight, Cpu, Eye, Type } from '@lucide/svelte';
 
 	const PAGE = 60;
 
@@ -32,6 +33,11 @@
 	let focused = $state(0);
 	let previewIndex = $state<number | null>(null);
 	let result = $state('');
+	let modelsOpen = $state(false);
+	let vision = $state<{ ready: boolean; model: string | null }>({ ready: false, model: null });
+	let learnAllCheck = $state(true);
+	let checking = $state(false);
+	let finding = $state(false);
 	// Tiles the user clicked. On every tab but Rejected that means "wrong";
 	// on Rejected it means "right after all".
 	let marked = $state(new Set<number>());
@@ -44,10 +50,12 @@
 	const markMeansRight = $derived(tab === 'rejected');
 	const unmarkedCount = $derived(photos.length - marked.size);
 	const sortOptions = $derived<Record<TagReviewState, [string, string][]>>({
-		unverified: detail?.model
-			? [['date', 'By date'], ['doubtful', 'Most doubtful first'], ['score', 'Most likely first']]
-			: [['date', 'By date']],
-		suggested: [['score', 'Best first'], ['date', 'By date']],
+		unverified: [
+			['date', 'By date'],
+			...(detail?.model ? [['doubtful', 'Most doubtful first'], ['score', 'Most likely first']] as [string, string][] : []),
+			...(vision.ready ? [['vision_no', 'Vision model disputes first']] as [string, string][] : []),
+		],
+		suggested: [['score', 'Best first'], ['vision_yes', 'Vision model agrees first'], ['date', 'By date']],
 		approved: [['date', 'By date'], ['recent', 'Recently approved']],
 		rejected: [['recent', 'Recently rejected']],
 	});
@@ -159,10 +167,67 @@
 		}
 	}
 
+	async function loadVision() {
+		try {
+			const m = await api.tagReview.models();
+			vision = { ready: m.vision.reachable && !!m.vision.model, model: m.vision.model };
+		} catch { vision = { ready: false, model: null }; }
+	}
+
+	/** Ask the local vision model about this tab's photos (background task),
+	 * then refresh as answers arrive. */
+	async function doubleCheck() {
+		if (selectedId === null || (tab !== 'suggested' && tab !== 'unverified')) return;
+		checking = true;
+		try {
+			const r = await api.tagReview.check(selectedId, { state: tab });
+			if (!r.task_id) { notify(r.message); return; }
+			result = `${vision.model} is checking ${r.queued} photos. Answers appear as they come in.`;
+			const id = selectedId, t = tab;
+			for (let i = 0; i < 600 && selectedId === id && tab === t; i++) {
+				await new Promise(res => setTimeout(res, 3000));
+				const task = (await api.sync.tasks()).tasks.find(x => x.id === r.task_id);
+				await loadPhotosKeepMarks();
+				if (!task || task.status !== 'running') { result = task?.message ?? result; break; }
+			}
+			await loadDetail();
+		} catch (e) {
+			notify(e instanceof Error ? e.message : String(e), 'danger');
+		} finally {
+			checking = false;
+		}
+	}
+
+	/** Reload the current page's badges without losing the user's marks. */
+	async function loadPhotosKeepMarks() {
+		if (selectedId === null) return;
+		const r = await api.tagReview.photos(selectedId, { state: tab, sort, limit: PAGE, offset });
+		const byId = new Map(r.photos.map(x => [x.photo_id, x]));
+		photos = photos.map(x => byId.get(x.photo_id) ?? x);
+	}
+
+	async function findByName() {
+		if (selectedId === null) return;
+		finding = true;
+		try {
+			const r = await api.tagReview.findByName(selectedId);
+			result = `Found ${r.suggestions} photos by name (${r.models.join(', ')}). Approve the right ones to start learning.`;
+			await loadDetail();
+			tab = 'suggested';
+			sort = 'score';
+			await loadPhotos(0);
+			loadTags();
+		} catch (e) {
+			notify(e instanceof Error ? e.message : String(e), 'danger');
+		} finally {
+			finding = false;
+		}
+	}
+
 	async function learnAll() {
 		learning = true;
 		try {
-			const r = await api.tagReview.trainAll();
+			const r = await api.tagReview.trainAll(vision.ready && learnAllCheck);
 			notify(r.task_id ? `Learning ${r.tags} tags in the background. Progress is on the Tasks page.` : r.message);
 		} catch (e) {
 			notify(e instanceof Error ? e.message : String(e), 'danger');
@@ -184,13 +249,15 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([loadSummary(), loadTags()]);
+		await Promise.all([loadSummary(), loadTags(), loadVision()]);
 		const fromUrl = Number(pageStore.url.searchParams.get('tag'));
 		if (fromUrl && tags.some(t => t.id === fromUrl)) await selectTag(fromUrl);
 	});
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+<TagModelsPanel bind:open={modelsOpen} onChanged={() => { loadVision(); loadSummary(); if (selectedId !== null) loadDetail(); }} />
 
 {#if previewIndex !== null && photos[previewIndex]}
 	<PhotoLightbox
@@ -212,6 +279,16 @@
 			<span class="text-xs text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full">{summary.approved.toLocaleString()} approved · {summary.models} {summary.models === 1 ? 'tag' : 'tags'} learning</span>
 		{/if}
 		<div class="ml-auto flex items-center gap-2">
+			<button onclick={() => modelsOpen = true}
+				class="text-xs px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 flex items-center gap-1"
+				title="Image models and the local vision model">
+				<Cpu size={12} /> Models
+			</button>
+			{#if vision.ready}
+				<label class="text-xs text-zinc-400 flex items-center gap-1" title="After learning, {vision.model} double-checks each tag's best new suggestions">
+					<input type="checkbox" bind:checked={learnAllCheck} class="accent-emerald-500" /> + vision check
+				</label>
+			{/if}
 			<button onclick={learnAll} disabled={learning}
 				class="text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white flex items-center gap-1 disabled:opacity-50"
 				title="Relearn every tag with enough approved photos, and look for suggestions among new photos">
@@ -248,7 +325,7 @@
 						class="w-full text-left px-3 py-1.5 transition-colors {selectedId === t.id ? 'bg-emerald-600/20' : 'hover:bg-zinc-800'}">
 						<div class="flex items-center gap-1.5">
 							<span class="flex-1 min-w-0">
-								<span class="block text-sm truncate {selectedId === t.id ? 'text-emerald-300' : 'text-zinc-200'}">{t.name}</span>
+								<span class="block text-sm truncate {selectedId === t.id ? 'text-emerald-300' : t.unverified + t.approved + t.suggested + t.rejected ? 'text-zinc-200' : 'text-zinc-500'}">{t.name}</span>
 								{#if parentOf(t.path)}<span class="block text-[10px] text-zinc-500 truncate">{parentOf(t.path)}</span>{/if}
 							</span>
 							{#if t.learning}<span title="Learning from your reviews"><Brain size={11} class="text-emerald-500 shrink-0" /></span>{/if}
@@ -310,6 +387,13 @@
 							</span>
 						{:else if detail.learning_positives < detail.min_positives}
 							<span>Approve <b class="text-zinc-200">{detail.min_positives - detail.learning_positives}</b> more photos and fernKam starts learning this tag.</span>
+							{#if detail.name_models.length}
+								<button onclick={findByName} disabled={finding}
+									class="px-2 py-1 rounded bg-violet-700/80 hover:bg-violet-600 text-white flex items-center gap-1 disabled:opacity-50"
+									title="Search the library for this tag's name with {detail.name_models.join(', ')}">
+									<Type size={11} /> {finding ? 'Searching…' : detail.found_by_name ? 'Find by name again' : 'Find by name'}
+								</button>
+							{/if}
 						{:else}
 							<span>Ready to learn from {detail.learning_positives} approved photos.</span>
 						{/if}
@@ -319,8 +403,43 @@
 								<RefreshCw size={11} class={learning ? 'animate-spin' : ''} /> {detail.model ? 'Relearn now' : 'Learn now'}
 							</button>
 						{/if}
+						{#if detail.model && detail.model.experts.length > 1}
+							{@const sum = detail.model.experts.reduce((a, e) => a + e.weight, 0) || 1}
+							<div class="w-full flex items-center gap-2 pt-1">
+								<span class="text-zinc-500 shrink-0">Trusts</span>
+								<div class="flex-1 flex h-2 rounded overflow-hidden bg-zinc-800">
+									{#each detail.model.experts as e, i}
+										<div class="h-full {['bg-emerald-600', 'bg-sky-600', 'bg-amber-600', 'bg-violet-600'][i % 4]}"
+											style="width: {(e.weight / sum) * 100}%"
+											title="{e.label}: weight {Math.round((e.weight / sum) * 100)}%, alone finds {pct(e.cv_recall)} of approved photos"></div>
+									{/each}
+								</div>
+								<span class="shrink-0 flex gap-2">
+									{#each detail.model.experts as e, i}
+										<span class="flex items-center gap-1" title="Alone: finds {pct(e.cv_recall)}, agrees with {pct(e.cv_agreement)} of your decisions">
+											<span class="w-2 h-2 rounded-sm {['bg-emerald-600', 'bg-sky-600', 'bg-amber-600', 'bg-violet-600'][i % 4]}"></span>
+											{e.label} {Math.round((e.weight / sum) * 100)}%
+										</span>
+									{/each}
+								</span>
+							</div>
+						{/if}
+						{#if detail.vision.checked}
+							<div class="w-full flex items-center gap-1 text-zinc-400">
+								<Eye size={12} class="text-sky-400" />
+								Vision model: checked {detail.vision.checked} photos{#if detail.vision.judged}; agreed with your decisions
+									<b class="text-zinc-200">{detail.vision.agreed} of {detail.vision.judged}</b> times ({pct(detail.vision.rate)}){/if}.
+							</div>
+						{/if}
 					</div>
 
+					{#if vision.ready && (tab === 'suggested' || tab === 'unverified') && photos.length}
+						<button onclick={doubleCheck} disabled={checking}
+							class="float-right -mt-1 text-xs px-2 py-1 rounded bg-sky-800/70 hover:bg-sky-700 text-sky-100 flex items-center gap-1 disabled:opacity-50"
+							title="Ask {vision.model} whether each photo here shows this tag">
+							<Eye size={12} class={checking ? 'animate-pulse' : ''} /> {checking ? 'Checking…' : 'Double-check'}
+						</button>
+					{/if}
 					<p class="text-[11px] text-zinc-500 mb-3">
 						{#if tab === 'rejected'}
 							Click the photos that do have this tag after all, then Restore. Space previews.
@@ -341,7 +460,8 @@
 							<Check size={32} />
 							<p class="text-sm">
 								{tab === 'unverified' ? 'Every photo with this tag is checked'
-									: tab === 'suggested' ? (detail.model ? 'No suggestions right now' : 'Suggestions appear once this tag is learning')
+									: tab === 'suggested' ? (detail.model ? 'No suggestions right now'
+										: detail.name_models.length ? 'Use "Find by name" above to look for this tag' : 'Suggestions appear once this tag is learning')
 									: tab === 'approved' ? 'Nothing approved yet' : 'Nothing rejected'}
 							</p>
 						</div>
@@ -361,10 +481,20 @@
 										<img src="/media/thumbnail/{p.photo_id}?size=md" alt={p.filename}
 											class="w-full h-full object-cover transition-opacity {isMarked && !markMeansRight ? 'opacity-40' : ''}" loading="lazy" />
 									</div>
-									{#if p.score !== null}
+									{#if p.source === 'name'}
+										<span class="absolute top-1 left-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-violet-700/90 text-white"
+											title="Found by the tag's name, not learned yet: {pct(p.score)} match">name</span>
+									{:else if p.score !== null}
 										<span class="absolute top-1 left-1 text-[10px] font-semibold px-1.5 py-0.5 rounded {scoreClass(p.score)}"
-											title={tab === 'unverified' ? 'How sure the model is that this tag is right' : 'Model score'}>
+											title={tab === 'unverified' ? 'How sure the models are that this tag is right' : 'Model score'}>
 											{pct(p.score)}
+										</span>
+									{/if}
+									{#if p.vision !== null || p.vision_p !== null}
+										<span class="absolute bottom-1 left-1 flex items-center gap-0.5 text-[10px] font-semibold px-1 py-0.5 rounded
+											{p.vision === 1 ? 'bg-sky-600/90 text-white' : p.vision === 0 ? 'bg-zinc-900/90 text-red-300' : 'bg-zinc-800/90 text-zinc-300'}"
+											title="Vision model: {p.vision === 1 ? 'yes' : p.vision === 0 ? 'no' : 'unsure'}{p.vision_p !== null ? ` (${pct(p.vision_p)} yes)` : ''}">
+											<Eye size={10} />{p.vision === 1 ? '✓' : p.vision === 0 ? '✗' : '?'}
 										</span>
 									{/if}
 									{#if p.rejected_before}

@@ -25,8 +25,16 @@ shows it in a native window.
 - **Tag Review**: tags work like faces. Tags read from files or imported from digiKam start
   unverified, and you check them one tag at a time: click the wrong photos, press Enter to
   approve the rest. Once a tag has 8 approved photos, fernKam learns it from your decisions
-  (a classifier per tag on the CLIP embeddings) and suggests it on other photos for you to
-  accept or reject. Every decision retrains it. Unverified tags are never used for learning.
+  and suggests it on other photos for you to accept or reject. Every decision retrains it.
+  Unverified tags are never used for learning.
+  - **Several image models**: CLIP, plus optional SigLIP 2 (general scenes, much stronger)
+    and BioCLIP 2 (wildlife: tells similar species apart). For each tag, fernKam learns how
+    much to trust each model, so species tags lean on BioCLIP and scenes on SigLIP.
+  - **Local vision model double-check**: a vision-language model in Ollama (e.g.
+    `qwen2.5vl:7b`) looks at each suggestion and answers yes or no. Its answers show on the
+    photo, and fernKam measures how often it agrees with you. It never trains anything.
+  - **Find by name**: before a tag has any approved photos, search for it by its name to get
+    the first ones quickly.
 - **Culling**: keyboard-driven Review Mode (`1`–`5` rate, `0` clear, `X` reject, wheel zoom),
   shift-click range selection, and a right-click menu.
 - **Library tools**: exact (SHA-256) duplicate finder with folder-priority auto-clean, RAW+JPEG
@@ -73,7 +81,8 @@ The backend runs database migrations every time it starts.
 | PostgreSQL | 17 with the **pgvector** extension (Docker makes this one command) |
 | exiftool | required: reads and writes metadata ([exiftool.org](https://exiftool.org/)) |
 | ffmpeg | recommended: video thumbnails, durations and in-browser playback |
-| GPU | optional: an NVIDIA GPU with CUDA 12 makes face detection and CLIP much faster; everything also runs on the CPU |
+| GPU | optional: an NVIDIA GPU with CUDA 12 makes face detection and the image models much faster; everything also runs on the CPU |
+| Ollama | optional: runs the local vision model that double-checks tag suggestions ([ollama.com](https://ollama.com/)) |
 
 Windows is the primary platform (the launcher, CUDA paths and "Reveal in Explorer" assume
 it). The backend and UI also run on Linux and macOS.
@@ -190,7 +199,9 @@ variables override it. The ones you're most likely to touch:
 | `THUMB_CACHE_DIR` | `data/thumbnails` | Relative to `backend/` |
 | `SCAN_ON_STARTUP` | `true` | Refresh from disk in the background at every start |
 | `WATCH_LIBRARY` | `true` | Pick up outside edits while running (`WATCH_LIBRARY_POLLING=true` for network shares) |
-| `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU |
+| `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU (`FERNKAM_CLIP_GPU` covers all image models) |
+| `VISION_URL` | `http://127.0.0.1:11434` | Vision model server for Tag Review: Ollama, or any OpenAI-compatible URL ending in `/v1`. Photos are sent here, so keep it local. |
+| `VISION_MODEL` | first vision model found | Starting choice; pick another on Tag Review → Models |
 | `CORS_ORIGINS` | none | Extra browser origins allowed to make changes (see below) |
 | `DEBUG` | `false` | Enables `/api/debug` query plans and SQL echo |
 

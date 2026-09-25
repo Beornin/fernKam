@@ -526,6 +526,50 @@ def cmd_verify(
         raise typer.Exit(1)
 
 
+@app.command("export-model")
+def cmd_export_model(
+    key: str = typer.Argument(..., help="Model to build, e.g. bioclip2"),
+) -> None:
+    """Build a Tag Review model's ONNX files from its official PyTorch weights.
+
+    Needs PyTorch, which fernKam does not install; run it through uv:
+    uv run --with open-clip-torch fernkam export-model bioclip2
+    """
+    from fernkam.embed_models import MODELS
+    from fernkam.model_export import export
+
+    if key not in MODELS:
+        console.print(f"[red]Unknown model {key!r}. Known: {', '.join(MODELS)}[/red]")
+        raise typer.Exit(1)
+    try:
+        export(key, progress=lambda m: console.print(f"  {m}"))
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        raise typer.Exit(1)
+    console.print("[green]✓ Done. Index it from Tag Review → Models.[/green]")
+
+
+@app.command("download-model")
+def cmd_download_model(
+    key: str = typer.Argument(..., help="Model to download, e.g. siglip2"),
+    text: bool = typer.Option(False, "--text", help="Also fetch the text tower (find photos by tag name)"),
+) -> None:
+    """Download a Tag Review model (the same as Tag Review → Models → Install)."""
+    from fernkam.embed_models import MODELS, download
+
+    if key not in MODELS:
+        console.print(f"[red]Unknown model {key!r}. Known: {', '.join(MODELS)}[/red]")
+        raise typer.Exit(1)
+    try:
+        download(key, progress=lambda m: console.print(f"  {m}", end="\r"))
+        if text:
+            download(key, text=True, progress=lambda m: console.print(f"  {m}", end="\r"))
+    except ValueError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        raise typer.Exit(1)
+    console.print(f"\n[green]✓ {MODELS[key].label} downloaded.[/green]")
+
+
 @app.command("serve")
 def cmd_serve(
     # Loopback only by default: the API is unauthenticated and can move, trash
