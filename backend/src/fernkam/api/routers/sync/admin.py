@@ -80,7 +80,7 @@ async def backfill_thumbnails(db: DB) -> dict:
     Runs as a cancellable background task over the full backlog. Progress via /sync/tasks.
     """
     import asyncio
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
     from sqlalchemy import text
 
     rows = (await db.execute(
@@ -136,7 +136,7 @@ async def backfill_thumbnails(db: DB) -> dict:
                 eta = int((total - done) / rate) if rate > 0 else 0
                 await task_manager.update_task(
                     task_id,
-                    message=f"Backfilling thumbnails… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {eta}s)",
+                    message=f"Backfilling thumbnails… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {fmt_eta(eta)})",
                     progress={"done": done, "total": total, "ok": ok, "errors": errors},
                 )
 
@@ -158,7 +158,7 @@ async def backfill_crops(db: DB) -> dict:
     Runs as a cancellable background task over the full backlog. Progress via /sync/tasks.
     """
     import asyncio
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
 
     rows = (await db.execute(
         select(Face.id, Face.photo_id, Face.x, Face.y, Face.w, Face.h)
@@ -230,7 +230,7 @@ async def backfill_crops(db: DB) -> dict:
                 eta = int((total - done) / rate) if rate > 0 else 0
                 await task_manager.update_task(
                     task_id,
-                    message=f"Backfilling face crops… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {eta}s)",
+                    message=f"Backfilling face crops… {done:,}/{total:,} (✓ {ok} ✗ {errors} · ETA {fmt_eta(eta)})",
                     progress={"done": done, "total": total, "ok": ok, "errors": errors},
                 )
 

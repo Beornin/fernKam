@@ -235,7 +235,7 @@ async def _export(task_id: str, key: str, is_cancelled) -> None:
 async def start_install(key: str, index: bool = True) -> str:
     """Install (download or build) a model if needed, then index the library
     with it, as one background task."""
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
 
     info = em.MODELS[key]
     task_id = await task_manager.create_task("model_install", f"Preparing {info.label}…")
@@ -267,7 +267,7 @@ async def start_install(key: str, index: bool = True) -> str:
                     await task_manager.update_task(
                         task_id,
                         message=f"Indexing with {info.label}… {done:,}/{total:,} ({rate:.0f}/s, "
-                                f"ETA {int((total - done) / max(rate, 0.001))}s)",
+                                f"ETA {fmt_eta((total - done) / max(rate, 0.001))})",
                         progress={"done": done, "total": total, "ok": ok, "skipped": skipped})
 
                 ok, skipped = await embed_photo_rows(bdb, key, rows, on_progress, is_cancelled)

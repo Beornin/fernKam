@@ -101,7 +101,7 @@ async def embed_status(db: DB) -> dict:
 @router.post("/embed")
 async def embed_photos(db: DB, limit: Optional[int] = Query(None, ge=1)) -> dict:
     """Backfill CLIP embeddings for photos that lack one. Cancellable task."""
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
 
     q = """
         SELECT id, album_path, filename FROM photos
@@ -134,7 +134,7 @@ async def embed_photos(db: DB, limit: Optional[int] = Query(None, ge=1)) -> dict
             eta = int((total - done) / rate) if rate > 0 else 0
             await task_manager.update_task(
                 task_id,
-                message=f"Embedding… {done:,}/{total:,} ({ok:,} ok, {skipped} skipped · {rate:.0f}/s · ETA {eta}s)",
+                message=f"Embedding… {done:,}/{total:,} ({ok:,} ok, {skipped} skipped · {rate:.0f}/s · ETA {fmt_eta(eta)})",
                 progress={"done": done, "total": total, "ok": ok, "skipped": skipped},
             )
 

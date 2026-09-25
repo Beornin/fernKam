@@ -29,7 +29,7 @@ async def refresh_metadata_from_files(
     Runs as a cancellable background task. Progress via /sync/tasks.
     """
     import asyncio
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
 
     q = select(Photo.id, Photo.album_path, Photo.filename, Photo.file_modified_at_sync).where(Photo.status == 1)
     if photo_ids:
@@ -117,7 +117,7 @@ async def refresh_metadata_from_files(
             eta = int((total - done) / rate) if rate > 0 else 0
             await task_manager.update_task(
                 task_id,
-                message=f"Refreshing… {done:,}/{total:,} | ✓ {ok} ✗ {errors} skipped {skipped} | ETA {eta}s",
+                message=f"Refreshing… {done:,}/{total:,} | ✓ {ok} ✗ {errors} skipped {skipped} | ETA {fmt_eta(eta)}",
                 progress={"done": done, "total": total, "ok": ok, "errors": errors, "skipped": skipped},
             )
 
@@ -160,7 +160,7 @@ async def write_metadata_all(
     - concurrency: parallel exiftool workers (default 4)
     """
     import asyncio
-    from fernkam.task_manager import task_manager
+    from fernkam.task_manager import fmt_eta, task_manager
 
     q = (
         select(Photo.id)
@@ -283,7 +283,7 @@ async def write_metadata_all(
                 task_id,
                 message=(
                     f"Writing… {done:,}/{total:,} "
-                    f"({rate:.0f}/s · ETA {eta}s)"
+                    f"({rate:.0f}/s · ETA {fmt_eta(eta)})"
                 ),
             )
 

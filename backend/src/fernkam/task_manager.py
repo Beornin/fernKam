@@ -44,6 +44,14 @@ FILE_MUTATING_TASKS = frozenset({
 })
 
 
+def fmt_eta(seconds: float) -> str:
+    """ETA for task messages: '<1 min', '12 min', '4 h 05 min'."""
+    m = round(seconds / 60)
+    if m < 1:
+        return "<1 min"
+    return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d} min"
+
+
 class TaskConflict(RuntimeError):
     """Raised when a file-mutating task is started while another is running.
 
