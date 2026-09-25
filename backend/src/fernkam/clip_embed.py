@@ -50,6 +50,13 @@ def model_dir() -> Path:
     return Path(get_settings().thumb_cache_dir).parent / "models" / "clip"
 
 
+def models_downloaded() -> bool:
+    """Whether the CLIP model is already on disk — used to decide if a scan
+    may embed new photos without triggering the ~600 MB download."""
+    d = model_dir()
+    return all((d / local).is_file() and (d / local).stat().st_size > 0 for local in _FILES)
+
+
 def ensure_models(progress=None) -> Path:
     """Download the ONNX towers + tokenizer if absent. ~606 MB, once."""
     import urllib.request

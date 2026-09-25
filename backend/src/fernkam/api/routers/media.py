@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import select
 
@@ -16,7 +16,7 @@ from fernkam.db.models.photos import Face, Photo
 from fernkam.media_types import MIME_MAP, RAW_EXTENSIONS, VIDEO_EXTENSIONS
 from fernkam.thumbnails import (
     generate_thumbnail_bytes,
-    read_thumbnail_from_disk,
+    thumb_cache_path,
     write_thumbnail_to_disk,
     photo_disk_path,
 )
@@ -31,10 +31,32 @@ async def _get_photo(photo_id: int, db: DB) -> Photo:
     return row
 
 
+# Browsers keep thumbnails but revalidate them: a photo edited outside fernKam
+# gets a new thumbnail (see thumbnails.refresh_thumbnail) under the same URL,
+# and a day-long max-age kept showing the old one. Revalidation is a stat()
+# and a bodiless 304; within one page, <img> reuses loaded images without it.
+_THUMB_HEADERS = {"Cache-Control": "private, no-cache"}
+
+
+def _cached_thumbnail(photo_id: int, size: str, if_none_match: str | None) -> tuple[bytes | None, str | None]:
+    """Blocking: (bytes or None if the client's copy is current, ETag), or
+    (None, None) on a cache miss."""
+    path = thumb_cache_path(photo_id, size)
+    try:
+        st = path.stat()
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if if_none_match == etag:
+            return None, etag
+        return path.read_bytes(), etag
+    except OSError:
+        return None, None
+
+
 @router.get("/thumbnail/{photo_id}")
 async def serve_thumbnail(
     photo_id: int,
     db: DB,
+    request: Request,
     size: Literal["sm", "md", "lg", "xl", "xxl"] = Query("md"),
 ) -> Response:
     loop = asyncio.get_event_loop()
@@ -43,10 +65,12 @@ async def serve_thumbnail(
     #    every tile held one of the 50 pooled connections, and a grid-size
     #    change fired ~42 at once against the catalogue query feeding that same
     #    grid (0.67 ms idle -> 19.19 ms under burst; 2.55 ms from disk).
-    data = await loop.run_in_executor(None, read_thumbnail_from_disk, photo_id, size)
+    data, etag = await loop.run_in_executor(
+        None, _cached_thumbnail, photo_id, size, request.headers.get("if-none-match"))
+    if etag and data is None:
+        return Response(status_code=304, headers={**_THUMB_HEADERS, "ETag": etag})
     if data:
-        return Response(content=data, media_type="image/webp",
-                        headers={"Cache-Control": "public, max-age=86400"})
+        return Response(content=data, media_type="image/webp", headers={**_THUMB_HEADERS, "ETag": etag})
 
     # 2. Miss: generate from the source file and cache it.
     photo = await _get_photo(photo_id, db)
@@ -55,8 +79,9 @@ async def serve_thumbnail(
     if not data:
         raise HTTPException(422, "Thumbnail unavailable (video or missing source)")
     await loop.run_in_executor(None, write_thumbnail_to_disk, photo_id, size, data)
+    _, etag = await loop.run_in_executor(None, _cached_thumbnail, photo_id, size, None)
     return Response(content=data, media_type="image/webp",
-                    headers={"Cache-Control": "public, max-age=86400"})
+                    headers={**_THUMB_HEADERS, **({"ETag": etag} if etag else {})})
 
 
 STORED_CROP_SIZE = 200  # matches the fixed size backfill_crops()/auto-generation store at

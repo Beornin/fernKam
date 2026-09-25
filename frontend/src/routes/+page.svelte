@@ -76,8 +76,16 @@
 		}
 	}
 
+	let libraryRoot = $state('');
+
 	function openImport() {
-		importPath = '';
+		importPath = libraryRoot ? `${libraryRoot}/` : '';
+		if (!libraryRoot) {
+			api.sync.libraryRoot().then(r => {
+				libraryRoot = r.library_root;
+				if (!importPath) importPath = `${libraryRoot}/`;
+			}).catch(() => { /* the backend still validates the path */ });
+		}
 		importResult = null;
 		showImportModal = true;
 	}
@@ -418,18 +426,22 @@
 			<h2 class="text-xl font-semibold text-zinc-100 mb-4">Import Photos</h2>
 
 			<div class="mb-4">
-				<label for="import-path" class="block text-sm text-zinc-400 mb-2">Library Path</label>
+				<label for="import-path" class="block text-sm text-zinc-400 mb-2">Folder inside your library</label>
 				<input
 					id="import-path"
 					type="text"
 					bind:value={importPath}
-					placeholder="D:/Pictures and Videos"
+					placeholder={libraryRoot || 'D:/Pictures and Videos'}
 					class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2 text-zinc-100 focus:outline-none focus:border-emerald-500"
 				/>
+				<p class="mt-2 text-xs text-zinc-500">
+					fernKam catalogues everything under {libraryRoot || 'LIBRARY_ROOT'}. To add photos from
+					elsewhere (a card, a download folder), copy them into the library first, then import that folder.
+				</p>
 			</div>
 
 			{#if importResult}
-				<div class="mb-4 p-3 rounded-lg {importResult.startsWith('Error') ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'} text-sm">
+				<div class="mb-4 p-3 rounded-lg {importResult.startsWith('Import failed') ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'} text-sm">
 					{importResult}
 				</div>
 			{/if}

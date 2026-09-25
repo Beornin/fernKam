@@ -31,6 +31,7 @@ dependencies = [
     "tokenizers>=0.22.1",
     "structlog>=25.5.0",
     "typer>=0.25.1",
+    "watchfiles>=1.0.0",
 ]
 
 [project.scripts]

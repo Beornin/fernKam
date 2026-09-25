@@ -29,22 +29,42 @@ class ScanFacesRequest(BaseModel):
     limit: int = 0
 
 
+@router.get("/library-root")
+async def library_root() -> dict:
+    """The folder fernKam catalogues — scans and imports stay inside it."""
+    from fernkam.config import get_settings
+    return {"library_root": str(get_settings().library_root).replace("\\", "/")}
+
+
 @router.post("/scan-library")
 async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
-    """Scan library root (or custom_path) for new/updated photos and import them.
-    
+    """Scan the library (or a folder inside it) for new, changed and removed files.
+
     Runs in background and returns immediately.
+    """
+    from fastapi import HTTPException
+    from fernkam.importers.filesystem import ScanRootError, resolve_scan_root
+    try:
+        resolve_scan_root(request.custom_path)
+    except ScanRootError as exc:
+        raise HTTPException(400, str(exc))
+    task_id = await start_library_scan(request.custom_path)
+    return {"status": "running", "message": "Scan started in background", "task_id": task_id}
+
+
+async def start_library_scan(custom_path: Optional[str] = None, label: Optional[str] = None) -> str:
+    """Start a library scan as a background task and return its task id.
+
+    Used by the Scan buttons, the refresh at startup and the library watcher.
+    Raises TaskConflict while another job that changes files is running.
     """
     import asyncio
     from fernkam.importers.filesystem import scan_library
     from fernkam.task_manager import task_manager
 
     import os as _os
-    custom_path = request.custom_path
-    print(f"[SCAN-LIBRARY] Received request with custom_path: {custom_path}", flush=True)
-
-    # Create task
-    task_id = await task_manager.create_task("scan_library", f"Scanning: {custom_path or 'library root'}")
+    print(f"[SCAN-LIBRARY] Starting scan of: {custom_path or 'library root'}", flush=True)
+    task_id = await task_manager.create_task("scan_library", label or f"Scanning: {custom_path or 'library root'}")
 
     _cpus = _os.cpu_count() or 4
     FACE_DETECT_CONCURRENCY = int(_os.getenv("FERNKAM_FACE_CONCURRENCY", str(max(4, _cpus))))
@@ -114,6 +134,9 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     photo_added_callback=on_photo_imported,
                     progress_callback=on_progress,
                 )
+                if stats.get("error"):  # e.g. LIBRARY_ROOT missing — nothing was scanned
+                    await task_manager.update_task(task_id, status="failed", message=stats["error"])
+                    return
                 added     = stats.get('added', 0)
                 errors    = stats.get('errors', 0)
                 deleted   = stats.get('deleted', 0)
@@ -145,6 +168,27 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                 except Exception as se:
                     print(f"[SCAN-LIBRARY] Sweep error: {se}", flush=True)
 
+                # ── Phase 5: keep semantic search current ────────────────────
+                # New photos and ones whose picture changed get CLIP embeddings
+                # now — but only if the model is already downloaded (someone
+                # uses Discover); a scan must not trigger a 600 MB download.
+                embedded_n = 0
+                refresh_ids = added_ids + stats.get("pixel_changed_ids", [])
+                if refresh_ids:
+                    from fernkam import clip_embed
+                    if clip_embed.models_downloaded():
+                        try:
+                            from sqlalchemy import text as _text
+                            from fernkam.api.routers.semantic import embed_rows
+                            await task_manager.update_task(task_id, message="Updating search index…")
+                            rows = (await bg_db.execute(_text(
+                                "SELECT id, album_path, filename FROM photos WHERE id = ANY(:ids) "
+                                "AND status = 1 AND embedding_v IS NULL AND media_type IN ('image', 'video') "
+                                "ORDER BY id"), {"ids": refresh_ids})).all()
+                            embedded_n, _ = await embed_rows(bg_db, [tuple(r) for r in rows])
+                        except Exception as ee:
+                            logger.warning("[SCAN] search-index update failed: %s", ee)
+
                 t_total = _time.time() - t_start
                 per_photo_ms = (t_total / max(1, added)) * 1000.0
                 print(
@@ -157,6 +201,12 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
                     added, face_count, errors, t_total, per_photo_ms,
                 )
                 warnings = ""
+                if stats.get("moved"):
+                    warnings += f" — {stats['moved']} moved or renamed outside fernKam (tags kept)"
+                if stats.get("pixels_changed"):
+                    warnings += f" — {stats['pixels_changed']} edited outside fernKam (refreshed)"
+                if embedded_n:
+                    warnings += f" — {embedded_n} added to search"
                 if stats.get("deletion_skipped"):
                     warnings += f" — removals skipped: {stats['deletion_skipped']}"
                 if stats.get("unreadable_dirs"):
@@ -181,9 +231,7 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
     
     # Start background task (named so lifespan can cancel selectively)
     asyncio.create_task(run_scan(), name=f"fernkam-scan-{task_id}")
-    
-    print(f"[SCAN-LIBRARY] Returning immediately with status: running", flush=True)
-    return {"status": "running", "message": "Scan started in background", "task_id": task_id}
+    return task_id
 
 
 @router.post("/backfill-video-duration")

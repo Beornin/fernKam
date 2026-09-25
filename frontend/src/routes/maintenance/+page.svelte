@@ -118,6 +118,9 @@
 	}
 
 	let dbToFileSyncing = $state(false);
+	// Off by default: a normal run writes only photos with unsaved changes, so
+	// files that failed last time are all it retries.
+	let rewriteAll = $state(false);
 	let dbToFileResult = $state<string | null>(null);
 
 	let fileToDbSyncing = $state(false);
@@ -154,7 +157,7 @@
 		dbToFileSyncing = true;
 		dbToFileResult = null;
 		try {
-			const r = await api.sync.writeMetadata({ dirty_only: false });
+			const r = await api.sync.writeMetadata({ dirty_only: !rewriteAll });
 			if (!r.task_id) { dbToFileResult = r.message; dbToFileSyncing = false; return; }
 			await pollBgTask(r.task_id, async (msg) => {
 				dbToFileResult = msg;
@@ -403,7 +406,15 @@
 				</div>
 				<h2 class="text-lg font-semibold text-zinc-100">DB → Files</h2>
 			</div>
-			<p class="text-sm text-zinc-400 mb-4">Write database changes (tags, ratings, faces) to image files via XMP. Runs in the background over every photo — no need to click repeatedly.</p>
+			<p class="text-sm text-zinc-400 mb-3">
+				Write changes made in fernKam (tags, ratings, labels, captions, named faces) into the image files as XMP.
+				Files another program changed since fernKam last read them are merged first. Files that can't be
+				written stay pending and are retried next time.
+			</p>
+			<label class="flex items-center gap-2 text-xs text-zinc-400 mb-3 cursor-pointer">
+				<input type="checkbox" bind:checked={rewriteAll} class="accent-blue-500" />
+				Rewrite every photo, not just pending ones
+			</label>
 			<button
 				onclick={syncDbToFile}
 				disabled={dbToFileSyncing}
@@ -414,11 +425,11 @@
 					Syncing...
 				{:else}
 					<RefreshCw size={16} />
-					Sync to Files
+					{rewriteAll ? 'Rewrite all files' : status ? `Write ${status.dirty_count.toLocaleString()} pending` : 'Write pending changes'}
 				{/if}
 			</button>
 			{#if dbToFileResult}
-				<div class="mt-3 text-xs {dbToFileResult.startsWith('Failed') ? 'text-red-400' : 'text-emerald-400'}">
+				<div class="mt-3 text-xs {dbToFileResult.startsWith('Failed') ? 'text-red-400' : dbToFileResult.includes('could not be written') ? 'text-amber-400' : 'text-emerald-400'}">
 					{dbToFileResult}
 				</div>
 			{/if}

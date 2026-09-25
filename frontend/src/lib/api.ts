@@ -227,6 +227,27 @@ async function okVoid(r: Response): Promise<void> {
   }
 }
 
+export interface OutsideChange {
+  id: number;
+  photo_id: number;
+  detected_at: string;
+  kind: 'metadata' | 'pixels' | 'moved' | 'damaged';
+  details: {
+    fields?: Record<string, { from: unknown; to: unknown }>;
+    tags_added?: string[];
+    tags_removed?: string[];
+    conflicts?: Record<string, { fernkam: unknown; file: unknown }>;
+    from?: string;
+    to?: string;
+    note?: string;
+    restored?: Record<string, unknown>;
+  };
+  dismissed: boolean;
+  filename: string;
+  album_path: string;
+  media_type: string;
+}
+
 export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
@@ -403,6 +424,17 @@ export const api = {
         return r.json() as Promise<{ split: number; into: string; target_id: number }>;
       }),
   },
+  outsideChanges: {
+    list: (includeDismissed = false) =>
+      get<{ changes: OutsideChange[] }>('/api/outside-changes', { include_dismissed: includeDismissed }),
+    count: () => get<{ open: number }>('/api/outside-changes/count'),
+    restore: (id: number) =>
+      fetch(`/api/outside-changes/${id}/restore`, { method: 'POST' })
+        .then(r => okJson<{ photo_id: number; restored: Record<string, unknown> }>(r)),
+    dismiss: (body: { ids?: number[]; all?: boolean }) =>
+      fetch('/api/outside-changes/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<{ dismissed: number }>(r)),
+  },
   sync: {
     writeMetadata: (body?: { dirty_only?: boolean; album_path?: string }) =>
       fetch('/api/sync/write-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string; scope?: string }>),
@@ -417,6 +449,7 @@ export const api = {
     // Returns 409 when another file-mutating task is running, so this has to
     // check status — otherwise the refusal is parsed as a successful start and
     // the caller waits on a task_id that does not exist.
+    libraryRoot: () => get<{ library_root: string }>('/api/sync/library-root'),
     scanLibrary: (body?: { custom_path?: string; limit?: number }) =>
       fetch('/api/sync/scan-library', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
         .then(r => okJson<{ status: string; task_id: string; message: string }>(r)),

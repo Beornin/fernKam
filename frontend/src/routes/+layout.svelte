@@ -4,7 +4,7 @@
 import '../app.css';
 import { page } from '$app/stores';
 import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Power, ScanFace, ZoomIn, Bug, Workflow, Bookmark, Copy, CalendarDays, CalendarClock, Layers, Star, Wrench, Settings, ChevronDown, Database,
-	Sparkles
+	Sparkles, FileDiff
 } from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
 import { thumbSizeStore, statusCountStore } from '$lib/stores';
@@ -18,6 +18,9 @@ const unsubThumb = thumbSizeStore.subscribe(v => { thumbSize = v; });
 let taskMessage = $state('No active process');
 let taskRunning = $state(false);
 let taskInterval: ReturnType<typeof setInterval>;
+// Files edited outside fernKam since the user last looked (see /outside-changes).
+let outsideChanges = $state(0);
+let pollCount = 0;
 
 async function pollTasks() {
 	try {
@@ -28,6 +31,14 @@ async function pollTasks() {
 		taskRunning = running.length > 0;
 		taskMessage = running.length > 0 ? running[0].message : 'No active process';
 	} catch { /* ignore */ }
+	// Every 5th tick (15 s), or right after a task finishes, which is when new
+	// outside edits get detected.
+	if (pollCount++ % 5 === 0 || !taskRunning) {
+		try {
+			const r = await fetch('/api/outside-changes/count');
+			if (r.ok) outsideChanges = (await r.json()).open ?? 0;
+		} catch { /* ignore */ }
+	}
 }
 
 onMount(() => {
@@ -68,6 +79,7 @@ const toolsItems = [
 	{ href: '/date-inference', label: 'Date Inference', icon: CalendarClock },
 	{ href: '/stacks', label: 'Stacks', icon: Layers },
 	{ href: '/workflows', label: 'Workflows', icon: Workflow },
+	{ href: '/outside-changes', label: 'Changed Outside fernKam', icon: FileDiff },
 	{ href: '/tasks', label: 'Tasks', icon: RefreshCw },
 	{ href: '/logs', label: 'Logs', icon: Bug },
 ];
@@ -185,6 +197,17 @@ function isActive(item: typeof navItems[0]) {
 					<span class="text-zinc-600 truncate">{taskMessage}</span>
 				{/if}
 			</div>
+
+			{#if outsideChanges > 0}
+				<a
+					href="/outside-changes"
+					class="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 transition-colors"
+					title="Files were edited outside fernKam; fernKam picked up the changes"
+				>
+					<FileDiff size={12} />
+					{outsideChanges} {outsideChanges === 1 ? 'photo' : 'photos'} changed outside fernKam
+				</a>
+			{/if}
 
 			<!-- Thumb size slider (right) -->
 			<div class="flex items-center gap-1.5 shrink-0">

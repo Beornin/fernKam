@@ -28,6 +28,59 @@ _THUMB_SIZE = "md"
 _BATCH = 64
 
 
+async def embed_rows(bdb, rows, on_progress=None, is_cancelled=None) -> tuple[int, int]:
+    """CLIP-embed (id, album_path, filename) rows into photos.embedding_v.
+
+    Shared by the Discover indexer and the end of each library scan (new and
+    re-edited photos). Returns (embedded, skipped as unreadable). Commits per
+    batch.
+    """
+    import io
+    from PIL import Image
+    from fernkam import clip_embed as ce
+    from fernkam.thumbnails import generate_thumbnail_bytes, photo_disk_path, read_thumbnail_from_disk
+
+    loop = asyncio.get_event_loop()
+    ok = skipped = 0
+
+    def _load(pid: int, album: str, fname: str):
+        """Thumbnail first; fall back to generating one for photos the
+        thumbnail backfill never reached. Returns a PIL image or None."""
+        data = read_thumbnail_from_disk(pid, _THUMB_SIZE)
+        if data is None:
+            data = generate_thumbnail_bytes(photo_disk_path(album, fname), _THUMB_SIZE)
+        if not data:
+            return None
+        try:
+            return Image.open(io.BytesIO(data))
+        except Exception:
+            return None
+
+    for start in range(0, len(rows), _BATCH):
+        if is_cancelled and await is_cancelled():
+            break
+        chunk = rows[start:start + _BATCH]
+        imgs = await loop.run_in_executor(None, lambda c=chunk: [_load(r[0], r[1], r[2]) for r in c])
+        idx = [i for i, im in enumerate(imgs) if im is not None]
+        skipped += len(chunk) - len(idx)
+        if idx:
+            vecs = await loop.run_in_executor(None, ce.embed_images, [imgs[i] for i in idx])
+            params = [
+                {"pid": chunk[i][0], "v": ce.to_pgvector(v)}
+                for i, v in zip(idx, vecs) if v is not None
+            ]
+            if params:
+                await bdb.execute(_sql(
+                    "UPDATE photos SET embedding_v = CAST(:v AS vector),"
+                    " embedded_at = now() WHERE id = :pid"
+                ), params)
+                await bdb.commit()
+                ok += len(params)
+        if on_progress:
+            await on_progress(min(start + _BATCH, len(rows)), ok, skipped)
+    return ok, skipped
+
+
 @router.get("/status")
 async def embed_status(db: DB) -> dict:
     row = (await db.execute(_sql("""
@@ -61,68 +114,27 @@ async def embed_photos(db: DB, limit: Optional[int] = Query(None, ge=1)) -> dict
 
     async def _run() -> None:
         import time
-        import numpy as np
-        from PIL import Image
         from fernkam.db.session import async_session_factory
-        from fernkam import clip_embed as ce
-        from fernkam.thumbnails import read_thumbnail_from_disk, photo_disk_path, generate_thumbnail_bytes
 
-        loop = asyncio.get_event_loop()
         t0 = time.time()
-        ok = skipped = 0
         total = len(rows)
 
-        def _load(pid: int, album: str, fname: str):
-            """Thumbnail first; fall back to generating one for photos the
-            thumbnail backfill never reached. Returns a PIL image or None."""
-            import io
-            data = read_thumbnail_from_disk(pid, _THUMB_SIZE)
-            if data is None:
-                data = generate_thumbnail_bytes(photo_disk_path(album, fname), _THUMB_SIZE)
-            if not data:
-                return None
-            try:
-                return Image.open(io.BytesIO(data))
-            except Exception:
-                return None
+        async def is_cancelled() -> bool:
+            task = await task_manager.get_task(task_id)
+            return bool(task and task.status == "cancelled")
+
+        async def on_progress(done: int, ok: int, skipped: int) -> None:
+            rate = done / max(time.time() - t0, 0.001)
+            eta = int((total - done) / rate) if rate > 0 else 0
+            await task_manager.update_task(
+                task_id,
+                message=f"Embedding… {done:,}/{total:,} ({ok:,} ok, {skipped} skipped · {rate:.0f}/s · ETA {eta}s)",
+                progress={"done": done, "total": total, "ok": ok, "skipped": skipped},
+            )
 
         try:
             async with async_session_factory() as bdb:
-                for start in range(0, total, _BATCH):
-                    task = await task_manager.get_task(task_id)
-                    if task and task.status == "cancelled":
-                        break
-                    chunk = rows[start:start + _BATCH]
-                    imgs = await loop.run_in_executor(
-                        None, lambda c=chunk: [_load(r[0], r[1], r[2]) for r in c]
-                    )
-                    idx = [i for i, im in enumerate(imgs) if im is not None]
-                    skipped += len(chunk) - len(idx)
-                    if idx:
-                        vecs = await loop.run_in_executor(
-                            None, ce.embed_images, [imgs[i] for i in idx]
-                        )
-                        params = [
-                            {"pid": chunk[i][0], "v": ce.to_pgvector(v)}
-                            for i, v in zip(idx, vecs) if v is not None
-                        ]
-                        if params:
-                            await bdb.execute(_sql(
-                                "UPDATE photos SET embedding_v = CAST(:v AS vector),"
-                                " embedded_at = now() WHERE id = :pid"
-                            ), params)
-                            await bdb.commit()
-                            ok += len(params)
-
-                    done = min(start + _BATCH, total)
-                    rate = done / max(time.time() - t0, 0.001)
-                    eta = int((total - done) / rate) if rate > 0 else 0
-                    await task_manager.update_task(
-                        task_id,
-                        message=f"Embedding… {done:,}/{total:,} ({ok:,} ok, {skipped} skipped · {rate:.0f}/s · ETA {eta}s)",
-                        progress={"done": done, "total": total, "ok": ok, "skipped": skipped},
-                    )
-
+                ok, skipped = await embed_rows(bdb, rows, on_progress=on_progress, is_cancelled=is_cancelled)
             await task_manager.update_task(
                 task_id, status="completed",
                 message=f"Embedded {ok:,} photos ({skipped} unreadable) in {time.time()-t0:.0f}s",

@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, people, photos, saved_searches, semantic, stacks, sync, tags, workflows
+from fernkam.api.routers import albums, backup, debug, dedup, faces, geocode, logs as logs_router, media, outside_changes, people, photos, saved_searches, semantic, stacks, sync, tags, workflows
 from fernkam.db.session import get_async_engine
 from fernkam.task_manager import TaskConflict
 
@@ -186,6 +186,29 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[task_manager] stale-cancel failed: {_e}", flush=True)
 
+    # Refresh from disk first: files edited outside fernKam while it was
+    # closed are picked up before anything else happens (background task).
+    try:
+        from fernkam.config import get_settings as _gs
+        if _gs().scan_on_startup:
+            from fernkam.api.routers.sync.library import start_library_scan
+            await start_library_scan(label="Refreshing from disk (startup)…")
+            print("[startup] Refreshing the catalogue from disk in the background", flush=True)
+    except TaskConflict as _tc:
+        print(f"[startup] refresh skipped: {_tc}", flush=True)
+    except Exception as _e:
+        print(f"[startup] refresh failed to start: {_e}", flush=True)
+
+    # Then keep watching for changes made while fernKam runs.
+    try:
+        from fernkam.config import get_settings as _gs2
+        if _gs2().watch_library:
+            from fernkam import library_watch
+            import asyncio as _aio
+            _aio.create_task(library_watch.watch_library(), name="fernkam-library-watch")
+    except Exception as _e:
+        print(f"[watch] failed to start: {_e}", flush=True)
+
     # Pre-warm InsightFace model in background (avoids long hang on first face scan)
     import asyncio as _asyncio
     async def _warm_face_model():
@@ -206,6 +229,11 @@ async def lifespan(app: FastAPI):
     yield
     # Cleanup on shutdown - only cancel our named background tasks
     print("Shutting down...")
+    try:
+        from fernkam import library_watch
+        library_watch.stop()  # the watcher's thread checks this every step
+    except Exception:
+        pass
     import asyncio
     try:
         tasks = [
@@ -343,6 +371,7 @@ app.include_router(stacks.router, prefix="/api/stacks", tags=["stacks"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(semantic.router, prefix="/api/semantic", tags=["semantic"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
+app.include_router(outside_changes.router, prefix="/api/outside-changes", tags=["outside-changes"])
 
 
 @app.exception_handler(TaskConflict)

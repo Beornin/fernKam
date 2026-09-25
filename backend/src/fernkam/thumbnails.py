@@ -115,6 +115,41 @@ def delete_thumbnails_from_disk(photo_ids: "Iterable[int]") -> int:
     return removed
 
 
+def _visibly_different(a: bytes, b: bytes, tolerance: float = 1.5) -> bool:
+    """Whether two thumbnails show a different picture: a new size, or a mean
+    per-channel difference above `tolerance` (0-255). A re-encode or a small
+    retouch stays under it; an exposure change or a crop does not."""
+    from io import BytesIO
+    from PIL import ImageChops, ImageStat
+    ia = Image.open(BytesIO(a)).convert("RGB")
+    ib = Image.open(BytesIO(b)).convert("RGB")
+    if ia.size != ib.size:
+        return True
+    return max(ImageStat.Stat(ImageChops.difference(ia, ib)).mean) > tolerance
+
+
+def refresh_thumbnail(photo_id: int, src: Path) -> str:
+    """After a photo's file changed on disk: rebuild its thumbnail and report
+    whether the picture itself changed. Blocking; call via run_in_executor.
+
+    "same"        identical thumbnail — a metadata-only edit, nothing to do
+    "refreshed"   trivially different (re-encode, tiny retouch) — cache replaced
+    "changed"     the picture changed — cache replaced; faces and the search
+                  embedding computed from the old pixels are stale
+    "unavailable" no thumbnail could be made (unreadable file, no ffmpeg)
+    """
+    new = generate_thumbnail_bytes(src, "md")
+    if not new:
+        return "unavailable"
+    old = read_thumbnail_from_disk(photo_id, "md")
+    if old == new:
+        return "same"
+    changed = old is not None and _visibly_different(old, new)
+    delete_thumbnails_from_disk([photo_id])  # other sizes regenerate on demand
+    write_thumbnail_to_disk(photo_id, "md", new)
+    return "changed" if changed else "refreshed"
+
+
 def generate_thumbnail_bytes(
     src: Path,
     size: Literal["sm", "md", "lg", "xl", "xxl"] = "md",

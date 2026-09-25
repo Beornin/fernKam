@@ -132,11 +132,18 @@ async def set_cover(stack_id: int, db: DB, photo_id: int = Body(..., embed=True)
 @router.post("/{stack_id}/sync-tags")
 async def sync_stack_tags(stack_id: int, db: DB) -> dict:
     """Union tags/rating/color-label/face-regions across all members, write to every member."""
+    from fernkam.importers.filesystem import reconcile_outdated
     from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
 
     stack = (await db.execute(select(PhotoStack).where(PhotoStack.id == stack_id))).scalar_one_or_none()
     if not stack:
         raise HTTPException(404, "Stack not found")
+
+    # Pick up edits other programs made to the members' files before taking
+    # the union — otherwise the write below would overwrite them.
+    member_ids = [r[0] for r in (await db.execute(select(Photo.id).where(Photo.stack_id == stack_id))).all()]
+    await reconcile_outdated(db, member_ids)
+    await db.commit()
 
     members = (await db.execute(
         select(Photo).where(Photo.stack_id == stack_id)
@@ -187,14 +194,17 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
 
     await db.flush()
 
-    ok, errors = 0, 0
+    ok_files: list[str] = []
+    failed: dict[str, str] = {}
     if payloads:
         import asyncio
         loop = asyncio.get_event_loop()
-        ok, errors = await loop.run_in_executor(None, write_metadata_batch, payloads)
+        ok_files, failed = await loop.run_in_executor(None, write_metadata_batch, payloads)
 
-    if ok:
-        await mark_files_synced(db, written)
+    if ok_files:
+        done = set(ok_files)
+        await mark_files_synced(db, [(pid, src) for pid, src in written if src in done])
 
     await db.commit()
-    return {"synced": ok, "errors": errors, "members": len(members)}
+    return {"synced": len(ok_files), "errors": len(failed), "members": len(members),
+            "failed": [{"file": src, "error": why} for src, why in failed.items()]}

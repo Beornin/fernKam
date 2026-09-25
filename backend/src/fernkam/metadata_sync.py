@@ -137,6 +137,8 @@ _ET_TAGS: list[str] = [
     "-XPTitle", "-ImageDescription",
     # Face regions (MWG)
     "-struct", "-RegionInfo",
+    # Only reported when the file could not be read; see parse_exif_dict.
+    "-Error",
 ]
 
 
@@ -306,8 +308,13 @@ def _as_text(val, max_len: Optional[int] = None) -> Optional[str]:
 
 
 def parse_exif_dict(meta: dict, file_path: Path) -> dict:
-    """Convert a raw exiftool JSON object into fernKam's structured metadata."""
-    if meta is None:
+    """Convert a raw exiftool JSON object into fernKam's structured metadata.
+
+    Returns {} when exiftool could not read the file (it reports an object
+    carrying only "Error"). Callers treat {} as "unknown", which matters: read
+    as real metadata, it would look like a file with every field cleared.
+    """
+    if meta is None or meta.get("Error"):
         return {}
 
     # Tags
@@ -545,10 +552,20 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
             tag_names.append(person_name)
             tag_paths.append(f"People/{person_name}")
 
+    # What the file held at the last read/write (sync_merge). A field fernKam
+    # has emptied must be cleared in the file too, or the old value survives
+    # every write-back. Only fields the file actually has are cleared, so files
+    # without, say, a title don't gain an empty one. exiftool's JSON import
+    # cannot delete a tag: "" leaves an empty value (read back as none), an
+    # empty list removes a list tag, and None would write the text "null".
+    in_file = getattr(photo, "synced_meta", None) or {}
+
     if tag_names:
         payload["Subject"] = tag_names
         payload["Keywords"] = tag_names
         payload["HierarchicalSubject"] = [t.replace("/", "|") for t in tag_paths]
+    elif in_file.get("tags"):
+        payload["Subject"] = payload["Keywords"] = payload["HierarchicalSubject"] = []
 
     if photo.rating is not None and photo.rating >= 0:
         payload["Rating"] = max(0, min(5, photo.rating))
@@ -556,13 +573,19 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
 
     if photo.color_label:
         payload["Label"] = COLOR_LABEL_TO_NAME.get(photo.color_label, "")
+    elif in_file.get("color_label"):
+        payload["Label"] = ""
 
     if photo.title:
         payload["Title"] = photo.title
+    elif in_file.get("title"):
+        payload["Title"] = ""
 
     if photo.caption:
         payload["Description"] = photo.caption
         payload["Caption-Abstract"] = photo.caption
+    elif in_file.get("caption"):
+        payload["Description"] = payload["Caption-Abstract"] = ""
 
     # Face regions: DigiKam stops reading at the first entry with empty Name,
     # so only write faces that have a name.
@@ -594,20 +617,24 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
     return payload
 
 
-def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
+def write_metadata_batch(payloads: list[dict]) -> tuple[list[str], dict[str, str]]:
     """Write metadata for a batch of photos in a single exiftool call.
 
     Each payload must be a dict with a "SourceFile" key and whatever XMP fields
     should be written.  One exiftool process handles the whole batch, which
     amortises the ~200 ms startup overhead over many files.
 
-    Returns (ok_count, error_count).
+    Returns (written SourceFiles, {failed SourceFile: reason}). exiftool exits
+    non-zero if *any* file fails; that used to mark the whole batch failed, so
+    the good files stayed "needs sync" and were rewritten every pass. `-efile`
+    makes exiftool list exactly the files it could not write.
     """
+    sources = [p["SourceFile"] for p in payloads]
     et = _et()
     if not et:
-        return 0, len(payloads)
+        return [], {src: "exiftool not found" for src in sources}
     if not payloads:
-        return 0, 0
+        return [], {}
 
     # `-json=FILE` alone only supplies tag values — exiftool still needs the
     # target files as arguments (matched back to each JSON entry by its
@@ -616,6 +643,9 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
     # ~32k command-line length limit.
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
     argfile_fd, argfile_path = tempfile.mkstemp(suffix=".args")
+    errfile_fd, errfile_path = tempfile.mkstemp(suffix=".err")
+    os.close(errfile_fd)
+    os.unlink(errfile_path)  # exiftool creates it only if something failed
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
             json.dump(payloads, fh, ensure_ascii=False)
@@ -623,38 +653,60 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[int, int]:
         with os.fdopen(argfile_fd, "w", encoding="utf-8") as afh:
             afh.write("-overwrite_original\n")
             afh.write(f"-json={tmp_path}\n")
-            for p in payloads:
-                afh.write(f"{p['SourceFile']}\n")
+            afh.write(f"-efile\n{errfile_path}\n")
+            for src in sources:
+                afh.write(f"{src}\n")
 
         result = subprocess.run(
             [et, "-@", argfile_path],
             capture_output=True, stdin=subprocess.DEVNULL, timeout=300,
         )
-        if result.returncode != 0:
-            logger.warning(
-                "exiftool batch write failed (%d files): %s",
-                len(payloads),
-                result.stderr.decode(errors="replace")[:500],
-            )
-            return 0, len(payloads)
-        return len(payloads), 0
+        stderr = result.stderr.decode(errors="replace")
+        if result.returncode == 0:
+            return sources, {}
+
+        failed_names: set[str] = set()
+        try:
+            with open(errfile_path, encoding="utf-8", errors="replace") as fh:
+                failed_names = {_norm_sourcefile(line.strip()) for line in fh if line.strip()}
+        except OSError:
+            pass
+        if not failed_names:
+            # Non-zero exit but no per-file errors (bad JSON, exiftool crash):
+            # nothing can be trusted as written.
+            logger.warning("exiftool batch write failed (%d files): %s", len(payloads), stderr[:500])
+            return [], {src: stderr.strip()[:200] or f"exiftool exit {result.returncode}" for src in sources}
+
+        # "Error: <reason> - <file>" lines, for telling the user why.
+        reasons: dict[str, str] = {}
+        for line in stderr.splitlines():
+            if line.startswith("Error:") and " - " in line:
+                msg, _, name = line[len("Error:"):].rpartition(" - ")
+                reasons[_norm_sourcefile(name.strip())] = msg.strip()
+        written = [src for src in sources if _norm_sourcefile(src) not in failed_names]
+        failed = {src: reasons.get(_norm_sourcefile(src), "write failed")
+                  for src in sources if _norm_sourcefile(src) in failed_names}
+        for src, why in failed.items():
+            logger.warning("exiftool could not write %s: %s", src, why)
+        return written, failed
     except Exception as exc:
         logger.warning("exiftool batch write exception: %s", exc)
-        return 0, len(payloads)
+        return [], {src: str(exc) for src in sources}
     finally:
-        for p in (tmp_path, argfile_path):
+        for p in (tmp_path, argfile_path, errfile_path):
             try:
                 os.unlink(p)
             except OSError:
                 pass
 
 
-def _current_mtimes(paths: list[str]) -> dict[str, datetime]:
-    """Blocking: on-disk mtime of each path that still exists."""
-    out: dict[str, datetime] = {}
+def _current_stats(paths: list[str]) -> dict[str, tuple[datetime, int]]:
+    """Blocking: on-disk (mtime, size) of each path that still exists."""
+    out: dict[str, tuple[datetime, int]] = {}
     for p in paths:
         try:
-            out[p] = datetime.fromtimestamp(os.stat(p).st_mtime, tz=timezone.utc)
+            st = os.stat(p)
+            out[p] = (datetime.fromtimestamp(st.st_mtime, tz=timezone.utc), st.st_size)
         except OSError:
             pass
     return out
@@ -668,20 +720,38 @@ async def mark_files_synced(db, written: list[tuple[int, str]]) -> None:
     externally modified to the next library scan, which re-read it with
     exiftool and copied its fields back over the database — reverting any
     rating or caption changed in the app since the write-back.
-    Does not commit.
+
+    Also reads each file back and stores what it now holds as the merge
+    ancestor (synced_meta), so the next scan can tell a later edit by another
+    program from what fernKam just wrote. Does not commit.
     """
     import asyncio
     from sqlalchemy import text
+    from fernkam.sync_merge import file_state
 
     if not written:
         return
-    mtimes = await asyncio.get_running_loop().run_in_executor(
-        None, _current_mtimes, [path for _, path in written])
+    loop = asyncio.get_running_loop()
+    paths = [path for _, path in written]
+    stats = await loop.run_in_executor(None, _current_stats, paths)
+    read_back = await loop.run_in_executor(None, read_many_metadata, [Path(p) for p in paths])
+    # Writing metadata into a file changes its bytes; keep sha256 current for
+    # duplicate detection and move matching.
+    from fernkam.importers.filesystem import _sha256_path
+    digests = await asyncio.gather(*[loop.run_in_executor(None, _sha256_path, Path(p)) for p in paths])
     now = datetime.now(timezone.utc)
+    params = []
+    for (pid, path), digest in zip(written, digests):
+        meta = read_back.get(Path(path))
+        mtime, size = stats.get(path, (None, None))
+        params.append({"pid": pid, "mt": mtime, "size": size, "now": now, "sha": digest,
+                       "snap": json.dumps(file_state(meta)) if meta else None})
     await db.execute(text(
         "UPDATE photos SET meta_synced_at = :now, file_sync_dirty = false, "
-        "file_modified_at_sync = COALESCE(:mt, file_modified_at_sync) WHERE id = :pid"
-    ), [{"pid": pid, "mt": mtimes.get(path), "now": now} for pid, path in written])
+        "file_modified_at_sync = COALESCE(:mt, file_modified_at_sync), "
+        "file_size = COALESCE(:size, file_size), sha256 = COALESCE(:sha, sha256), "
+        "synced_meta = COALESCE(CAST(:snap AS jsonb), synced_meta) WHERE id = :pid"
+    ), params)
 
 
 # ═══════════════════════════ DB ↔ FILE SYNC ══════════════════════════════════

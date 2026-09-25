@@ -142,6 +142,9 @@ class Photo(Base):
     meta_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     file_modified_at_sync: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     file_sync_dirty: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Rating, label, title, caption and tag keys as the file held them the last
+    # time fernKam read or wrote it — the common ancestor for sync_merge.
+    synced_meta: Mapped[Optional[dict]] = mapped_column(JSONB)
     faces_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Status flags (mirrors DigiKam ImageInformation.status)

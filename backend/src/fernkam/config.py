@@ -71,6 +71,21 @@ class Settings(BaseSettings):
     # Example: PERSON_MIN_DATES='{"Alice": "2018-03-22", "Bob": "2024-05-18"}'
     person_min_dates: str = "{}"  # PERSON_MIN_DATES
 
+    # ── Staying in sync with the files ──
+    # Scan the library in the background every time the server starts, so
+    # edits made by other programs while fernKam was closed are picked up
+    # (a no-op rescan of ~116k files takes ~12 s).
+    scan_on_startup: bool = True              # SCAN_ON_STARTUP
+    # Keep watching while running (digiKam's "monitor the albums for external
+    # changes"): edits, additions, moves and deletions made by other programs
+    # are picked up within seconds. Polling is for network shares that don't
+    # deliver change notifications.
+    # Off by default for now: with it on, the server does not exit on SIGTERM
+    # (the watcher thread outlives shutdown), which would hang closing the
+    # launcher window. Being fixed; the startup refresh covers the gap.
+    watch_library: bool = False               # WATCH_LIBRARY
+    watch_library_polling: bool = False       # WATCH_LIBRARY_POLLING
+
     # ── Network exposure ──
     # The API has no authentication — it can delete, move and trash originals.
     # Browsers attach an Origin header to cross-site POSTs; api/app.py rejects

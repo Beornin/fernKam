@@ -31,7 +31,7 @@ async def refresh_metadata_from_files(
     import asyncio
     from fernkam.task_manager import task_manager
 
-    q = select(Photo.id, Photo.album_path, Photo.filename).where(Photo.status == 1)
+    q = select(Photo.id, Photo.album_path, Photo.filename, Photo.file_modified_at_sync).where(Photo.status == 1)
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif album_path:
@@ -54,6 +54,7 @@ async def refresh_metadata_from_files(
         from fernkam.db.session import async_session_factory
         from fernkam.importers.filesystem import update_photo_metadata
         from fernkam.metadata_sync import read_many_metadata_async
+        from fernkam.sync_merge import load_states
         from fernkam.thumbnails import photo_disk_path
 
         t_start = _time.time()
@@ -79,16 +80,33 @@ async def refresh_metadata_from_files(
                 paths.append(fp)
 
             meta_map = await read_many_metadata_async(paths, chunk_size=BATCH)
+            # Rehash only files whose mtime moved since fernKam last saw them:
+            # hashing reads the whole file, and this refresh covers every photo.
+            from fernkam.importers.filesystem import MTIME_SLACK_SECONDS, _sha256_path
+            loop = asyncio.get_running_loop()
+            moved = [(row, fp) for row, fp, mtime in present
+                     if row.file_modified_at_sync is None
+                     or abs((mtime - row.file_modified_at_sync).total_seconds()) > MTIME_SLACK_SECONDS]
+            digests = await asyncio.gather(*[loop.run_in_executor(None, _sha256_path, fp) for _, fp in moved])
+            hash_of = {row.id: d for (row, _), d in zip(moved, digests)}
 
             async with async_session_factory() as bdb:
+                states = await load_states(bdb, [row.id for row, _, _ in present])
+                tag_cache: dict = {}
                 for row, fp, mtime in present:
                     try:
                         async with bdb.begin_nested():  # savepoint isolates per-photo failures
-                            await update_photo_metadata(
-                                bdb, row.id, fp, mtime, metadata=meta_map.get(fp, {})
+                            merged = await update_photo_metadata(
+                                bdb, row.id, fp, mtime, metadata=meta_map.get(fp, {}),
+                                state=states.get(row.id), tag_cache=tag_cache,
+                                sha256=hash_of.get(row.id),
                             )
-                        ok += 1
+                        if merged is None:
+                            errors += 1  # unreadable
+                        else:
+                            ok += 1
                     except Exception as exc:
+                        tag_cache.clear()
                         logger.warning("refresh-metadata error photo %d: %s", row.id, exc)
                         errors += 1
                 await bdb.commit()
@@ -119,16 +137,21 @@ async def refresh_metadata_from_files(
 @router.post("/write-metadata")
 async def write_metadata_all(
     db: DB,
-    dirty_only: bool = Body(False),
+    dirty_only: bool = Body(True),
     album_path: Optional[str] = Body(None),
     batch_size: int = Body(200),
     concurrency: int = Body(4),
 ) -> dict:
-    """Write all confirmed face regions and tags to image files (XMP).
+    """Write tags, rating, label, title, caption and named face regions into
+    the image files (XMP).
 
     Runs as a cancellable background task. Progress is visible via /sync/tasks.
+    Files changed by another program since fernKam last read them are re-read
+    and merged before writing. Files that fail stay "needs sync", so the next
+    pending-only run retries just those.
 
-    - dirty_only: only process photos flagged file_sync_dirty (fast incremental mode)
+    - dirty_only: only photos with changes not yet written (default); false
+      rewrites every photo
     - album_path: restrict to one album subtree
     - batch_size: photos per exiftool call (default 200; tune up for speed)
     - concurrency: parallel exiftool workers (default 4)
@@ -161,17 +184,26 @@ async def write_metadata_all(
     async def run_write():
         import time as _time
         from fernkam.db.session import async_session_factory
+        from fernkam.importers.filesystem import reconcile_outdated
         from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
 
         t_start = _time.time()
         total = len(photo_ids)
-        ok = errors = 0
+        ok = errors = reread = 0
+        failures: list[dict] = []  # first few, for the task report
         sem = asyncio.Semaphore(concurrency)
         loop = asyncio.get_event_loop()
 
-        async def process_batch(batch_ids: list[int]) -> tuple[int, int]:
+        async def process_batch(batch_ids: list[int]) -> tuple[int, dict[str, str], int]:
             async with sem:
                 async with async_session_factory() as bdb:
+                    # Check before writing whether fernKam is out of date: files
+                    # another program changed since fernKam last read them are
+                    # re-read and merged first, so their edits are carried
+                    # into the write instead of overwritten.
+                    n_reread = await reconcile_outdated(bdb, batch_ids)
+                    await bdb.commit()
+
                     photos = (await bdb.execute(
                         select(Photo)
                         .where(Photo.id.in_(batch_ids))
@@ -182,7 +214,7 @@ async def write_metadata_all(
                     )).scalars().all()
 
                     payloads: list[dict] = []
-                    written_ids: list[int] = []
+                    photo_for_file: dict[str, int] = {}
                     for photo in photos:
                         tags = [pt.tag for pt in photo.photo_tags if pt.tag]
                         named_faces = [
@@ -193,21 +225,22 @@ async def write_metadata_all(
                         p = build_photo_payload(photo, tags, named_faces)
                         if p:
                             payloads.append(p)
-                            written_ids.append(photo.id)
+                            photo_for_file[p["SourceFile"]] = photo.id
 
                     if not payloads:
-                        return 0, 0
+                        return 0, {}, n_reread
 
-                    b_ok, b_err = await loop.run_in_executor(
+                    written, failed = await loop.run_in_executor(
                         None, write_metadata_batch, payloads
                     )
-
-                    if b_ok and written_ids:
-                        await mark_files_synced(
-                            bdb, [(pid, p["SourceFile"]) for pid, p in zip(written_ids, payloads)])
+                    # Only files exiftool actually wrote are marked synced; a
+                    # failed one stays "needs sync" and is all the next
+                    # pending-only pass has to retry.
+                    if written:
+                        await mark_files_synced(bdb, [(photo_for_file[src], src) for src in written])
                         await bdb.commit()
 
-                    return b_ok, b_err
+                    return len(written), failed, n_reread
 
         batches = [
             photo_ids[i : i + batch_size]
@@ -223,16 +256,22 @@ async def write_metadata_all(
             wave = batches[wave_start : wave_start + concurrency * 2]
             results = await asyncio.gather(*[process_batch(b) for b in wave], return_exceptions=True)
 
-            for r in results:
+            for batch, r in zip(wave, results):
                 if isinstance(r, Exception):
-                    errors += batch_size
+                    errors += len(batch)
                     logger.warning("[write-metadata] batch error: %s", r)
-                else:
-                    ok += r[0]
-                    errors += r[1]
+                    continue
+                n_ok, failed, n_reread = r
+                ok += n_ok
+                errors += len(failed)
+                reread += n_reread
+                for src, why in failed.items():
+                    if len(failures) < 50:
+                        failures.append({"file": src, "error": why})
 
             elapsed = _time.time() - t_start
-            done = ok + errors
+            done = min(wave_start + len(wave), len(batches)) * batch_size
+            done = min(done, total)
             rate = done / elapsed if elapsed > 0 else 0
             eta = int((total - done) / rate) if rate > 0 else 0
             await task_manager.update_task(
@@ -245,17 +284,26 @@ async def write_metadata_all(
 
         t_total = _time.time() - t_start
         print(
-            f"[write-metadata] Done: {ok:,} ok, {errors} errors, "
+            f"[write-metadata] Done: {ok:,} ok, {errors} failed, {reread} re-read first, "
             f"{len(batches)} batches, {t_total:.1f}s",
             flush=True,
         )
+        message = f"Done: {ok:,} photos written ({t_total:.0f}s)"
+        if reread:
+            message += f"; {reread:,} changed on disk and were merged first"
+        if errors:
+            message += (f"; {errors:,} could not be written and are still pending "
+                        f"(first: {failures[0]['file']} — {failures[0]['error']})" if failures
+                        else f"; {errors:,} could not be written and are still pending")
         await task_manager.update_task(
             task_id,
             status="completed",
-            message=f"Done: {ok:,} photos written, {errors} errors ({t_total:.0f}s)",
+            message=message,
             progress={
                 "ok": ok,
                 "errors": errors,
+                "reread": reread,
+                "failures": failures,
                 "total": total,
                 "elapsed_s": round(t_total, 1),
                 "batches": len(batches),
