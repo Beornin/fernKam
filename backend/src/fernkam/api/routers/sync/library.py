@@ -52,6 +52,11 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
     return {"status": "running", "message": "Scan started in background", "task_id": task_id}
 
 
+# Bumped whenever a scan adds, removes, moves or refreshes photos. The status
+# bar's task poll carries it, and the Photos grid and album tree reload when it
+# changes, so a new folder shows up without a manual refresh.
+library_version = 0
+
 # Intake shoots already handed to PureRAW automatically this session, so one
 # that fails isn't retried after every scan.
 _auto_developed: set[str] = set()
@@ -262,6 +267,9 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                              f"{deleted} removed, {stats.get('skipped', 0):,} unchanged, "
                              f"{face_count} faces detected{warnings}"),
                     progress={**stats, "faces_detected": face_count, "total_s": round(t_total, 1)})
+                if added or deleted or stats.get("moved") or stats.get("updated"):
+                    global library_version
+                    library_version += 1
                 await _auto_develop()
             except ScanCancelled:
                 await bg_db.rollback()

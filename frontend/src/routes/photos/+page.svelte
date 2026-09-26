@@ -16,7 +16,7 @@
 	import MapView from '$lib/components/MapView.svelte';
 	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star, Loader } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
-	import { statusCountStore } from '$lib/stores';
+	import { statusCountStore, libraryVersionStore } from '$lib/stores';
 	import { createLightboxNav } from '$lib/lightboxNav.svelte';
 	import { inferTab, readListFilterParams, buildFilterUrl, type ShellTab } from '$lib/shellFilters';
 
@@ -485,6 +485,16 @@
 	// digiKam's "Reread Metadata From File" / "Write Metadata to File", on the
 	// selection (or the photo right-clicked when nothing is selected).
 	let reloadTick = $state(0);
+
+	// Reload the grid when a scan changes the library (a new folder, photos
+	// added by the watcher), not on the first reading of the version.
+	let libraryVersionSeen: number | null = null;
+	$effect(() => {
+		const v = $libraryVersionStore;
+		if (v === null) return;
+		if (libraryVersionSeen !== null && v !== libraryVersionSeen) reloadTick++;
+		libraryVersionSeen = v;
+	});
 
 	async function waitForTask(taskId: string): Promise<{ status: string; message: string }> {
 		for (;;) {

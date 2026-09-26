@@ -7,7 +7,7 @@ import { Images, Tag, Users, FolderOpen, Search, Activity, MapPin, RefreshCw, Po
 	Sparkles, FileDiff, Tags
 } from '@lucide/svelte';
 import { onMount, onDestroy } from 'svelte';
-import { thumbSizeStore, statusCountStore } from '$lib/stores';
+import { thumbSizeStore, statusCountStore, libraryVersionStore } from '$lib/stores';
 import { inferTab } from '$lib/shellFilters';
 
 let { children } = $props();
@@ -28,6 +28,7 @@ async function pollTasks() {
 		if (!res.ok) return;
 		const data = await res.json();
 		const running = data.tasks ?? [];
+		if (typeof data.library_version === 'number') libraryVersionStore.set(data.library_version);
 		taskRunning = running.length > 0;
 		taskMessage = running.length > 0 ? running[0].message : 'No active process';
 	} catch { /* ignore */ }

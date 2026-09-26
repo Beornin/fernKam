@@ -4,6 +4,11 @@ export const thumbSizeStore = writable<number>(180);
 
 export const statusCountStore = writable<string>('');
 
+/** The server's library version (see sync/library.py), updated by the status
+ * bar's task poll. It changes when a scan adds, removes, moves or refreshes
+ * photos, and views that list photos reload then. null until the first poll. */
+export const libraryVersionStore = writable<number | null>(null);
+
 const THEME_KEY = 'fernkam-theme';
 
 export const THEMES = [

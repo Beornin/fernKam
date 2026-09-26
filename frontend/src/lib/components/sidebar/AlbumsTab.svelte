@@ -4,12 +4,23 @@
 	import { onMount } from 'svelte';
 	import { api, type AlbumNode } from '$lib/api';
 	import { buildFilterUrl } from '$lib/shellFilters';
+	import { libraryVersionStore } from '$lib/stores';
 	import { ChevronDown, ChevronRight, FolderOpen, Folder, Images } from '@lucide/svelte';
 
 	let albumPath = $derived($page.url.searchParams.get('album_path') ?? '');
 
 	let albums = $state<AlbumNode[]>([]);
 	let expanded = $state(new Set<string>());
+
+	// A scan that changed the library may have made new folders (a PureRAW
+	// jpg/, a new shoot): reload the tree. Expanded folders stay expanded.
+	let libraryVersionSeen: number | null = null;
+	$effect(() => {
+		const v = $libraryVersionStore;
+		if (v === null) return;
+		if (libraryVersionSeen !== null && v !== libraryVersionSeen) api.albums.list().then(a => (albums = a));
+		libraryVersionSeen = v;
+	});
 
 	onMount(async () => {
 		albums = await api.albums.list();

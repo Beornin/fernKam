@@ -9,6 +9,7 @@ router = APIRouter()
 @router.get("/tasks")
 async def get_tasks(running_only: bool = Query(False)) -> dict:
     """Get background tasks. Pass running_only=1 for the lightweight status-bar poll."""
+    from fernkam.api.routers.sync import library
     from fernkam.task_manager import task_manager
     tasks = (
         await task_manager.get_running_tasks()
@@ -16,6 +17,7 @@ async def get_tasks(running_only: bool = Query(False)) -> dict:
         else await task_manager.get_all_tasks()
     )
     return {
+        "library_version": library.library_version,
         "tasks": [
             {
                 "id": t.id,
