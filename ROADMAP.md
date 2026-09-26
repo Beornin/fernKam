@@ -862,6 +862,13 @@ closed for other GPU work. "Index the rest" resumes it.
   window was closing. It now stands down when the launcher is the one closing. The window waits
   until the server's port is closed, so the UI closes last: port closed at 1,575 ms, window at
   1,577 ms, no processes left.
+- **Maintenance → Reindex now rebuilds every index.** It used a hand-kept list of three,
+  and one had been dropped in 0023, so every run said "Reindexed 2/3". It also missed the
+  largest search indexes. The list now comes from the database on each run, smallest first,
+  with `CONCURRENTLY` so fernKam stays usable, progress in the status bar, and any failed
+  rebuild's leftover dropped. Measured: **71/71 in 300 s**. The 66 regular indexes take about
+  1 s each; the face vector indexes 25 s and 54 s; photo search 63 s; BioCLIP 63 s; SigLIP 2
+  at 512 px 83 s.
 - **Schema review (migration 0033).** Every column's null fraction and distinct count came
   from `pg_stats`, confirmed with exact counts. Index usage came from counters never reset
   since the database was created.

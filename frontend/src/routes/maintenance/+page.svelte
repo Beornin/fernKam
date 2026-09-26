@@ -338,7 +338,7 @@
 				<button
 					onclick={runReindex}
 					disabled={reindexing}
-					title="Rebuilds the largest/heaviest-churn indexes (face embedding search, EXIF, hash lookup) concurrently, without locking the tables."
+					title="Rebuilds every index (71 today), smallest first, without locking the tables: fernKam stays usable. About 5 minutes; most of it is the face and image search indexes. Progress shows in the status bar."
 					class="w-full px-3 py-2 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-sm"
 				>
 					{#if reindexing}<Loader2 size={14} class="animate-spin" /> Running…{:else}Reindex{/if}

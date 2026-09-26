@@ -7,13 +7,6 @@ db/index_setup.py.
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-# Large/critical indexes worth an explicit manual REINDEX (not every index —
-# just the ones that see heavy write churn or vector search traffic).
-REINDEX_CANDIDATES = [
-    "ix_faces_emb_unconfirmed_hnsw",
-    "ix_faces_embedding_v_confirmed_hnsw",
-    "ix_photos_exif_gin",
-]
 
 
 async def get_db_stats(engine: AsyncEngine) -> dict:
@@ -67,14 +60,44 @@ async def run_vacuum_analyze(engine: AsyncEngine) -> None:
         await ac.execute(text("VACUUM (ANALYZE)"))
 
 
-async def run_reindex_concurrently(engine: AsyncEngine, index_names: list[str]) -> dict:
+async def all_indexes(engine: AsyncEngine) -> list[str]:
+    """Every index in the schema, smallest first, so the quick B-trees finish
+    before the multi-minute vector (HNSW) rebuilds. Read from the database on
+    each run: the hand-kept list it replaces still named ix_photos_exif_gin
+    (dropped in 0023, so every run said "2/3") and missed the largest indexes."""
+    async with engine.connect() as conn:
+        rows = await conn.execute(text("""
+            SELECT i.indexrelid::regclass::text
+            FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public'
+            ORDER BY pg_relation_size(i.indexrelid)"""))
+        return [r[0] for r in rows]
+
+
+async def run_reindex_concurrently(engine: AsyncEngine, index_names: list[str], progress=None) -> dict:
+    """REINDEX INDEX CONCURRENTLY each index; reads and writes carry on meanwhile.
+    A failed rebuild leaves an invalid <name>_ccnew behind, which is dropped."""
     results: dict[str, str] = {}
     async with engine.connect() as conn:
         ac = await conn.execution_options(isolation_level="AUTOCOMMIT")
-        for name in index_names:
+        # A reindex cut short (fernKam closed mid-run) leaves invalid *_ccnew /
+        # *_ccold copies that take space and slow writes. Clear them first.
+        for (leftover,) in (await ac.execute(text("""
+                SELECT indexrelid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE NOT i.indisvalid AND c.relname ~ '_cc(new|old)[0-9]*$'"""))).all():
+            await ac.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {leftover}"))
+            index_names = [n for n in index_names if n != leftover]
+        for i, name in enumerate(index_names, 1):
+            if progress:
+                await progress(i, len(index_names), name)
             try:
                 await ac.execute(text(f"REINDEX INDEX CONCURRENTLY {name}"))
                 results[name] = "ok"
             except Exception as exc:
                 results[name] = f"skipped: {exc}"
+                try:
+                    await ac.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {name}_ccnew"))
+                except Exception:
+                    pass
     return results

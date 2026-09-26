@@ -488,20 +488,30 @@ async def vacuum_analyze() -> dict:
 
 @router.post("/reindex")
 async def reindex() -> dict:
-    """REINDEX CONCURRENTLY the handful of large/heavy-churn indexes. Runs in background."""
+    """REINDEX CONCURRENTLY every index, smallest first. Runs in background."""
     import asyncio
-    from fernkam.task_manager import task_manager
+    import time
+    from fernkam.task_manager import fmt_eta, task_manager
     from fernkam.db.session import get_async_engine
-    from fernkam.db.maintenance import run_reindex_concurrently, REINDEX_CANDIDATES
+    from fernkam.db.maintenance import all_indexes, run_reindex_concurrently
 
-    task_id = await task_manager.create_task("reindex", f"Reindexing {len(REINDEX_CANDIDATES)} indexes…")
+    engine = get_async_engine()
+    names = await all_indexes(engine)
+    task_id = await task_manager.create_task("reindex", f"Reindexing {len(names)} indexes…")
+
+    async def progress(i: int, n: int, name: str) -> None:
+        await task_manager.update_task(task_id, message=f"Reindexing {i}/{n}: {name}")
 
     async def _run():
         try:
-            results = await run_reindex_concurrently(get_async_engine(), REINDEX_CANDIDATES)
+            t0 = time.monotonic()
+            results = await run_reindex_concurrently(engine, names, progress)
             ok = sum(1 for v in results.values() if v == "ok")
+            skipped = [k for k, v in results.items() if v != "ok"]
             await task_manager.update_task(task_id, status="completed",
-                message=f"Reindexed {ok}/{len(results)}", progress=results)
+                message=f"Reindexed {ok}/{len(results)} indexes in {fmt_eta(time.monotonic() - t0)}"
+                        + (f"; skipped: {', '.join(skipped)}" if skipped else ""),
+                progress=results)
         except Exception as exc:
             logger.error("reindex failed: %s", exc, exc_info=True)
             await task_manager.update_task(task_id, status="failed", message=f"Error: {exc}")
