@@ -197,8 +197,9 @@
 			const info: Record<number, BurstInfo> = {};
 			for (const [id, b] of Object.entries(bursts)) info[Number(id)] = b;
 			// Keep moments in their current order; within one, sharpest first.
-			// The photo on screen stays on screen.
-			const cur = reviewPhotos[reviewIdx];
+			// The photo on screen stays on screen, unless the cull hasn't moved
+			// yet: then it starts on the sharpest frame of the first moment.
+			const cur = reviewIdx === 0 ? undefined : reviewPhotos[reviewIdx];
 			const seen = new Set<number>(), out: PhotoSummary[] = [];
 			for (const p of reviewPhotos) {
 				const b = info[p.id];
@@ -209,7 +210,7 @@
 			}
 			burstInfo = info;
 			reviewPhotos = out;
-			reviewIdx = Math.max(0, out.indexOf(cur));
+			reviewIdx = cur ? Math.max(0, out.indexOf(cur)) : 0;
 		}).catch(e => notify(`Could not group bursts: ${e}`));
 	}
 
