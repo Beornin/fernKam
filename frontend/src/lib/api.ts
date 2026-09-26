@@ -7,7 +7,6 @@ export interface BurstInfo {
 
 export interface PhotoSummary {
   id: number;
-  digikam_id: number | null;
   filename: string;
   album_path: string;
   taken_at: string | null;

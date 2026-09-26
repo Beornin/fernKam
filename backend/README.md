@@ -9,10 +9,8 @@ are covered in the [top-level README](../README.md); this file covers the code.
 ```sh
 uv sync                                  # dependencies (+ dev group: reload support)
 uv run fernkam setup-db [--docker]       # database user/db/extensions, write .env, migrate
-uv run fernkam preflight [--digikam]     # environment checks; exit code 1 on a hard failure
+uv run fernkam preflight                 # environment checks; exit code 1 on a hard failure
 uv run fernkam serve [--reload] [--host 0.0.0.0] [--port 8000]
-uv run fernkam import-digikam [--commit] # one-time digiKam MariaDB import (dry run by default)
-uv run fernkam verify                    # digiKam vs fernKam row counts
 uv run fernkam download-model siglip2 [--text]            # same as Tag Review → Models → Install
 uv run --with open-clip-torch fernkam export-model bioclip2  # build BioCLIP 2's ONNX once
 
@@ -28,7 +26,7 @@ for t in tests/test_*.py; do uv run python "$t"; done
 src/fernkam/
 ├── config.py            Settings (pydantic-settings). Loads backend/.env into the process
 │                        environment too, so FERNKAM_* knobs read via os.getenv work from .env.
-├── cli.py               Typer CLI (setup-db, preflight, serve, import-digikam, verify)
+├── cli.py               Typer CLI (setup-db, preflight, serve, export-model, download-model)
 ├── api/
 │   ├── app.py           FastAPI app: startup sequence, cross-site write guard, routers, SPA fallback
 │   ├── deps.py          `DB` dependency (one AsyncSession per request)
@@ -41,8 +39,7 @@ src/fernkam/
 │   │                    smart albums, debug EXPLAIN)
 │   └── stacks.py        RAW+derivative stack detection
 ├── importers/
-│   ├── filesystem.py    Library scanner: walk → import new / refresh changed / remove gone
-│   └── digikam.py       digiKam MariaDB → PostgreSQL importer
+│   └── filesystem.py    Library scanner: walk → import new / refresh changed / remove gone
 ├── workflows/           File-system workflows (sort videos, move stray RAWs, remove unkept
 │                        RAWs, sync stack tags) — plain functions run in a worker thread
 ├── db/
@@ -96,7 +93,7 @@ Granian worker from exiting. Events only say *where*. They pile up until the int
 calls `start_library_scan()` on the smallest folder covering them, so every scan rule applies.
 
 **Tag verification.** `photo_tags.verified_at` is NULL for a tag nobody has checked. Anything
-that links a tag on its own (file reads in `sync_merge`, the scanner, the digiKam importer,
+that links a tag on its own (file reads in `sync_merge`, the scanner,
 duplicate merges) leaves it NULL. A tag the user adds or accepts sets it (tag picker,
 `/semantic/apply-tags`, promote with tags, `/tag-review/.../decide`), and a stack's tag sync
 carries approval across members. Rejections live in `tag_rejections`, and the tag is removed.

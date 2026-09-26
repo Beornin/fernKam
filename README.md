@@ -22,7 +22,7 @@ shows it in a native window.
 - **Faces**: detection and recognition with InsightFace (`buffalo_l`), on the GPU when one is
   available. Includes auto-confirm with a sensitivity slider, clustering of unknown faces so a
   whole group can be named at once, and a review queue.
-- **Tag Review**: tags work like faces. Tags read from files or imported from digiKam start
+- **Tag Review**: tags work like faces. Tags read from files start
   unverified, and you check them one tag at a time: click the wrong photos, press Enter to
   approve the rest. Once a tag has 8 approved photos, fernKam learns it from your decisions
   and suggests it on other photos for you to accept or reject. Every decision retrains it.
@@ -59,11 +59,10 @@ shows it in a native window.
   digiKam). A re-edited picture gets fresh thumbnails, faces and search embedding.
 - **Maintenance**: background tasks you can watch and cancel, one-click database backup and
   restore, VACUUM/REINDEX, and an in-app log viewer.
-- **digiKam import**: one-time migration of photos, tags and faces from a digiKam MariaDB.
 
 ## Recent changes
 
-- **Tag Review** (left rail): every tag from files or digiKam starts unverified; you approve
+- **Tag Review** (left rail): every tag from files starts unverified; you approve
   or reject them like faces, and only those decisions teach fernKam. It then suggests tags
   using several image models (CLIP, SigLIP 2, BioCLIP 2 for wildlife), where and when the
   photo was taken (with GBIF species ranges), and a local vision model in Ollama as a second
@@ -168,8 +167,6 @@ fernKam runs. **Quick Scan** on the Home page runs the same scan on demand. For 
 open **Discover** and start indexing; after that, new and re-edited photos are indexed
 automatically. The CLIP model (~600 MB) downloads on first use. So does the face model
 (~300 MB), on the first scan.
-
-Coming from digiKam? See [Migrating from digiKam](#migrating-from-digikam).
 
 ## Tag Review models
 
@@ -319,20 +316,6 @@ default `C:\Program Files\PostgreSQL\<version>\bin`.
 
 Thumbnails and face/CLIP models are regenerable caches and are not part of the backup. Your XMP
 metadata lives in the files themselves once written back (**Maintenance → DB → Files**).
-
-## Migrating from digiKam
-
-The importer copies photos, tags, ratings, labels and face regions from digiKam's MariaDB
-database. It never modifies digiKam's data.
-
-```sh
-cd backend
-# set MYSQL_URL in .env (e.g. mysql+pymysql://root@localhost:3306/digikam), then:
-uv run fernkam preflight --digikam
-uv run fernkam import-digikam            # dry run: shows what would be imported
-uv run fernkam import-digikam --commit
-uv run fernkam verify                    # compares row counts
-```
 
 ## Development
 

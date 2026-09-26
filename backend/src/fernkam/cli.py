@@ -3,10 +3,8 @@ fernKam CLI
 
 Usage:
     fernkam setup-db [--docker] [OPTIONS]   create/connect the database, write .env, migrate
-    fernkam preflight [--digikam]           check database, tools and library before first run
+    fernkam preflight                       check database, tools and library before first run
     fernkam serve [OPTIONS]                 run the API + built frontend
-    fernkam import-digikam [OPTIONS]        one-time import from a digiKam MariaDB
-    fernkam verify                          compare digiKam and fernKam row counts
 """
 from __future__ import annotations
 
@@ -17,6 +15,16 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
+
+# The CLI prints ✓/✗; a Windows console on a legacy code page (PowerShell's
+# default) can't encode them and `fernkam preflight` crashed on the first check.
+# Same as api/app.py does for the server.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 
 import typer
 from rich.console import Console
@@ -284,10 +292,7 @@ def cmd_setup_db(
 
 
 @app.command("preflight")
-def cmd_preflight(
-    digikam: bool = typer.Option(False, "--digikam", help="Also check the digiKam MariaDB used by import-digikam."),
-    mysql_url: str = typer.Option(None, "--mysql-url", help="MariaDB URL (overrides .env); implies --digikam."),
-) -> None:
+def cmd_preflight() -> None:
     """Check the database, external tools and library before the first run."""
     import sqlalchemy as sa
     from fernkam.config import BACKEND_DIR, get_settings
@@ -386,144 +391,10 @@ def cmd_preflight(
         warn("frontend/build not found — run `npm ci && npm run build` in frontend/ "
              "(or use `npm run dev` on :5173 during development)")
 
-    if digikam or mysql_url:
-        console.print("\n[bold]MariaDB / digiKam[/bold]")
-        try:
-            engine = sa.create_engine(mysql_url or settings.mysql_url)
-            with engine.connect() as conn:
-                version = conn.execute(sa.text("SELECT VERSION()")).scalar()
-                ok(f"Connected: {version}")
-                counts = {
-                    "Images": conn.execute(sa.text("SELECT COUNT(*) FROM Images WHERE status=1")).scalar(),
-                    "Tags": conn.execute(sa.text("SELECT COUNT(*) FROM Tags")).scalar(),
-                    "ImageTagProperties (faces)": conn.execute(
-                        sa.text("SELECT COUNT(DISTINCT imageid,tagid) FROM ImageTagProperties WHERE property IN ('face','faceSuggestion')")
-                    ).scalar(),
-                }
-                for name, count in counts.items():
-                    ok(f"{name}: {count:,}")
-        except Exception as exc:
-            fail(f"MariaDB error: {exc}")
-
     if failures:
         console.print(f"\n[red]Pre-flight found {failures} problem(s).[/red]")
         raise typer.Exit(1)
     console.print("\n[green]Pre-flight complete.[/green]")
-
-
-@app.command("import-digikam")
-def cmd_import_digikam(
-    mysql_url: str = typer.Option(None, "--mysql-url", help="MariaDB URL (default: MYSQL_URL from .env)"),
-    pg_url: str = typer.Option(None, "--pg-url", help="Sync PostgreSQL URL (default: from .env)"),
-    dry_run: bool = typer.Option(True, "--dry-run/--commit", help="Dry-run (default) or commit"),
-    batch_size: int = typer.Option(500, "--batch-size"),
-    resume: bool = typer.Option(False, "--resume/--no-resume", help="Skip already-imported photos"),
-) -> None:
-    """Import DigiKam MariaDB data into fernKam PostgreSQL."""
-    from fernkam.config import get_settings
-    from fernkam.importers.digikam import DigiKamImporter
-
-    settings = get_settings()
-    mysql = mysql_url or settings.mysql_url
-    pg = pg_url or settings.pg_url_sync
-
-    importer = DigiKamImporter(
-        mysql_url=mysql,
-        pg_url=pg,
-        dry_run=dry_run,
-        batch_size=batch_size,
-        resume=resume,
-    )
-    importer.run()
-
-    if dry_run:
-        console.print("\n[bold yellow]Dry-run complete. Run with --commit to persist.[/bold yellow]")
-    else:
-        raise typer.Exit(0)
-
-
-@app.command("verify")
-def cmd_verify(
-    mysql_url: str = typer.Option(None, "--mysql-url", help="MariaDB URL (default: MYSQL_URL from .env)"),
-    pg_url: str = typer.Option(None, "--pg-url", help="Sync PostgreSQL URL (default: from .env)"),
-) -> None:
-    """Compare row counts between DigiKam MariaDB and fernKam PostgreSQL."""
-    from fernkam.config import get_settings
-    import sqlalchemy as sa
-    from rich.table import Table
-
-    settings = get_settings()
-    mysql = mysql_url or settings.mysql_url
-    pg = pg_url or settings.pg_url_sync
-
-    console.rule("[bold cyan]fernKam Verification[/bold cyan]")
-
-    try:
-        mysql_engine = sa.create_engine(mysql)
-        pg_engine = sa.create_engine(pg)
-
-        checks = [
-            ("Photos", "SELECT COUNT(*) FROM Images WHERE status=1", "SELECT COUNT(*) FROM photos"),
-            ("Tags", "SELECT COUNT(*) FROM Tags", "SELECT COUNT(*) FROM tags"),
-            (
-                "Photo↔Tag links",
-                "SELECT COUNT(*) FROM ImageTags it JOIN Images i ON i.id=it.imageid AND i.status=1",
-                "SELECT COUNT(*) FROM photo_tags",
-            ),
-            (
-                "Faces",
-                "SELECT COUNT(DISTINCT itp.imageid,itp.tagid) FROM ImageTagProperties itp JOIN Images i ON i.id=itp.imageid AND i.status=1 WHERE itp.property IN ('tagRegion','autodetectedFace','autodetectedPerson','faceToTrain','ignoredFace')",
-                "SELECT COUNT(*) FROM faces",
-            ),
-        ]
-
-        table = Table(title="Count Comparison", header_style="bold cyan")
-        table.add_column("Entity")
-        table.add_column("MariaDB", justify="right")
-        table.add_column("PostgreSQL", justify="right")
-        table.add_column("Match?", justify="center")
-
-        with mysql_engine.connect() as mc, pg_engine.connect() as pc:
-            for label, mysql_q, pg_q in checks:
-                m_count = mc.execute(sa.text(mysql_q)).scalar() or 0
-                p_count = pc.execute(sa.text(pg_q)).scalar() or 0
-                match = "[green]✓[/green]" if m_count == p_count else "[red]✗[/red]"
-                table.add_row(label, f"{m_count:,}", f"{p_count:,}", match)
-
-        console.print(table)
-
-        # Sample 10 random photos and show their tag counts
-        console.print("\n[bold]Sample photo tag counts[/bold]")
-        with mysql_engine.connect() as mc, pg_engine.connect() as pc:
-            sample = mc.execute(
-                sa.text(
-                    "SELECT i.id, i.name, COUNT(it.tagid) AS tag_count "
-                    "FROM Images i LEFT JOIN ImageTags it ON it.imageid=i.id "
-                    "WHERE i.status=1 GROUP BY i.id, i.name ORDER BY RAND() LIMIT 10"
-                )
-            ).fetchall()
-
-            st = Table(header_style="bold")
-            st.add_column("DigiKam ID")
-            st.add_column("Filename")
-            st.add_column("MySQL tags", justify="right")
-            st.add_column("PG tags", justify="right")
-
-            for row in sample:
-                pg_tags = pc.execute(
-                    sa.text(
-                        "SELECT COUNT(*) FROM photo_tags pt "
-                        "JOIN photos p ON p.id=pt.photo_id AND p.digikam_id=:did"
-                    ),
-                    {"did": row.id},
-                ).scalar() or 0
-                st.add_row(str(row.id), row.name, str(row.tag_count), str(pg_tags))
-
-            console.print(st)
-
-    except Exception as exc:
-        console.print(f"[red]✗ Verification failed: {exc}[/red]")
-        raise typer.Exit(1)
 
 
 @app.command("export-model")

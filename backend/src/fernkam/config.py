@@ -27,9 +27,6 @@ class Settings(BaseSettings):
     pg_url: str = "postgresql+asyncpg://fernkam_user:fernkam@localhost:5432/fernkam"
     pg_url_sync: str = ""
 
-    # DigiKam MariaDB (import only)
-    mysql_url: str = "mysql+pymysql://root@localhost:3306/digikam"
-
     # App
     debug: bool = False
     library_root: str = "D:/Pictures and Videos"

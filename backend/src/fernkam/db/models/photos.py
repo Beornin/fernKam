@@ -97,7 +97,6 @@ class Photo(Base):
     __tablename__ = "photos"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    digikam_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True)
 
     # File identity
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -135,7 +134,7 @@ class Photo(Base):
     camera_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cameras.id"))
     lens_id: Mapped[Optional[int]] = mapped_column(ForeignKey("lenses.id"))
 
-    # EXIF dump (everything from DigiKam's ImageMetadata + raw)
+    # EXIF dump (what exiftool reads from the file)
     exif: Mapped[Optional[dict]] = mapped_column(JSONB)
 
     # Sync tracking
@@ -208,7 +207,6 @@ class Tag(Base):
     __tablename__ = "tags"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    digikam_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(LtreeType, nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
@@ -253,13 +251,13 @@ class Face(Base):
     photo_id: Mapped[int] = mapped_column(ForeignKey("photos.id", ondelete="CASCADE"), nullable=False)
     person_tag_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
 
-    # Bounding box (absolute pixel coords from DigiKam)
+    # Bounding box (absolute pixel coords)
     x: Mapped[Optional[int]] = mapped_column(Integer)
     y: Mapped[Optional[int]] = mapped_column(Integer)
     w: Mapped[Optional[int]] = mapped_column(Integer)
     h: Mapped[Optional[int]] = mapped_column(Integer)
 
-    # DigiKam face region metadata
+    # Face region name and type (MWG regions in the file)
     region_name: Mapped[Optional[str]] = mapped_column(String(255))
     region_type: Mapped[Optional[str]] = mapped_column(String(64))
 
@@ -294,8 +292,6 @@ class Face(Base):
 
     file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
-    digikam_image_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    digikam_tag_id: Mapped[Optional[int]] = mapped_column(Integer)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

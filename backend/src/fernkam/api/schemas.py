@@ -11,7 +11,6 @@ class TagOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    digikam_id: Optional[int]
     name: str
     path: str
     parent_id: Optional[int]
@@ -67,7 +66,6 @@ class BatchDetectResult(BaseModel):
 class PhotoSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    digikam_id: Optional[int]
     filename: str
     album_path: str
     taken_at: Optional[datetime]

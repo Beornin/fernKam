@@ -30,7 +30,7 @@
 	let applyMsg = $state<string | null>(null);
 
 	const toSummary = (h: SemanticHit): PhotoSummary => ({
-		id: h.id, digikam_id: null, filename: h.filename, album_path: h.album_path,
+		id: h.id, filename: h.filename, album_path: h.album_path,
 		taken_at: h.taken_at, rating: h.rating ?? 0, color_label: 0,
 		media_type: h.media_type ?? 'image', width: null, height: null,
 		file_size: h.file_size ?? null, duration_secs: null,

@@ -206,8 +206,8 @@ puts it back and flags the photo for write-back. Dismissing an entry changes not
 
 **User action:** Tag Review (left rail). Pick a tag; work through its tabs:
 
-- **To verify**: photos that carry the tag but nobody has checked it (it came from the file, a
-  digiKam import, or a workflow). Click the wrong ones (or `←` `→` and `X`), then **Enter**
+- **To verify**: photos that carry the tag but nobody has checked it (it came from the file or a
+  workflow). Click the wrong ones (or `←` `→` and `X`), then **Enter**
   approves the rest and rejects the clicked ones. `Space` opens the photo. Once the tag is
   learning, *Most doubtful first* puts the likely mistakes on the first page.
 - **Suggestions**: photos the tag's model thinks should have it, best first. Same keys: accept

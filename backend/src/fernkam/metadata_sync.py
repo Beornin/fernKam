@@ -30,7 +30,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _EXIFTOOL_PATHS = [
-    r"C:\Program Files (x86)\digiKam\exiftool.exe",
     "/usr/bin/exiftool",
     "/usr/local/bin/exiftool",
 ]

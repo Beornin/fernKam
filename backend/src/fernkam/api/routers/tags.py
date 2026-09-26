@@ -16,7 +16,6 @@ def _build_tag_tree(tags: list[Tag]) -> list[TagOut]:
     for t in tags:
         by_id[t.id] = TagOut(
             id=t.id,
-            digikam_id=t.digikam_id,
             name=t.name,
             path=str(t.path),
             parent_id=t.parent_id,
@@ -47,7 +46,7 @@ async def list_tags(
     if flat or search:
         return [
             TagOut(
-                id=t.id, digikam_id=t.digikam_id, name=t.name, path=str(t.path),
+                id=t.id, name=t.name, path=str(t.path),
                 parent_id=t.parent_id, icon=t.icon, color=t.color, is_person=t.is_person,
             )
             for t in tags
@@ -84,7 +83,7 @@ async def create_tag(
     await db.commit()
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
-        id=tag.id, digikam_id=tag.digikam_id, name=tag.name, path=str(tag.path),
+        id=tag.id, name=tag.name, path=str(tag.path),
         parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,
     )
 
@@ -152,7 +151,7 @@ async def update_tag(
     await db.commit()
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
-        id=tag.id, digikam_id=tag.digikam_id, name=tag.name, path=str(tag.path),
+        id=tag.id, name=tag.name, path=str(tag.path),
         parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,
     )
 

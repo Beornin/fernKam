@@ -862,6 +862,14 @@ closed for other GPU work. "Index the rest" resumes it.
   window was closing. It now stands down when the launcher is the one closing. The window waits
   until the server's port is closed, so the UI closes last: port closed at 1,575 ms, window at
   1,577 ms, no processes left.
+- **digiKam and MariaDB are gone, and so is the import code.** The user uninstalled digiKam.
+  Removed: the MariaDB importer, `import-digikam`, `verify`, `preflight --digikam`,
+  `MYSQL_URL`, the `pymysql` dependency, and a digiKam-era face-region stripping script.
+  Migration 0032 drops the four digiKam ID columns, which were empty on the live catalogue.
+  Metadata writing is unchanged: ratings, labels, captions, `HierarchicalSubject` tags and
+  MWG face regions still go into the files in the format digiKam and Lightroom read.
+  `fernkam preflight` also crashed on its first ✓ in a legacy-code-page console, and now
+  prints in UTF-8 like the server.
 - **The app's Shutdown button now closes the same way the X does.** It used to call
   `/api/shutdown`, which killed the backend worker. Granian then exited with code 1, the same
   as a crash, so the launcher showed "Backend stopped" and the window stayed up. The button now
