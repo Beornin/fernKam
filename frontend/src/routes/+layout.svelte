@@ -53,9 +53,13 @@ onDestroy(() => {
 });
 
 async function shutdown() {
-	if ((await ask('Shutdown fernKam?'))) {
-		try { await fetch('/api/shutdown', { method: 'POST' }); } catch { /* expected */ }
-	}
+	if (!(await ask('Shutdown fernKam?'))) return;
+	// In the desktop app, close the window the way its X does: the launcher
+	// stops the backend first and the window goes last. /api/shutdown alone
+	// left the window up on "Backend stopped". Plain browsers keep using it.
+	const desktop = (window as any).pywebview?.api;
+	if (desktop?.quit) { desktop.quit(); return; }
+	try { await fetch('/api/shutdown', { method: 'POST' }); } catch { /* expected */ }
 }
 
 const navItems = [

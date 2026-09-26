@@ -421,10 +421,6 @@ def main():
             shutdown(0)
         return
 
-    window = webview.create_window(
-        "fernKam", html=SPLASH_HTML, width=1400, height=900, min_size=(900, 600), background_color="#14161a"
-    )
-
     closing = threading.Event()
 
     def _on_closing():
@@ -441,6 +437,21 @@ def main():
             except OSError:
                 break  # port closed: the server and its worker are gone
             time.sleep(0.1)
+
+    class _Api:
+        """Called by the page as window.pywebview.api.quit(). The app's Shutdown
+        button closes the window the same way its X does, so the backend stops
+        first and the window goes last. /api/shutdown only stopped the backend,
+        and the watchdog then showed "Backend stopped"."""
+
+        def quit(self):
+            _on_closing()
+            window.destroy()
+
+    window = webview.create_window(
+        "fernKam", html=SPLASH_HTML, width=1400, height=900, min_size=(900, 600),
+        background_color="#14161a", js_api=_Api(),
+    )
 
     window.events.closing += _on_closing
 

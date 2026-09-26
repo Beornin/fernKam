@@ -862,6 +862,12 @@ closed for other GPU work. "Index the rest" resumes it.
   window was closing. It now stands down when the launcher is the one closing. The window waits
   until the server's port is closed, so the UI closes last: port closed at 1,575 ms, window at
   1,577 ms, no processes left.
+- **The app's Shutdown button now closes the same way the X does.** It used to call
+  `/api/shutdown`, which killed the backend worker. Granian then exited with code 1, the same
+  as a crash, so the launcher showed "Backend stopped" and the window stayed up. The button now
+  calls the launcher through pywebview's bridge (`window.pywebview.api.quit`), which stops the
+  backend, waits for its port to close, then closes the window. Tested in the exe by clicking
+  Shutdown → Confirm: port closed at 2,193 ms, window at 2,194 ms, nothing left running.
 - **The watcher scans every 10 minutes, not seconds after a change.** Copying a card into
   AA_RAW had started a scan after every quiet moment of the copy. Changes still collect as
   they happen, but they're scanned at most once per interval, counted from the first unscanned
