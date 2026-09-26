@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
     portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
     pureraw_exe: str = r"C:\Program Files\DxO\DxO PureRAW 6\PureRAWv6.exe"  # PURERAW_EXE
+    # Finish shoot can send keepers' JPGs here (e.g. client work). Outside the
+    # library, so they leave the catalogue. Empty = option hidden.
+    client_folder: str = ""                              # CLIENT_FOLDER
 
     @field_validator("thumb_cache_dir", "backup_dir")
     @classmethod

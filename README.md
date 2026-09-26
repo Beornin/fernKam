@@ -274,6 +274,7 @@ variables override it. The ones you're most likely to touch:
 | `THUMB_CACHE_DIR` | `data/thumbnails` | Relative to `backend/` |
 | `SCAN_ON_STARTUP` | `true` | Refresh from disk in the background at every start |
 | `PURERAW_EXE` | `C:\Program Files\DxO\DxO PureRAW 6\PureRAWv6.exe` | DxO PureRAW, for *Develop with DxO PureRAW* (Workflows) and developing new AA_RAW shoots automatically (Settings) |
+| `CLIENT_FOLDER` | empty | Where *Finish shoot* sends JPGs of client work (the L destination). Outside the library, so they leave the catalogue; empty hides the option |
 | `WATCH_LIBRARY` | `true` | Pick up outside edits while running, scanned every 10 minutes by default (change it under Settings; 0 = off). `WATCH_LIBRARY_POLLING=true` for network shares |
 | `FERNKAM_FACE_GPU`, `FERNKAM_CLIP_GPU` | `1` | `0` forces the CPU (`FERNKAM_CLIP_GPU` covers all image models) |
 | `FERNKAM_EMBED_BATCH` | per model (8 at 512 px, 16 at 384 px, else 32) | Images per GPU call when indexing Tag Review models. Lower it if indexing crawls on a smaller card (VRAM spilling into system RAM) |

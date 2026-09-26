@@ -3,7 +3,7 @@
 	import { notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { api, type PhotoSummary } from '$lib/api';
+	import { api, type BurstInfo, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
@@ -180,6 +180,10 @@
 		}
 	});
 
+	// Bursts: frames within a second of each other are one moment, shown
+	// sharpest first. Fetched after Review opens, so a big shoot doesn't wait.
+	let burstInfo = $state<Record<number, BurstInfo>>({});
+
 	function enterReview() {
 		if (photos.length === 0) return;
 		reviewPhotos = [...photos];
@@ -187,6 +191,76 @@
 		reviewTrashedCount = 0;
 		reviewFit = false;
 		reviewMode = true;
+		burstInfo = {};
+		api.photos.bursts(reviewPhotos.map(p => p.id)).then(({ bursts }) => {
+			if (!reviewMode) return;
+			const info: Record<number, BurstInfo> = {};
+			for (const [id, b] of Object.entries(bursts)) info[Number(id)] = b;
+			// Keep moments in their current order; within one, sharpest first.
+			// The photo on screen stays on screen.
+			const cur = reviewPhotos[reviewIdx];
+			const seen = new Set<number>(), out: PhotoSummary[] = [];
+			for (const p of reviewPhotos) {
+				const b = info[p.id];
+				if (!b) { out.push(p); continue; }
+				if (seen.has(b.burst)) continue;
+				seen.add(b.burst);
+				out.push(...reviewPhotos.filter(q => info[q.id]?.burst === b.burst).sort((x, y) => info[x.id].rank - info[y.id].rank));
+			}
+			burstInfo = info;
+			reviewPhotos = out;
+			reviewIdx = Math.max(0, out.indexOf(cur));
+		}).catch(e => notify(`Could not group bursts: ${e}`));
+	}
+
+	/** Which moment a frame belongs to: its burst, or itself. */
+	const momentOf = (i: number) => {
+		const p = reviewPhotos[i];
+		return p ? (burstInfo[p.id]?.burst ?? -p.id) : 0;
+	};
+
+	/** Index of the first frame of the next (1) or previous (-1) moment. */
+	function momentStart(from: number, dir: 1 | -1): number {
+		const here = momentOf(from);
+		let i = from;
+		if (dir === 1) {
+			while (i < reviewPhotos.length && momentOf(i) === here) i++;
+			return i < reviewPhotos.length ? i : from;
+		}
+		while (i >= 0 && momentOf(i) === here) i--;        // leave this moment,
+		if (i < 0) return from;
+		const prev = momentOf(i);
+		while (i > 0 && momentOf(i - 1) === prev) i--;     // then go to the start of the previous one
+		return i;
+	}
+
+	function reviewJump(dir: 1 | -1) {
+		const i = momentStart(reviewIdx, dir);
+		if (i !== reviewIdx) { saveScroll(); reviewIdx = i; resetReviewView(); }
+	}
+
+	/** B: keep the frame on screen, reject the rest of its burst, go to the next moment. */
+	function reviewKeepBest() {
+		const cur = reviewPhotos[reviewIdx];
+		const b = cur && burstInfo[cur.id];
+		if (!b || b.focus_stack) {
+			notify(b ? 'A focus stack is kept together; reject frames one by one with X.' : 'This photo is not part of a burst.');
+			return;
+		}
+		const rest = reviewPhotos
+			.filter(p => p.id !== cur.id && burstInfo[p.id]?.burst === b.burst && p.color_label !== 1)
+			.map(p => p.id);
+		if (rest.length) applyToPhotos(rest, { color_label: 1 }, `Kept 1, rejected ${rest.length} in the burst`);
+		reviewJump(1);
+	}
+
+	/** P / L: send this photo to Portfolio (green) or the LLC folder (blue) at Finish shoot. */
+	function reviewDestination(label: 4 | 5) {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur || reviewLoading) return;
+		const next = cur.color_label === label ? 0 : label;
+		applyToPhotos([cur.id], { color_label: next },
+			next === 0 ? 'Destination cleared' : next === 4 ? 'Goes to Portfolio (green)' : 'Goes to the LLC folder (blue)');
 	}
 
 	function exitReview() {
@@ -295,7 +369,9 @@
 
 	function onReviewKey(e: KeyboardEvent) {
 		if (!reviewMode) return;
-		if (e.key === 'ArrowLeft') { e.preventDefault(); reviewPrev(); }
+		if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); reviewJump(-1); }
+		else if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); reviewJump(1); }
+		else if (e.key === 'ArrowLeft') { e.preventDefault(); reviewPrev(); }
 		else if (e.key === 'ArrowRight') { e.preventDefault(); reviewNext(); }
 		else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); reviewTrash(); }
 		else if (e.key === 'Escape') exitReview();
@@ -308,6 +384,9 @@
 			if (e.key >= '1' && e.key <= '5') { e.preventDefault(); reviewRate(Number(e.key)); }
 			else if (e.key === '0') { e.preventDefault(); reviewRate(0); }
 			else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); reviewToggleReject(); }
+			else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); reviewKeepBest(); }
+			else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); reviewDestination(4); }
+			else if (e.key === 'l' || e.key === 'L') { e.preventDefault(); reviewDestination(5); }
 		}
 	}
 
@@ -827,6 +906,18 @@
 			{#if reviewTrashedCount > 0}
 				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">{reviewTrashedCount} trashed</span>
 			{/if}
+			{#if reviewPhotos[reviewIdx] && burstInfo[reviewPhotos[reviewIdx].id]}
+				{@const b = burstInfo[reviewPhotos[reviewIdx].id]}
+				<span class="text-xs px-2 py-0.5 rounded-full {b.focus_stack ? 'bg-sky-500/20 text-sky-300' : 'bg-amber-500/20 text-amber-300'}"
+					title={b.focus_stack ? 'Nikon focus shift: each frame is sharp at a different depth, so they are not ranked' : 'Frames within a second of each other, sharpest first'}>
+					{b.focus_stack ? 'Focus stack' : 'Burst'} {b.rank + 1}/{b.size}{!b.focus_stack && b.rank === 0 ? ' · sharpest' : ''}
+				</span>
+			{/if}
+			{#if reviewPhotos[reviewIdx]?.color_label === 4 || reviewPhotos[reviewIdx]?.color_label === 5}
+				<span class="text-xs px-2 py-0.5 rounded-full {reviewPhotos[reviewIdx].color_label === 4 ? 'bg-green-500/20 text-green-300' : 'bg-blue-500/20 text-blue-300'}">
+					to {reviewPhotos[reviewIdx].color_label === 4 ? 'Portfolio' : 'LLC'}
+				</span>
+			{/if}
 		</div>
 		<div class="flex items-center gap-2">
 			<span class="text-zinc-400 text-sm">{reviewIdx + 1} / {reviewPhotos.length}</span>
@@ -861,8 +952,9 @@
 	     prevent is pressing a key whose meaning you half-remember. -->
 	<div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 bg-zinc-950/90 border-b border-zinc-800 text-[11px] text-zinc-500">
 		{#each [
-			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'],
-			['← →', 'prev / next'], ['Del', 'trash file'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
+			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'], ['B', 'keep this, reject rest of burst'],
+			['P', 'to Portfolio'], ['L', 'to LLC'], ['← →', 'prev / next'], ['⇧← ⇧→', 'prev / next moment'],
+			['Del', 'trash file'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
 		] as [key, what]}
 			<span class="flex items-center gap-1">
 				<kbd class="px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 font-mono text-[10px]">{key}</kbd>

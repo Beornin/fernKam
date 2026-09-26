@@ -912,17 +912,36 @@ What the workflow adds:
 - **After each scan, fresh shoots are developed automatically.** This is on by default and set
   in Settings. Each shoot is tried once per session.
 
+### Done · Finish shoot, Sorting into Ordered by Dates, bursts
+
+- **Finish shoot** replaces "delete JPGs, run Remove, move to SORT ME, move again":
+  - Deleted or rejected (red) means the RAW+JPG pair goes to the Recycle Bin.
+  - Keepers go to the shoot's destination. In Review Mode, **P** (green) sends a photo to
+    Portfolio and **L** (blue) to the client folder instead.
+  - The client folder is outside the library. The JPG leaves the catalogue and the RAW is filed
+    by date.
+  - Moves are atomic per keeper and never overwrite. The scan afterwards matches moved files
+    to their rows by content, so tags follow.
+  - Dry run on the two live shoots: 163 and 114 pairs filed, 5 videos left for Sorting.
+  - **Suggest** uses CLIP neighbours of up to 40 of the shoot's JPGs. For the frog shoot:
+    Portfolio, 82% of neighbours, `Portfolio/Toads/Eastern Narrow-Mouthed Toad`, 0.2 s. For
+    the product shoot: 0% Portfolio.
+- **Sorting** now *moves* straight into `Ordered by Dates/YYYY/MM`, dated by exiftool
+  (videos included). A file with no camera date stays in SORT ME and is listed. That replaces
+  AC_SORTED's check, so AC_SORTED is no longer used. On the live folders: 5 camera videos, all
+  dated.
+- **Bursts:**
+  - Frames within 1 s in one folder are a moment. `SubSecTimeOriginal` separates frames within
+    the same second.
+  - They're ranked by the sharpest tile's Laplacian variance. In the test, a sharp subject on a
+    smooth sky scored 6,309× the same frame slightly blurred.
+  - Live: 163 frames became 65 moments (largest bursts 23 and 16) in 1.1 s; 114 became 64 in 0.7 s.
+  - `FocusShiftShooting` is read from the NEF, because PureRAW's JPGs drop it. Those frames stay
+    together, unranked.
+
 ### Planned, agreed with the user
 
-- **Finish shoot.** A reject in the cull bins the RAW+JPG pair, and keepers go straight to
-  their destination: Portfolio, a client-work folder outside the library (an export that leaves
-  the catalogue), or `Ordered by Dates`. One preview, one Apply. No separate Remove step and no
-  SORT ME round-trip.
-- **Sorting straight into `Ordered by Dates`, and AC_SORTED dropped.** Its only job was
-  checking dates, so the preview flags files with no EXIF date instead.
-- **Burst grouping, sharpest first.** Frames with focus shift on (the Z 9 writes
-  `FocusShiftShooting`) are kept together as a stack and not ranked.
-- **Portfolio folder suggestion**, from the nearest BioCLIP neighbours among Portfolio photos.
+- **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders.
 - **Event suggestions for `Ordered by Dates`**, learned from the 24,608 filed event photos
   with the Tag Review ensemble. The season expert would catch birthdays.
 - **Ideas strip in the cull** (suggested crops from qwen3-vl, a few looks), as previews only

@@ -1,133 +1,105 @@
-"""
-Port of SortingVideoWorkflow.java
+"""Sort phone photos and camera videos into Ordered by Dates/YYYY/MM.
 
-Steps:
-1. Move video files from raw_dir into sort_me_dir (staging).
-2. Walk sort_me_dir, read date from EXIF / filename, copy each file into
-   export_root/<YYYY>/<MM>/<filename>.
-   - Google Pixel filenames (PXL_YYYYMMDD...) are parsed directly.
-   - Other files use EXIF DateTimeOriginal; file-modified-date as fallback.
-   - Files with no determinable date land in export_root directly.
-"""
+Takes everything in SORT ME, plus the videos in the RAW intake folder (camera
+videos skip the cull), and moves each file to <export_root>/YYYY/MM/ by the
+date it was taken:
+  - Google Pixel names (PXL_YYYYMMDD_...) carry the date;
+  - otherwise the camera date, read by exiftool (EXIF DateTimeOriginal /
+    CreateDate, QuickTime dates for videos).
 
-import datetime
-import os
+A file with no camera date is not guessed from its modified time (a copy or an
+edit changes that). It stays in SORT ME and is listed, so it can be dated by
+hand. That listing is the check the AC_SORTED stage used to be for. A file
+already at its destination (same name and size) is left in place and listed.
+
+Files are moved, not copied. The library scan afterwards matches moved files
+to their catalogue rows by content, so tags and ratings follow them.
+"""
+from __future__ import annotations
+
+import re
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-try:
-    import exifread
-    _EXIFREAD_AVAILABLE = True
-except ImportError:
-    _EXIFREAD_AVAILABLE = False
-    print("Warning: exifread not installed. EXIF date extraction unavailable. "
-          "Run: pip install exifread")
+from fernkam.workflows.shared import ALL_EXTENSIONS, VIDEO_EXTENSIONS, format_elapsed, gather_files
 
-from fernkam.workflows.shared import ALL_EXTENSIONS, PICTURE_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS, format_elapsed, gather_files
-
-DEFAULT_RAW_DIR     = r"D:\Pictures and Videos\AA_RAW"
-DEFAULT_SORT_ME_DIR = r"D:\Pictures and Videos\AB_TO_SORT\SORT ME"
-DEFAULT_EXPORT_ROOT = r"D:\Pictures and Videos\AC_SORTED"
+_PIXEL = re.compile(r"^PXL_(\d{4})(\d{2})\d{2}_")
 
 
-def run(raw_dir: str = DEFAULT_RAW_DIR,
-        sort_me_dir: str = DEFAULT_SORT_ME_DIR,
-        export_root: str = DEFAULT_EXPORT_ROOT,
-        dry_run: bool = True) -> None:
-    """dry_run defaults to True so the destinations can be reviewed first."""
-    _video_moving(raw_dir, sort_me_dir, dry_run)
-
-    start = time.perf_counter()
-    files = gather_files(sort_me_dir, ALL_EXTENSIONS)
-    print(f"Sorting {len(files)} items...")
-
-    for i, file_path in enumerate(files):
-        if (i + 1) % 10 == 0:
-            print(f"Progress: {i + 1} / {len(files)}")
-        try:
-            dest_dir = _resolve_destination(file_path, export_root)
-            if dry_run:
-                print(f"WOULD SORT: {file_path.name} -> {dest_dir}")
-                continue
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            _safe_copy(file_path, dest_dir / file_path.name)
-        except Exception as e:
-            print(f"Error processing {file_path.name}: {e}")
-
-    print(f"{'DRY RUN — ' if dry_run else ''}Total process took: {format_elapsed(start)}")
+def _pixel_month(name: str) -> Optional[tuple[str, str]]:
+    m = _PIXEL.match(name)
+    return (m.group(1), m.group(2)) if m and 1 <= int(m.group(2)) <= 12 else None
 
 
-def _video_moving(raw_dir: str, sort_me_dir: str, dry_run: bool = True) -> None:
-    start = time.perf_counter()
-    files = gather_files(raw_dir, VIDEO_EXTENSIONS)
-    staging = Path(sort_me_dir)
-    if dry_run:
-        for f in files:
-            print(f"WOULD STAGE VIDEO: {f.name} -> {staging}")
-        print(f"DRY RUN — {len(files)} video(s) would be staged.")
-        return
-    staging.mkdir(parents=True, exist_ok=True)
+def _free_name(dest: Path, taken: set[Path]) -> Path:
+    """dest, or 1_name, 2_name, ... when that name is used already."""
+    n, final = 0, dest
+    while final.exists() or final in taken:
+        n += 1
+        final = dest.parent / f"{n}_{dest.name}"
+    return final
+
+
+def plan(raw_dir: str, sort_me_dir: str, export_root: str,
+         dates: Optional[dict[Path, Optional[datetime]]] = None):
+    """Returns (moves [(src, dest)], undated [src], already_there [(src, dest)]).
+
+    `dates` maps files to the date they were taken; read with exiftool when
+    not given (tests pass it).
+    """
+    files = gather_files(sort_me_dir, ALL_EXTENSIONS) + gather_files(raw_dir, VIDEO_EXTENSIONS)
+    if dates is None:
+        from fernkam.metadata_sync import read_many_metadata
+        need = [f for f in files if not _pixel_month(f.name)]
+        meta = read_many_metadata(need) if need else {}
+        dates = {f: (meta.get(f) or {}).get("taken_at") for f in need}
+
+    moves, undated, already = [], [], []
+    taken: set[Path] = set()
     for f in files:
-        _safe_copy(f, staging / f.name)
-    print(f"Video move took: {format_elapsed(start)} ({len(files)} files)")
+        dt = dates.get(f)
+        ym = _pixel_month(f.name) or (dt and (f"{dt.year:04d}", f"{dt.month:02d}"))
+        if not ym:
+            undated.append(f)
+            continue
+        dest = Path(export_root, *ym) / f.name
+        if dest.exists() and dest.stat().st_size == f.stat().st_size:
+            already.append((f, dest))
+            continue
+        dest = _free_name(dest, taken)
+        taken.add(dest)
+        moves.append((f, dest))
+    return moves, undated, already
 
 
-def _resolve_destination(file_path: Path, export_root: str) -> Path:
-    name = file_path.name
+def run(raw_dir: str, sort_me_dir: str, export_root: str, dry_run: bool = True) -> None:
+    """dry_run defaults to True so the destinations can be reviewed first."""
+    start = time.perf_counter()
+    moves, undated, already = plan(raw_dir, sort_me_dir, export_root)
+    verb = "WOULD MOVE" if dry_run else "MOVE"
+    for src, dest in moves:
+        print(f"{verb}: {src.name} -> {dest.parent}")
+    for f in undated:
+        print(f"NO CAMERA DATE (stays in SORT ME, date it by hand): {f}")
+    for src, dest in already:
+        print(f"ALREADY THERE (left in place): {src} = {dest}")
 
-    # Case A: Google Pixel format  PXL_YYYYMMDD...
-    if name.startswith("PXL_") and len(name) >= 12:
-        year  = name[4:8]
-        month = name[8:10]
-        return Path(export_root, year, month)
+    if not dry_run:
+        for src, dest in moves:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        # Undated camera videos still leave the intake, so the next cull is clean.
+        staging, taken = Path(sort_me_dir), set()
+        for f in undated:
+            if Path(raw_dir) in f.parents:
+                staging.mkdir(parents=True, exist_ok=True)
+                dest = _free_name(staging / f.name, taken)
+                taken.add(dest)
+                shutil.move(str(f), str(dest))
 
-    # Case B: EXIF or file-system date → "YYYY-MM"
-    date_str = _get_date(file_path)
-    if date_str:
-        parts = date_str.split("-")
-        if len(parts) >= 2:
-            return Path(export_root, parts[0], parts[1])
-
-    # Case C: fallback
-    return Path(export_root)
-
-
-def _get_date(file_path: Path) -> Optional[str]:
-    ext = file_path.suffix.lower()
-    fmt = "%Y-%m"
-
-    # EXIF for images and RAW files
-    if ext in (PICTURE_EXTENSIONS | RAW_EXTENSIONS) and _EXIFREAD_AVAILABLE:
-        try:
-            with open(file_path, "rb") as f:
-                tags = exifread.process_file(f, stop_tag="EXIF DateTimeOriginal", details=False)
-            tag = tags.get("EXIF DateTimeOriginal") or tags.get("Image DateTime")
-            if tag:
-                dt = datetime.datetime.strptime(str(tag), "%Y:%m:%d %H:%M:%S")
-                return dt.strftime(fmt)
-        except Exception:
-            pass
-
-    # Fallback: file modification time (works for videos too)
-    try:
-        mtime = os.path.getmtime(file_path)
-        dt = datetime.datetime.fromtimestamp(mtime)
-        return dt.strftime(fmt)
-    except Exception:
-        return None
-
-
-def _safe_copy(src: Path, dst: Path) -> None:
-    """Copy src to dst. If dst already exists, prefix the name with an incrementing number."""
-    final = dst
-    count = 0
-    while final.exists():
-        final = dst.parent / f"{count}_{dst.name}"
-        count += 1
-    shutil.copy2(src, final)
-
-
-if __name__ == "__main__":
-    run()
+    print(f"{'DRY RUN — ' if dry_run else ''}{len(moves)} file(s) {'would be ' if dry_run else ''}moved to "
+          f"{export_root}; {len(undated)} without a camera date left in SORT ME; "
+          f"{len(already)} already there. ({format_elapsed(start)})")

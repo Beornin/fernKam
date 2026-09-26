@@ -13,7 +13,7 @@
 		label: string;
 		description: string;
 		color: string;
-		fields: { key: string; label: string; placeholder: string; type?: 'checkbox' }[];
+		fields: { key: string; label: string; placeholder: string; type?: 'checkbox' | 'select'; options?: [string, string][] }[];
 		values: Record<string, string | boolean>;
 		status: WorkflowStatus;
 		taskId: string | null;
@@ -42,20 +42,33 @@
 			expanded: false,
 		},
 		{
+			id: 'finish-shoot',
+			label: 'Finish Shoot',
+			description: "After the cull: a RAW whose JPG you deleted or rejected (X) goes to the Recycle Bin with it. Keepers go to the destination below, except photos you marked P (Portfolio) or L (LLC) in Review Mode. Portfolio: JPG in the folder, RAW in its RAW/. Dates: Ordered by Dates/YYYY/MM. LLC: the JPG leaves the library for CLIENT_FOLDER, and the RAW is filed by date. Nothing is overwritten; clashes and undated files stay in the shoot.",
+			color: 'emerald',
+			fields: [
+				{ key: 'shoot', label: 'Shoot folder', placeholder: 'D:\\Pictures and Videos\\AA_RAW\\20260925_00001' },
+				{ key: 'destination', label: 'Keepers go to', placeholder: '', type: 'select',
+				  options: [['dates', 'Ordered by Dates (by date taken)'], ['portfolio', 'Portfolio'], ['client', 'LLC folder (CLIENT_FOLDER)']] },
+				{ key: 'portfolio_folder', label: 'Portfolio folder (for Portfolio, and photos marked P)', placeholder: 'Portfolio/Frogs' },
+			],
+			values: { shoot: '', destination: 'dates', portfolio_folder: '' },
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
+		{
 			id: 'sorting',
-			label: 'Sort Videos',
-			description: 'Moves video files from AA_RAW to a staging folder, then copies them into AC_SORTED/YYYY/MM/ based on EXIF or filename date.',
+			label: 'Sort into Ordered by Dates',
+			description: "Moves everything in SORT ME, plus camera videos in AA_RAW, into Ordered by Dates/YYYY/MM by the date taken (Pixel file names, else the camera date via exiftool). A file with no camera date stays in SORT ME and is listed, so it can be dated by hand. Blank fields use the library's folders.",
 			color: 'violet',
 			fields: [
-				{ key: 'raw_dir',      label: 'Raw Dir',      placeholder: 'D:\\Pictures and Videos\\AA_RAW' },
-				{ key: 'sort_me_dir',  label: 'Sort Me Dir',  placeholder: 'D:\\Pictures and Videos\\AB_TO_SORT\\SORT ME' },
-				{ key: 'export_root',  label: 'Export Root',  placeholder: 'D:\\Pictures and Videos\\AC_SORTED' },
+				{ key: 'raw_dir',      label: 'RAW intake (videos)',  placeholder: 'blank = <library>\\AA_RAW' },
+				{ key: 'sort_me_dir',  label: 'Sort me',              placeholder: 'blank = <library>\\AB_TO_SORT\\SORT ME' },
+				{ key: 'export_root',  label: 'Sorted into',          placeholder: 'blank = <library>\\Ordered by Dates' },
 			],
-			values: {
-				raw_dir:     'D:\\Pictures and Videos\\AA_RAW',
-				sort_me_dir: 'D:\\Pictures and Videos\\AB_TO_SORT\\SORT ME',
-				export_root: 'D:\\Pictures and Videos\\AC_SORTED',
-			},
+			values: { raw_dir: '', sort_me_dir: '', export_root: '' },
 			status: 'idle',
 			taskId: null,
 			lines: [],
@@ -197,6 +210,27 @@
 			wf.status = 'failed';
 			wf.lines = [`ERROR: ${e}`];
 		}
+	}
+
+	// Finish shoot: suggest where the keepers go, from the photos they look like.
+	let suggesting = $state(false);
+	async function suggestFinish(wf: WorkflowCard) {
+		const shoot = String(wf.values.shoot ?? '').trim();
+		if (!shoot) { wf.lines = ['Enter the shoot folder first.']; wf.expanded = true; return; }
+		suggesting = true;
+		try {
+			const r = await fetch(`/api/workflows/shoot-suggestion?shoot=${encodeURIComponent(shoot)}`);
+			const d = await r.json();
+			if (!r.ok) throw new Error(d.detail ?? r.statusText);
+			wf.values.destination = d.destination;
+			if (d.portfolio_folder) wf.values.portfolio_folder = d.portfolio_folder;
+			wf.lines = [`Suggested ${d.destination === 'portfolio' ? 'Portfolio' : 'Ordered by Dates'}: ` +
+				`${Math.round(d.portfolio_share * 100)}% of the filed photos these ${d.sampled} look like are in Portfolio` +
+				(d.portfolio_folder ? `, most in ${d.portfolio_folder}` : '') + '. LLC work: pick it yourself.'];
+			wf.expanded = true;
+		} catch (e) {
+			wf.lines = [`ERROR: ${e}`]; wf.expanded = true;
+		} finally { suggesting = false; }
 	}
 
 	async function pollTask(wf: WorkflowCard) {
@@ -359,15 +393,30 @@
 					<!-- Config fields -->
 					<div class="mt-5 grid gap-3 {wf.fields.length > 1 ? 'grid-cols-1' : 'grid-cols-1'}">
 						{#each wf.fields as field}
-							{#if field.type === 'checkbox'}
+							{#if field.type === 'select'}
+								<div>
+									<label for="{wf.id}-{field.key}" class="block text-xs text-zinc-500 mb-1 font-medium">{field.label}</label>
+									<div class="flex gap-2">
+										<select id="{wf.id}-{field.key}" bind:value={wf.values[field.key]} disabled={wf.status === 'running'}
+											class="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 disabled:opacity-50">
+											{#each field.options ?? [] as [value, text]}<option {value}>{text}</option>{/each}
+										</select>
+										{#if wf.id === 'finish-shoot'}
+											<button onclick={() => suggestFinish(wf)} disabled={suggesting || wf.status === 'running'}
+												class="px-3 py-2 rounded-lg text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40"
+												title="From the photos this shoot looks like">{suggesting ? 'Suggesting…' : 'Suggest'}</button>
+										{/if}
+									</div>
+								</div>
+							{:else if field.type === 'checkbox'}
 								<label class="flex items-center gap-2 text-sm text-zinc-300">
 									<input type="checkbox" bind:checked={wf.values[field.key] as boolean} disabled={wf.status === 'running'} />
 									{field.label}
 								</label>
 							{:else}
 								<div>
-									<label class="block text-xs text-zinc-500 mb-1 font-medium">{field.label}</label>
-									<input
+									<label for="{wf.id}-{field.key}" class="block text-xs text-zinc-500 mb-1 font-medium">{field.label}</label>
+									<input id="{wf.id}-{field.key}"
 										type="text"
 										bind:value={wf.values[field.key]}
 										placeholder={field.placeholder}

@@ -117,6 +117,7 @@ _ET_TAGS: list[str] = [
     "-ImageWidth", "-ImageHeight", "-Orientation", "-ColorComponents",
     # Dates
     "-DateTimeOriginal", "-CreateDate", "-MediaCreateDate",
+    "-SubSecTimeOriginal", "-FocusShiftShooting",   # burst grouping; Nikon focus-shift stacks
     # GPS
     "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
     # File info

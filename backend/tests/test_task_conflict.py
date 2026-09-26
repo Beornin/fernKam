@@ -57,6 +57,7 @@ async def main() -> None:
     assert FILE_MUTATING_TASKS == {
         "scan_library", "workflow_sorting",
         "workflow_remove_nonkeep_raw", "workflow_move_raws", "workflow_pureraw",
+        "workflow_finish_shoot",
     }, FILE_MUTATING_TASKS
 
     for busy in sorted(FILE_MUTATING_TASKS):

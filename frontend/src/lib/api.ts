@@ -1,3 +1,10 @@
+export interface BurstInfo {
+  burst: number;        // id of the burst's first frame
+  size: number;
+  rank: number;         // 0 = sharpest (or first, for a focus stack)
+  focus_stack: boolean; // Nikon focus shift: kept together, never ranked
+}
+
 export interface PhotoSummary {
   id: number;
   digikam_id: number | null;
@@ -413,6 +420,10 @@ export const api = {
       get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params, signal),
   },
   photos: {
+    // Bursts among these photos, each ranked sharpest-first (fernkam/bursts.py).
+    bursts: (ids: number[]) =>
+      fetch('/api/photos/bursts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) })
+        .then(r => okJson<{ bursts: Record<string, BurstInfo> }>(r)),
     list: (params: {
       album_path?: string;
       tag_id?: number;

@@ -21,7 +21,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.29",
     "rawpy>=0.23.0",
-    "exifread>=3.0.0",
     "rich>=15.0.0",
     "send2trash>=1.8.3",
     "reverse_geocoder>=1.5.1",

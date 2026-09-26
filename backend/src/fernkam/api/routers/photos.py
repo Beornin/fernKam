@@ -343,6 +343,64 @@ class InferDatesApplyRequest(BaseModel):
     ids: list[int]
 
 
+class BurstRequest(BaseModel):
+    ids: list[int]
+
+
+_sharpness_cache: dict[int, Optional[float]] = {}
+
+
+@router.post("/bursts")
+async def photo_bursts(req: BurstRequest, db: DB) -> dict:
+    """Group the photos being culled into bursts and rank each burst by
+    sharpness (see fernkam/bursts.py). Only photos in bursts of 2+ are listed:
+    {id: {burst: first frame's id, size, rank (0 = sharpest), focus_stack}}."""
+    from concurrent.futures import ThreadPoolExecutor
+    from fernkam import bursts as B
+    from fernkam.thumbnails import read_thumbnail_from_disk
+
+    rows = (await db.execute(text("""
+        SELECT id, album_path, filename, taken_at,
+               exif->>'SubSecTimeOriginal' AS subsec, exif->>'FocusShiftShooting' AS fs
+        FROM photos WHERE id = ANY(:ids)"""), {"ids": req.ids[:10000]})).all()
+    # PureRAW's JPGs drop FocusShiftShooting, so read it from the RAW beside
+    # the JPG's folder (AA_RAW/<shoot>/x.NEF for AA_RAW/<shoot>/jpg/x.jpg).
+    shoot = lambda a: a[:-4] if a.endswith("/jpg") else a
+    stem = lambda f: f.rsplit(".", 1)[0].lower()
+    raw_fs = {(r.album_path, stem(r.filename)): r.fs for r in (await db.execute(text("""
+        SELECT album_path, filename, exif->>'FocusShiftShooting' AS fs FROM photos
+        WHERE album_path = ANY(:a) AND exif->>'FocusShiftShooting' IS NOT NULL"""),
+        {"a": list({shoot(r.album_path) for r in rows})})).all()}
+    focus = {r.id: str(r.fs or raw_fs.get((shoot(r.album_path), stem(r.filename))) or "0") not in ("0", "Off", "off")
+             for r in rows}
+
+    heads = B.group([(r.id, r.album_path, r.taken_at.timestamp() + B.subsec(r.subsec) if r.taken_at else None)
+                     for r in rows])
+    members: dict[int, list] = {}
+    for r in sorted(rows, key=lambda r: (r.taken_at is None, r.taken_at, B.subsec(r.subsec))):
+        members.setdefault(heads[r.id], []).append(r.id)
+    bursts = {h: ids for h, ids in members.items() if len(ids) > 1}
+    stacks = {h for h, ids in bursts.items() if any(focus[i] for i in ids)}
+
+    need = [i for h, ids in bursts.items() if h not in stacks for i in ids if i not in _sharpness_cache]
+
+    def score(pid: int) -> tuple[int, Optional[float]]:
+        data = read_thumbnail_from_disk(pid, "lg") or read_thumbnail_from_disk(pid, "md")
+        return pid, B.sharpness(data) if data else None
+
+    if need:
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(8) as ex:
+            _sharpness_cache.update(await asyncio.gather(*[loop.run_in_executor(ex, score, i) for i in need]))
+
+    out = {}
+    for h, ids in bursts.items():
+        order = ids if h in stacks else sorted(ids, key=lambda i: -(_sharpness_cache.get(i) or 0.0))
+        for rank, i in enumerate(order):
+            out[i] = {"burst": h, "size": len(ids), "rank": rank, "focus_stack": h in stacks}
+    return {"bursts": out}
+
+
 @router.post("/infer-dates/apply")
 async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
     """Apply inferred dates to the given photo IDs (must still be undated).

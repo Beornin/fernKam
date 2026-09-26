@@ -316,6 +316,13 @@ copies go to the Recycle Bin and are hidden from the catalogue.
 
 **User action:** lightbox / Review Mode delete.
 
+**Review Mode and bursts.** Frames within a second of each other in one folder are a moment.
+Review Mode groups them and shows the sharpest first, scored as the Laplacian variance of the
+sharpest tile of the thumbnail. **B** keeps the frame on screen, rejects the rest of the burst
+and moves to the next moment. **Shift+←/→** jumps between moments. Frames shot with Nikon focus
+shift (`FocusShiftShooting`, read from the NEF, because PureRAW's JPGs drop it) are a *focus
+stack*: kept together, in order, never ranked, and B doesn't apply.
+
 **What happens:** moves the file to the Recycle Bin and hides the photo (`status = 0`). If the
 move fails, the photo stays and the error is shown. The next scan removes the hidden row.
 
@@ -330,7 +337,8 @@ a time. Develop also counts as a GPU job, so it takes turns with model indexing.
 | Workflow | Does |
 |---|---|
 | Develop with DxO PureRAW | Runs PureRAW on every RAW with no JPG yet, without opening its window, then moves each result to the shoot's `jpg/` folder and scans it. Blank folder means only *fresh* AA_RAW shoots: no JPGs yet, nothing copied in for 2 min. A shoot mid-cull is skipped, so your rejects are never developed again. Tick *Open PureRAW's settings first* once to set the profile (plugin mode keeps its own). The run stops and reports anything that isn't `<RAW name>.jpg` (a DNG, a renamed file), because that means the profile changed. With **Settings → Develop new shoots … automatically** on (the default), fresh shoots are developed after each scan. |
-| Sort videos | Copies videos from the RAW intake / "SORT ME" folders into dated folders under the sorted export root |
+| Finish shoot | After the cull of an AA_RAW shoot. A RAW whose JPG was deleted or rejected (red, **X**) goes to the Recycle Bin with it. Keepers go to the chosen destination, except photos marked in Review Mode with **P** (green: Portfolio) or **L** (blue: the LLC folder). Portfolio puts the JPG in the folder and the RAW in its `RAW/`. Dates puts both in `Ordered by Dates/YYYY/MM`. LLC moves the JPG out of the library to `CLIENT_FOLDER` and files the RAW by date. **Suggest** proposes the destination from the photos the shoot looks like: CLIP neighbours already filed, and their commonest Portfolio folder. Each keeper moves whole or not at all. Name clashes and undated files stay in the shoot. Videos are left for Sorting. P/L labels are cleared once acted on |
+| Sort into Ordered by Dates | Moves SORT ME and AA_RAW's camera videos into `Ordered by Dates/YYYY/MM`. The date comes from Pixel file names, else the camera date via exiftool (videos included). A file with **no camera date stays in SORT ME** and is listed, which replaces the AC_SORTED check stage. A file already there with the same name and size is left in place |
 | Remove non-keep RAW | Sends RAW files with no matching JPEG/derivative (the shot was culled) to the Recycle Bin |
 | Move RAWs to folders | Moves RAW files into a `RAW/` subfolder next to their JPEGs |
 | Sync stack tags | Detects RAW+JPEG stacks, then (on Apply) writes merged tags/rating/label into every member's file |

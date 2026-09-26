@@ -42,6 +42,7 @@ FILE_MUTATING_TASKS = frozenset({
     "workflow_remove_nonkeep_raw",
     "workflow_move_raws",
     "workflow_pureraw",   # writes JPGs into AA_RAW; Remove non-keep RAW mid-run would bin NEFs not developed yet
+    "workflow_finish_shoot",
 })
 
 # Tasks that saturate the GPU. Two at once (a model index and PureRAW, say)
