@@ -19,8 +19,6 @@ def _build_tag_tree(tags: list[Tag]) -> list[TagOut]:
             name=t.name,
             path=str(t.path),
             parent_id=t.parent_id,
-            icon=t.icon,
-            color=t.color,
             is_person=t.is_person,
         )
     roots: list[TagOut] = []
@@ -47,7 +45,7 @@ async def list_tags(
         return [
             TagOut(
                 id=t.id, name=t.name, path=str(t.path),
-                parent_id=t.parent_id, icon=t.icon, color=t.color, is_person=t.is_person,
+                parent_id=t.parent_id, is_person=t.is_person,
             )
             for t in tags
         ]
@@ -84,7 +82,7 @@ async def create_tag(
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
         id=tag.id, name=tag.name, path=str(tag.path),
-        parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,
+        parent_id=tag.parent_id, is_person=tag.is_person,
     )
 
 
@@ -152,7 +150,7 @@ async def update_tag(
     tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one()
     return TagOut(
         id=tag.id, name=tag.name, path=str(tag.path),
-        parent_id=tag.parent_id, icon=tag.icon, color=tag.color, is_person=tag.is_person,
+        parent_id=tag.parent_id, is_person=tag.is_person,
     )
 
 

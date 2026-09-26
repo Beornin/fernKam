@@ -229,9 +229,7 @@
 									<p class="text-xs font-medium truncate leading-tight">{s.stem_key}</p>
 									<div class="flex items-center gap-1 mt-1">
 										<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-300">{s.member_count} files</span>
-										{#if s.has_raw}
-											<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-700/80 text-amber-200">RAW</span>
-										{/if}
+										<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-700/80 text-amber-200">RAW</span>
 									</div>
 								</div>
 							</button>

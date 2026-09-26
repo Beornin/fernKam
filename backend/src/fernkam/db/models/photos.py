@@ -81,7 +81,6 @@ class PhotoStack(Base):
     stem_key: Mapped[str] = mapped_column(Text, nullable=False)
     cover_photo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("photos.id", ondelete="SET NULL"))
     member_count: Mapped[int] = mapped_column(Integer, default=0)
-    has_raw: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -126,7 +125,6 @@ class Photo(Base):
 
     # Reverse-geocoded place fields (populated by background task)
     country_code: Mapped[Optional[str]] = mapped_column(String(4))
-    country: Mapped[Optional[str]] = mapped_column(Text)
     state: Mapped[Optional[str]] = mapped_column(Text)
     city: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -151,8 +149,6 @@ class Photo(Base):
     orientation: Mapped[Optional[int]] = mapped_column(SmallInteger)
     width: Mapped[Optional[int]] = mapped_column(Integer)
     height: Mapped[Optional[int]] = mapped_column(Integer)
-    color_depth: Mapped[Optional[int]] = mapped_column(SmallInteger)
-    color_model: Mapped[Optional[int]] = mapped_column(SmallInteger)
 
     # Stacks (RAW + JPG/TIF/edited derivatives grouped together)
     stack_id: Mapped[Optional[int]] = mapped_column(ForeignKey("photo_stacks.id", ondelete="SET NULL"))
@@ -210,8 +206,6 @@ class Tag(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(LtreeType, nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
-    icon: Mapped[Optional[str]] = mapped_column(String(255))
-    color: Mapped[Optional[str]] = mapped_column(String(16))
     is_person: Mapped[bool] = mapped_column(Boolean, default=False)
 
     parent: Mapped[Optional["Tag"]] = relationship("Tag", remote_side="Tag.id", back_populates="children")
@@ -290,7 +284,6 @@ class Face(Base):
     # Null for faces that have never been confirmed.
     confirmed_by: Mapped[Optional[str]] = mapped_column(String(16))
 
-    file_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -323,7 +316,6 @@ class PersonCentroid(Base):
 
     __table_args__ = (
         UniqueConstraint("person_tag_id", "label", name="uq_person_centroids_ptid_label"),
-        Index("ix_person_centroids_ptid", "person_tag_id"),
     )
 
 
@@ -348,7 +340,6 @@ class AppLog(Base):
     line: Mapped[Optional[int]] = mapped_column(Integer)
     func_name: Mapped[Optional[str]] = mapped_column("func", String(128))
     exc_info: Mapped[Optional[str]] = mapped_column(Text)
-    context: Mapped[Optional[dict]] = mapped_column(JSONB)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     occurrences: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -374,4 +365,3 @@ class SavedSearch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (Index("ix_saved_searches_name", "name"),)

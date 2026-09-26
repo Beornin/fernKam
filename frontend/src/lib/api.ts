@@ -43,8 +43,6 @@ export interface TagOut {
   path: string;
   parent_id: number | null;
   is_person: boolean;
-  icon: string | null;
-  color: string | null;
   children: TagOut[];
 }
 
@@ -109,7 +107,6 @@ export interface StackSummary {
   stem_key: string;
   cover_photo_id: number | null;
   member_count: number;
-  has_raw: boolean;
 }
 
 export interface StackMember {
@@ -782,7 +779,6 @@ export interface LogEntry {
   line: number | null;
   func: string | null;
   exc_info: string | null;
-  context: Record<string, any> | null;
   fingerprint: string;
   occurrences: number;
   last_seen_at: string;

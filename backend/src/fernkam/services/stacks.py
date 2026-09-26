@@ -139,7 +139,6 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
                 stem_key=raw_stem,
                 cover_photo_id=cover.id,
                 member_count=len(members),
-                has_raw=True,
                 created_at=now,
                 updated_at=now,
             )
@@ -150,7 +149,6 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
         else:
             existing.cover_photo_id = cover.id
             existing.member_count = len(members)
-            existing.has_raw = True
             existing.updated_at = now
             stacks_updated += 1
 

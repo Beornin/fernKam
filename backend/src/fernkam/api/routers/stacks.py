@@ -42,7 +42,6 @@ async def list_stacks(
             "stem_key": s.stem_key,
             "cover_photo_id": s.cover_photo_id,
             "member_count": s.member_count,
-            "has_raw": s.has_raw,
         })
     return {"items": items, "total": total}
 
@@ -96,7 +95,6 @@ async def get_stack(stack_id: int, db: DB) -> dict:
         "stem_key": stack.stem_key,
         "cover_photo_id": stack.cover_photo_id,
         "member_count": stack.member_count,
-        "has_raw": stack.has_raw,
         "members": [_member_dict(p) for p in ordered],
     }
 

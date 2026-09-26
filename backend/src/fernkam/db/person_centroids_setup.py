@@ -21,10 +21,6 @@ async def ensure_person_centroids(engine: AsyncEngine) -> None:
                 CONSTRAINT uq_person_centroids_ptid_label UNIQUE (person_tag_id, label)
             )
         """))
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS ix_person_centroids_ptid
-            ON person_centroids (person_tag_id)
-        """))
         try:
             await conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS ix_person_centroids_emb_hnsw

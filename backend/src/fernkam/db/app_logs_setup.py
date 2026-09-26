@@ -28,7 +28,6 @@ async def ensure_app_logs(engine: AsyncEngine) -> None:
                 line         INTEGER,
                 func         VARCHAR(128),
                 exc_info     TEXT,
-                context      JSONB,
                 fingerprint  VARCHAR(64) NOT NULL,
                 occurrences  INTEGER NOT NULL DEFAULT 1,
                 last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -41,11 +40,4 @@ async def ensure_app_logs(engine: AsyncEngine) -> None:
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_app_logs_fp_recent ON app_logs (fingerprint, last_seen_at DESC)"
         ))
-        # Best-effort full-text index — pg_trgm extension is already present.
-        try:
-            await conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_app_logs_msg_trgm ON app_logs USING gin (message gin_trgm_ops)"
-            ))
-        except Exception as e:
-            logger.warning("[app_logs] trgm index skipped: %s", e)
     logger.info("[app_logs] table + indexes ready")

@@ -14,8 +14,6 @@ class TagOut(BaseModel):
     name: str
     path: str
     parent_id: Optional[int]
-    icon: Optional[str]
-    color: Optional[str]
     is_person: bool
     children: list["TagOut"] = []
 
@@ -88,12 +86,9 @@ class PhotoDetail(PhotoSummary):
     longitude: Optional[float]
     altitude: Optional[float]
     country_code: Optional[str] = None
-    country: Optional[str] = None
     state: Optional[str] = None
     city: Optional[str] = None
     orientation: Optional[int]
-    color_depth: Optional[int]
-    color_model: Optional[int]
     exif: Optional[dict[str, Any]]
     camera: Optional[CameraOut]
     lens: Optional[LensOut]

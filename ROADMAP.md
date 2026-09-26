@@ -862,6 +862,25 @@ closed for other GPU work. "Index the rest" resumes it.
   window was closing. It now stands down when the launcher is the one closing. The window waits
   until the server's port is closed, so the UI closes last: port closed at 1,575 ms, window at
   1,577 ms, no processes left.
+- **Schema review (migration 0033).** Every column's null fraction and distinct count came
+  from `pg_stats`, confirmed with exact counts. Index usage came from counters never reset
+  since the database was created.
+  - **Dropped columns never written by any code:** `photos.color_depth`/`color_model`
+    (digiKam), `photos.country` (the geocoder fills `country_code`: 36,129 rows),
+    `faces.file_synced_at`, `tags.icon`/`color`, and `app_logs.context`. That last one was fed by
+    a `log_context()` that nothing used; the mechanism is gone too.
+  - **Dropped `photo_stacks.has_raw`** (always true) and the Phase 1 cluster backup table.
+  - **Dropped unused indexes:** `ix_faces_best_match_score` (2 scans), `ix_faces_created_at`
+    (6), `ix_person_centroids_ptid` (duplicate of the unique index's first column), and two on
+    12- and 140-row tables. The two startup helpers no longer recreate them. The face list still
+    answers in 101 ms and recent auto-matches in 68 ms.
+  - **Added `ix_photo_stacks_cover_photo`.** That foreign key had no index, so every deleted
+    photo scanned all stacks (28,051 full scans, 54M rows). The check is now an index-only scan.
+  - **Kept, and why:**
+    - `photos.status`: always 1, but 59 query lines filter on it.
+    - Tag Review's columns and its 1.5 GB of model indexes: the feature isn't used yet.
+    - `meta_synced_at`, `synced_meta`, `region_name`: legitimately sparse.
+    - The rarely hit `search_tsv` and filename-trigram indexes: they back the search box.
 - **digiKam and MariaDB are gone, and so is the import code.** The user uninstalled digiKam.
   Removed: the MariaDB importer, `import-digikam`, `verify`, `preflight --digikam`,
   `MYSQL_URL`, the `pymysql` dependency, and a digiKam-era face-region stripping script.

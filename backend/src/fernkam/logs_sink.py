@@ -15,15 +15,13 @@ Design:
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import hashlib
-import json
 import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -35,30 +33,6 @@ FLUSH_INTERVAL_S = 0.25
 COALESCE_WINDOW_S = 5.0
 RETENTION_DAYS = int(os.getenv("FERNKAM_LOG_RETENTION_DAYS", "30"))
 
-
-# Context propagated by `with log_context(task_id=..., photo_id=...):`
-_log_context: contextvars.ContextVar[dict] = contextvars.ContextVar("_log_context", default={})
-
-
-class log_context:
-    """Push a dict onto the contextvar; restored on exit."""
-    def __init__(self, **kw: Any) -> None:
-        self._kw = kw
-        self._token = None
-
-    def __enter__(self):
-        cur = _log_context.get()
-        merged = {**cur, **self._kw}
-        self._token = _log_context.set(merged)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if self._token is not None:
-            _log_context.reset(self._token)
-
-
-def current_log_context() -> dict:
-    return dict(_log_context.get())
 
 
 # --- queue + main loop reference --------------------------------------------
@@ -102,7 +76,6 @@ def enqueue_record(rec: dict) -> None:
         )
     rec.setdefault("occurrences", 1)
     rec.setdefault("ts", datetime.now(timezone.utc))
-    rec.setdefault("context", current_log_context() or None)
     try:
         _main_loop.call_soon_threadsafe(_queue.put_nowait, rec)
     except RuntimeError:
@@ -159,12 +132,11 @@ async def _flush_batch(batch: list[dict]) -> None:
                 """
                 INSERT INTO app_logs
                     (ts, level, level_name, source, logger_name, message,
-                     file, line, func, exc_info, context, fingerprint,
+                     file, line, func, exc_info, fingerprint,
                      occurrences, last_seen_at)
                 VALUES
                     (:ts, :level, :level_name, :source, :logger_name, :message,
-                     :file, :line, :func, :exc_info,
-                     CAST(:context AS jsonb), :fingerprint,
+                     :file, :line, :func, :exc_info, :fingerprint,
                      :occurrences, :ts)
                 """
             ), {
@@ -178,7 +150,6 @@ async def _flush_batch(batch: list[dict]) -> None:
                 "line": latest.get("line"),
                 "func": latest.get("func"),
                 "exc_info": latest.get("exc_info"),
-                "context": json.dumps(latest.get("context") or None) if latest.get("context") else None,
                 "fingerprint": fp,
                 "occurrences": n,
             })

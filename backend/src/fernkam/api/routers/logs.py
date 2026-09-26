@@ -56,7 +56,7 @@ async def list_logs(
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     rows = (await db.execute(text(
         "SELECT id, ts, level, level_name, source, logger_name, message, "
-        "       file, line, func, exc_info, context, fingerprint, occurrences, last_seen_at "
+        "       file, line, func, exc_info, fingerprint, occurrences, last_seen_at "
         "FROM app_logs" + where_sql +
         " ORDER BY last_seen_at DESC LIMIT :limit OFFSET :offset"
     ), params)).fetchall()
@@ -74,7 +74,6 @@ async def list_logs(
             "line": r.line,
             "func": r.func,
             "exc_info": r.exc_info,
-            "context": r.context,
             "fingerprint": r.fingerprint,
             "occurrences": r.occurrences,
             "last_seen_at": r.last_seen_at.isoformat(),

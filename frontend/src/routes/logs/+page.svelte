@@ -247,12 +247,6 @@
 									{#if it.func}<div><span class="text-zinc-500">Function:</span> {it.func}</div>{/if}
 									<div><span class="text-zinc-500">Fingerprint:</span> {it.fingerprint.slice(0, 16)}…</div>
 								</div>
-								{#if it.context}
-									<div class="mt-2">
-										<div class="text-zinc-500 text-[11px] mb-1">Context</div>
-										<pre class="bg-zinc-950 border border-zinc-800 rounded p-2 text-[11px] text-emerald-300 overflow-x-auto">{JSON.stringify(it.context, null, 2)}</pre>
-									</div>
-								{/if}
 								{#if it.exc_info}
 									<div class="mt-2">
 										<div class="text-zinc-500 text-[11px] mb-1">Exception</div>
