@@ -909,8 +909,17 @@ What the workflow adds:
   report, since it means PureRAW's profile changed.
 - **It's both a file job and a GPU job.** Remove non-keep RAW can't run mid-develop and bin
   NEFs whose JPG isn't written yet, and indexing takes turns with it.
-- **After each scan, fresh shoots are developed automatically.** This is on by default and set
-  in Settings. Each shoot is tried once per session.
+- **After each scan, fresh shoots can be developed automatically** (Settings). Each shoot is
+  tried once per session.
+
+**First real run, 2026-09-26: auto-develop is now off by default.** On an 845-NEF shoot, plugin
+mode's "last settings" had reverted to PureRAW's default preset: *DeepPRIME 3 – DNG, renamed*.
+Yesterday's test runs had used the JPG profile. The log points the plugin at a
+`Preferences.ini` that doesn't exist, so those settings aren't reliably stored. The drift check
+only ran once PureRAW exited. The stall watchdog, counting only JPGs as progress, killed it
+after 15 min and **209 DNGs (38.6 GB)**, which were then binned. The run now stops at the first
+file that isn't `<RAW name>.jpg`. The user runs PureRAW by hand for now, with the button kept
+for later.
 
 ### Done · Finish shoot, Sorting into Ordered by Dates, bursts
 

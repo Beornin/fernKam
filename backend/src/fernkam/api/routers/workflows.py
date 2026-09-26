@@ -325,7 +325,7 @@ async def get_pureraw_auto(db: DB) -> dict:
     from pathlib import Path
     from fernkam.config import get_settings
     from fernkam.db.app_settings import get_setting
-    return {"enabled": (await get_setting(db, "pureraw_auto", "1")) == "1",
+    return {"enabled": (await get_setting(db, "pureraw_auto", "0")) == "1",
             "installed": Path(get_settings().pureraw_exe).is_file()}
 
 

@@ -73,7 +73,7 @@ async def _auto_develop() -> None:
         if not Path(s.pureraw_exe).is_file() or not intake.is_dir():
             return
         async with async_session_factory() as db:
-            if await get_setting(db, "pureraw_auto", "1") != "1":
+            if await get_setting(db, "pureraw_auto", "0") != "1":
                 return
         todo, _ = await asyncio.get_running_loop().run_in_executor(None, plan, intake, True)
         fresh = {str(shoot) for shoot in todo} - _auto_developed

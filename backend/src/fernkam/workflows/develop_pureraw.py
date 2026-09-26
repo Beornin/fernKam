@@ -76,6 +76,20 @@ def plan(root: Path, whole_intake: bool, now: Optional[float] = None) -> tuple[d
     return todo, skipped
 
 
+_IMAGE_OUT = {".jpg", ".jpeg", ".dng", ".tif", ".tiff"}
+
+
+def wrong_outputs(todo: dict[Path, list[Path]], before: dict[Path, set[str]]) -> list[Path]:
+    """New image files that aren't '<RAW name>.jpg': PureRAW's profile has
+    changed (a DNG, a renamed JPG). Other new files (temporary ones) are ignored."""
+    bad = []
+    for shoot, rs in todo.items():
+        want = {f"{r.stem}.jpg".lower() for r in rs}
+        bad += [shoot / n for n in set(os.listdir(shoot)) - before[shoot]
+                if Path(n).suffix.lower() in _IMAGE_OUT and n.lower() not in want and (shoot / n).is_file()]
+    return bad
+
+
 def collect(todo: dict[Path, list[Path]], before: dict[Path, set[str]]) -> tuple[int, list[str], list[str]]:
     """Move each new <stem>.jpg into jpg/. Returns (developed, missing, unexpected files)."""
     developed, missing, unexpected = 0, [], []
@@ -137,6 +151,11 @@ def run(folder: str, dry_run: bool = True, preview: bool = False,
     done, changed_at = -1, time.monotonic()
     while proc.poll() is None:
         time.sleep(5)
+        # Stop at the first wrong file. Waiting for the end once cost 209 DNGs
+        # (38.6 GB) when PureRAW's plugin settings had reverted to its default.
+        if wrong_outputs(todo, before):
+            proc.kill()
+            break
         n = _developed(todo)
         if n != done:
             done, changed_at = n, time.monotonic()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from fernkam.workflows.develop_pureraw import QUIET_SECONDS, collect, plan
+from fernkam.workflows.develop_pureraw import QUIET_SECONDS, collect, plan, wrong_outputs
 
 
 def touch(p: Path) -> Path:
@@ -50,7 +50,11 @@ def main() -> None:
         todo = {shoot: a}
         before = {shoot: {p.name for p in shoot.iterdir()}}
         touch(shoot / "a.jpg")
+        touch(shoot / "a.jpg.tmp")                     # a save in progress is not drift
+        assert wrong_outputs(todo, before) == []
         touch(shoot / "b-DxO_DeepPRIME 3.dng")
+        assert [p.name for p in wrong_outputs(todo, before)] == ["b-DxO_DeepPRIME 3.dng"]   # stops the run at once
+        (shoot / "a.jpg.tmp").unlink()
         developed, missing, unexpected = collect(todo, before)
         assert developed == 1 and (shoot / "jpg" / "a.jpg").exists() and not (shoot / "a.jpg").exists()
         assert missing == ["b.NEF"], missing
