@@ -635,6 +635,12 @@ export const api = {
       fetch('/api/outside-changes/watch-interval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ minutes }) })
         .then(r => okJson<{ minutes: number }>(r)),
   },
+  workflows: {
+    pureRawAuto: () => get<{ enabled: boolean; installed: boolean }>('/api/workflows/pureraw-auto'),
+    setPureRawAuto: (enabled: boolean) =>
+      fetch('/api/workflows/pureraw-auto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
+        .then(r => okJson<{ enabled: boolean; installed: boolean }>(r)),
+  },
   sync: {
     writeMetadata: (body?: { dirty_only?: boolean; album_path?: string; photo_ids?: number[] }) =>
       fetch('/api/sync/write-metadata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string; scope?: string }>),

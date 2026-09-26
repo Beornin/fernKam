@@ -13,8 +13,8 @@
 		label: string;
 		description: string;
 		color: string;
-		fields: { key: string; label: string; placeholder: string }[];
-		values: Record<string, string>;
+		fields: { key: string; label: string; placeholder: string; type?: 'checkbox' }[];
+		values: Record<string, string | boolean>;
 		status: WorkflowStatus;
 		taskId: string | null;
 		lines: string[];
@@ -26,6 +26,21 @@
 	// State
 	// ---------------------------------------------------------------------------
 	let workflows = $state<WorkflowCard[]>([
+		{
+			id: 'develop-pureraw',
+			label: 'Develop with DxO PureRAW',
+			description: "Turns RAWs that have no JPG yet into JPGs in each shoot's jpg/ folder, with PureRAW's plugin profile; PureRAW doesn't need to be open. Blank folder = every fresh shoot in AA_RAW (no JPGs yet, finished copying). Settings can do this automatically after each scan.",
+			color: 'sky',
+			fields: [
+				{ key: 'folder', label: 'Shoot folder (blank = every fresh shoot in AA_RAW)', placeholder: 'D:\\Pictures and Videos\\AA_RAW\\20260925_00001' },
+				{ key: 'preview', label: "Open PureRAW's settings first (to set or change the profile)", placeholder: '', type: 'checkbox' },
+			],
+			values: { folder: '', preview: false },
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
 		{
 			id: 'sorting',
 			label: 'Sort Videos',
@@ -190,7 +205,8 @@
 			const res = await fetch(`/api/workflows/task/${wf.taskId}`);
 			if (!res.ok) return;
 			const data = await res.json();
-			wf.lines = data.lines ?? [];
+			// While it runs, show the task's live message (e.g. "PureRAW: 40/114 developed").
+			wf.lines = data.lines?.length ? data.lines : data.message ? [data.message] : [];
 			if (data.status === 'completed' || data.status === 'failed') {
 				wf.status = data.status;
 				clearInterval(pollTimers[wf.id]);
@@ -343,16 +359,23 @@
 					<!-- Config fields -->
 					<div class="mt-5 grid gap-3 {wf.fields.length > 1 ? 'grid-cols-1' : 'grid-cols-1'}">
 						{#each wf.fields as field}
-							<div>
-								<label class="block text-xs text-zinc-500 mb-1 font-medium">{field.label}</label>
-								<input
-									type="text"
-									bind:value={wf.values[field.key]}
-									placeholder={field.placeholder}
-									disabled={wf.status === 'running'}
-									class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 disabled:opacity-50"
-								/>
-							</div>
+							{#if field.type === 'checkbox'}
+								<label class="flex items-center gap-2 text-sm text-zinc-300">
+									<input type="checkbox" bind:checked={wf.values[field.key] as boolean} disabled={wf.status === 'running'} />
+									{field.label}
+								</label>
+							{:else}
+								<div>
+									<label class="block text-xs text-zinc-500 mb-1 font-medium">{field.label}</label>
+									<input
+										type="text"
+										bind:value={wf.values[field.key]}
+										placeholder={field.placeholder}
+										disabled={wf.status === 'running'}
+										class="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 disabled:opacity-50"
+									/>
+								</div>
+							{/if}
 						{/each}
 					</div>
 				</div>

@@ -52,6 +52,45 @@ async def scan_library(db: DB, request: ScanLibraryRequest) -> dict:
     return {"status": "running", "message": "Scan started in background", "task_id": task_id}
 
 
+# Intake shoots already handed to PureRAW automatically this session, so one
+# that fails isn't retried after every scan.
+_auto_developed: set[str] = set()
+
+
+async def _auto_develop() -> None:
+    """After a scan: develop fresh intake shoots with DxO PureRAW, if switched on
+    (Settings) and installed. Never raises; the scan has already succeeded."""
+    import asyncio
+    from pathlib import Path
+    from fernkam.config import get_settings
+    from fernkam.db.app_settings import get_setting
+    from fernkam.db.session import async_session_factory
+    from fernkam.task_manager import TaskConflict
+    from fernkam.workflows.develop_pureraw import plan
+    try:
+        s = get_settings()
+        intake = Path(s.library_root) / s.raw_intake_folder
+        if not Path(s.pureraw_exe).is_file() or not intake.is_dir():
+            return
+        async with async_session_factory() as db:
+            if await get_setting(db, "pureraw_auto", "1") != "1":
+                return
+        todo, _ = await asyncio.get_running_loop().run_in_executor(None, plan, intake, True)
+        fresh = {str(shoot) for shoot in todo} - _auto_developed
+        if not fresh:
+            return
+        from fernkam.api.routers.workflows import start_develop
+        _auto_developed.update(fresh)
+        try:
+            await start_develop(dry_run=False)
+            print(f"[PURERAW] Developing {len(fresh)} new shoot(s) automatically", flush=True)
+        except TaskConflict as exc:
+            _auto_developed.difference_update(fresh)   # busy (GPU or files): try after the next scan
+            print(f"[PURERAW] Waiting to develop new shoots: {exc}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("automatic PureRAW develop failed to start: %s", exc)
+
+
 async def start_library_scan(custom_path: Optional[str] = None, label: Optional[str] = None) -> str:
     """Start a library scan as a background task and return its task id.
 
@@ -223,6 +262,7 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                              f"{deleted} removed, {stats.get('skipped', 0):,} unchanged, "
                              f"{face_count} faces detected{warnings}"),
                     progress={**stats, "faces_detected": face_count, "total_s": round(t_total, 1)})
+                await _auto_develop()
             except ScanCancelled:
                 await bg_db.rollback()
                 print("[SCAN-LIBRARY] Cancelled", flush=True)

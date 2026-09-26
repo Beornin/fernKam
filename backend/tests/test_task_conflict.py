@@ -17,7 +17,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND / "src"))
 
-from fernkam.task_manager import FILE_MUTATING_TASKS, Task, TaskConflict, TaskManager
+from fernkam.task_manager import FILE_MUTATING_TASKS, GPU_TASKS, Task, TaskConflict, TaskManager
 
 
 class StubManager(TaskManager):
@@ -53,10 +53,10 @@ async def expect_conflict(m: TaskManager, task_type: str, busy_type: str) -> Non
 
 
 async def main() -> None:
-    # The four that touch files must exclude each other, in both directions.
+    # The ones that touch files must exclude each other, in both directions.
     assert FILE_MUTATING_TASKS == {
         "scan_library", "workflow_sorting",
-        "workflow_remove_nonkeep_raw", "workflow_move_raws",
+        "workflow_remove_nonkeep_raw", "workflow_move_raws", "workflow_pureraw",
     }, FILE_MUTATING_TASKS
 
     for busy in sorted(FILE_MUTATING_TASKS):
@@ -68,6 +68,15 @@ async def main() -> None:
     m = StubManager([running("scan_library")])
     for ok in ("embed_photos", "auto_confirm", "cluster_rebuild", "geocode", "vacuum_analyze"):
         await m.create_task(ok, "")
+
+    # GPU jobs take turns: two at once overflow VRAM and both crawl. PureRAW
+    # is in both groups; a scan (not a GPU job) may run beside an index.
+    for busy in sorted(GPU_TASKS):
+        for attempt in sorted(GPU_TASKS):
+            await expect_conflict(StubManager([running(busy)]), attempt, busy)
+    await StubManager([running("model_install")]).create_task("scan_library", "")
+    await expect_conflict(StubManager([running("model_install")]), "workflow_pureraw", "model_install")
+    await expect_conflict(StubManager([running("workflow_pureraw")]), "workflow_remove_nonkeep_raw", "workflow_pureraw")
 
     # A finished scan must not block the next one.
     m = StubManager([Task(id="x", task_type="scan_library", status="completed", message="")])

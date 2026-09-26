@@ -869,6 +869,68 @@ closed for other GPU work. "Index the rest" resumes it.
 
 ---
 
+## The shoot pipeline, automated
+
+The real flow after a Nikon shoot:
+
+1. Nikon Transfer 2 copies to `AA_RAW/<shoot>`.
+2. DxO PureRAW makes a JPG per NEF in `jpg/`.
+3. Cull by deleting JPGs.
+4. Remove non-keep RAW.
+5. Move by hand to SORT ME, then Portfolio or Sorting to `AC_SORTED`, then by hand to `Ordered by Dates`, then by hand to event folders.
+
+Phones join at SORT ME. Measured on the library: the two latest shoots were 277 frames but only
+129 moments (148 frames came within 1 s of the previous one), even without the 20 fps bird
+bursts. There are 24,608 photos in event folders against 43,311 left in `Ordered by Dates`.
+
+### Done · Remove non-keep RAW no longer threatens Portfolio
+
+It looked for a RAW's picture only in the RAW's own folder and its `jpg/`. Portfolio keeps
+RAWs in `Album/RAW/` beside `Album/x.jpg`. A dry run on Portfolio listed **3,236 of 3,239 RAWs
+(181 GB)** for the Recycle Bin. Now it lists 173 (5 GB) that truly have no picture.
+
+### Done · Develop with DxO PureRAW, no window, no clicks
+
+PureRAW has no documented command line. Its Lightroom plugin has one, found in the plugin's
+compiled Lua and verified live:
+`PureRAWv6.exe --as-lightroom-last-settings-plugin --lr-version=14.5 --batch-file <list>`.
+
+- It processes with plugin mode's own last settings, set once with
+  `--as-lightroom-preview-plugin`, deletes the list, and exits.
+- It needs `--lr-version`; without it, a "Sorry!" dialog.
+- It ignores the subfolder setting, so fernKam moves each JPG into `jpg/`.
+- **One 46 MP NEF: 27–31 s end to end**, including PureRAW starting.
+
+What the workflow adds:
+
+- **Blank folder means fresh shoots only.** A fresh shoot has no JPGs yet and nothing copied in
+  for 2 minutes. A shoot mid-cull is skipped, so deleted JPGs never come back.
+- **Every output is checked.** Anything that isn't `<RAW name>.jpg` stops the run with a
+  report, since it means PureRAW's profile changed.
+- **It's both a file job and a GPU job.** Remove non-keep RAW can't run mid-develop and bin
+  NEFs whose JPG isn't written yet, and indexing takes turns with it.
+- **After each scan, fresh shoots are developed automatically.** This is on by default and set
+  in Settings. Each shoot is tried once per session.
+
+### Planned, agreed with the user
+
+- **Finish shoot.** A reject in the cull bins the RAW+JPG pair, and keepers go straight to
+  their destination: Portfolio, a client-work folder outside the library (an export that leaves
+  the catalogue), or `Ordered by Dates`. One preview, one Apply. No separate Remove step and no
+  SORT ME round-trip.
+- **Sorting straight into `Ordered by Dates`, and AC_SORTED dropped.** Its only job was
+  checking dates, so the preview flags files with no EXIF date instead.
+- **Burst grouping, sharpest first.** Frames with focus shift on (the Z 9 writes
+  `FocusShiftShooting`) are kept together as a stack and not ranked.
+- **Portfolio folder suggestion**, from the nearest BioCLIP neighbours among Portfolio photos.
+- **Event suggestions for `Ordered by Dates`**, learned from the 24,608 filed event photos
+  with the Tag Review ensemble. The season expert would catch birthdays.
+- **Ideas strip in the cull** (suggested crops from qwen3-vl, a few looks), as previews only
+  and only for the best frame of each burst. Extra JPG files would clutter the shoot, and a
+  `-crop.jpg` would count as a keeper for Remove non-keep RAW.
+
+---
+
 ## Where this ended up
 
 Every phase in this roadmap is implemented.

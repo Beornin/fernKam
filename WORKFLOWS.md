@@ -323,11 +323,13 @@ move fails, the photo stays and the error is shown. The next scan removes the hi
 
 ## Workflows page
 
-All four default to **Preview** (dry run), which prints exactly what would happen. **Apply**
-asks for confirmation first. The first three count as file jobs, so only one runs at a time.
+All default to **Preview** (dry run), which prints exactly what would happen. **Apply** asks
+for confirmation first. Develop, Sort, Remove and Move count as file jobs, so only one runs at
+a time. Develop also counts as a GPU job, so it takes turns with model indexing.
 
 | Workflow | Does |
 |---|---|
+| Develop with DxO PureRAW | Runs PureRAW on every RAW with no JPG yet, without opening its window, then moves each result to the shoot's `jpg/` folder and scans it. Blank folder means only *fresh* AA_RAW shoots: no JPGs yet, nothing copied in for 2 min. A shoot mid-cull is skipped, so your rejects are never developed again. Tick *Open PureRAW's settings first* once to set the profile (plugin mode keeps its own). The run stops and reports anything that isn't `<RAW name>.jpg` (a DNG, a renamed file), because that means the profile changed. With **Settings → Develop new shoots … automatically** on (the default), fresh shoots are developed after each scan. |
 | Sort videos | Copies videos from the RAW intake / "SORT ME" folders into dated folders under the sorted export root |
 | Remove non-keep RAW | Sends RAW files with no matching JPEG/derivative (the shot was culled) to the Recycle Bin |
 | Move RAWs to folders | Moves RAW files into a `RAW/` subfolder next to their JPEGs |

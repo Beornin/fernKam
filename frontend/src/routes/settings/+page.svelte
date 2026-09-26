@@ -54,8 +54,21 @@
 		}
 	}
 
+	// Develop fresh AA_RAW shoots with DxO PureRAW after each scan.
+	let pureRaw = $state<{ enabled: boolean; installed: boolean } | null>(null);
+
+	async function savePureRawAuto() {
+		if (!pureRaw) return;
+		try {
+			pureRaw = await api.workflows.setPureRawAuto(pureRaw.enabled);
+		} catch (e) {
+			notify(`Could not save: ${e}`);
+		}
+	}
+
 	onMount(() => {
 		loadSensitivity();
+		api.workflows.pureRawAuto().then(r => (pureRaw = r)).catch(e => notify(`Could not load the PureRAW setting: ${e}`));
 		api.outsideChanges.watchInterval().then(r => (watchMinutes = r.minutes)).catch(e => notify(`Could not load the interval: ${e}`));
 	});
 </script>
@@ -117,6 +130,19 @@
 			minutes
 			<span class="text-xs text-zinc-500">(0 = off)</span>
 		</label>
+		<label class="mt-4 flex items-center gap-3 text-sm text-zinc-300">
+			<input type="checkbox" bind:checked={() => pureRaw?.enabled ?? false, (v) => pureRaw && (pureRaw.enabled = v)}
+				onchange={savePureRawAuto} disabled={!pureRaw?.installed} />
+			Develop new shoots in AA_RAW with DxO PureRAW automatically
+			{#if pureRaw && !pureRaw.installed}
+				<span class="text-xs text-zinc-500">(PureRAW not found; set PURERAW_EXE)</span>
+			{/if}
+		</label>
+		<p class="text-xs text-zinc-500 mt-1 ml-7">
+			After a scan, a shoot with RAWs, no JPGs yet and nothing copied in for 2 minutes is developed with
+			PureRAW's plugin profile (set it on Workflows → Develop with DxO PureRAW). Each JPG goes into the
+			shoot's jpg/ folder.
+		</p>
 	</div>
 
 	<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6">

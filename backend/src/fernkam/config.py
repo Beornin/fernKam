@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     # the stage view and the dedup tier logic cannot drift apart.
     raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
     portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
+    pureraw_exe: str = r"C:\Program Files\DxO\DxO PureRAW 6\PureRAWv6.exe"  # PURERAW_EXE
 
     @field_validator("thumb_cache_dir", "backup_dir")
     @classmethod

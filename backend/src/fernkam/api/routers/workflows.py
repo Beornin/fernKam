@@ -2,6 +2,7 @@
 
 POST /api/workflows/run/sorting          — video sort workflow (background)
 POST /api/workflows/run/remove-nonkeep-raw — remove NEF-without-JPG (background)
+POST /api/workflows/run/develop-pureraw  — RAW -> JPG with DxO PureRAW (background)
 GET  /api/workflows/task/{task_id}       — poll output / status
 """
 from __future__ import annotations
@@ -14,7 +15,7 @@ import sys
 import threading
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text as _sql
 
@@ -46,6 +47,13 @@ class MoveRawsToFoldersRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     dry_run: bool = True
     starting_folder: Optional[str] = None
+
+
+class DevelopPureRawRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
+    folder: Optional[str] = None     # default: the whole intake folder (fresh shoots only)
+    preview: bool = False            # open PureRAW's settings window first
 
 
 class SyncStackTagsRequest(BaseModel):
@@ -196,6 +204,62 @@ async def run_move_raws_to_folders(req: MoveRawsToFoldersRequest) -> dict:
         name=f"fernkam-workflow-{task_id}",
     )
     return {"task_id": task_id, "status": "started"}
+
+
+async def start_develop(folder: Optional[str] = None, dry_run: bool = True, preview: bool = False) -> str:
+    """Start the PureRAW develop workflow as a task, then scan what it made.
+
+    Used by the Workflows page and by the automatic run after a scan finds a
+    fresh shoot in the intake folder. Raises TaskConflict like any file task.
+    """
+    from pathlib import Path
+    from fernkam.api.routers.sync.library import start_library_scan
+    from fernkam.config import get_settings
+    from fernkam.task_manager import TaskConflict, task_manager
+    from fernkam.workflows import develop_pureraw
+
+    s = get_settings()
+    folder = folder or str(Path(s.library_root) / s.raw_intake_folder)
+    task_id = await task_manager.create_task(
+        "workflow_pureraw", f"{'Preview: ' if dry_run else ''}Develop with PureRAW: {folder}")
+    loop = asyncio.get_running_loop()
+
+    def progress(msg: str) -> None:
+        asyncio.run_coroutine_threadsafe(task_manager.update_task(task_id, message=msg), loop)
+
+    async def develop_then_scan() -> None:
+        await _run_in_thread(task_id, develop_pureraw.run, folder=folder, dry_run=dry_run,
+                             preview=preview, progress=progress)
+        if not dry_run:
+            try:
+                await start_library_scan(custom_path=folder, label="Adding developed JPGs…")
+            except TaskConflict:
+                pass  # the library watcher picks them up
+
+    asyncio.create_task(develop_then_scan(), name=f"fernkam-workflow-{task_id}")
+    return task_id
+
+
+@router.post("/run/develop-pureraw")
+async def run_develop_pureraw(req: DevelopPureRawRequest) -> dict:
+    return {"task_id": await start_develop(req.folder, req.dry_run, req.preview), "status": "started"}
+
+
+@router.get("/pureraw-auto")
+async def get_pureraw_auto(db: DB) -> dict:
+    """Develop fresh intake shoots with PureRAW automatically after a scan."""
+    from pathlib import Path
+    from fernkam.config import get_settings
+    from fernkam.db.app_settings import get_setting
+    return {"enabled": (await get_setting(db, "pureraw_auto", "1")) == "1",
+            "installed": Path(get_settings().pureraw_exe).is_file()}
+
+
+@router.post("/pureraw-auto")
+async def set_pureraw_auto(db: DB, enabled: bool = Body(..., embed=True)) -> dict:
+    from fernkam.db.app_settings import set_setting
+    await set_setting(db, "pureraw_auto", "1" if enabled else "0")
+    return await get_pureraw_auto(db)
 
 
 @router.post("/run/sync-stack-tags")

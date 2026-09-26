@@ -41,7 +41,16 @@ FILE_MUTATING_TASKS = frozenset({
     "workflow_sorting",
     "workflow_remove_nonkeep_raw",
     "workflow_move_raws",
+    "workflow_pureraw",   # writes JPGs into AA_RAW; Remove non-keep RAW mid-run would bin NEFs not developed yet
 })
+
+# Tasks that saturate the GPU. Two at once (a model index and PureRAW, say)
+# overflow 24 GB of VRAM into system RAM and both crawl, so they take turns.
+GPU_TASKS = frozenset({"model_install", "embed_photos", "vision_check", "workflow_pureraw"})
+
+
+def _clash(a: str, b: str) -> bool:
+    return (a in FILE_MUTATING_TASKS and b in FILE_MUTATING_TASKS) or (a in GPU_TASKS and b in GPU_TASKS)
 
 
 def fmt_eta(seconds: float) -> str:
@@ -64,7 +73,7 @@ class TaskConflict(RuntimeError):
         self.running = running
         super().__init__(
             f"'{running.task_type}' is already running — wait for it to finish "
-            f"before starting another job that changes files."
+            f"before starting another job that changes files or needs the GPU."
         )
 
 
@@ -123,21 +132,24 @@ class TaskManager:
         """Create a new task, persist to DB, return its ID.
 
         Raises TaskConflict if `task_type` mutates files and another
-        file-mutating task is already running. Enforced here rather than at
-        each call site so a new endpoint cannot forget it.
+        file-mutating task is already running, or needs the GPU while another
+        GPU task runs. Enforced here rather than at each call site so a new
+        endpoint cannot forget it.
         """
-        if task_type not in FILE_MUTATING_TASKS:
+        if task_type not in FILE_MUTATING_TASKS and task_type not in GPU_TASKS:
             return await self._insert_task(task_type, message)
         # The check and the insert must be atomic: get_running_tasks() awaits
         # the database, so two clicks in quick succession could both pass the
         # check before either row existed.
         async with self._create_lock:
-            self.ensure_no_file_task()
+            if task_type in FILE_MUTATING_TASKS:
+                self.ensure_no_file_task()
             for running in await self.get_running_tasks():
-                if running.task_type in FILE_MUTATING_TASKS:
+                if _clash(task_type, running.task_type):
                     raise TaskConflict(running)
             task_id = await self._insert_task(task_type, message)
-            self._busy_file_tasks[task_id] = self._cache[task_id]
+            if task_type in FILE_MUTATING_TASKS:
+                self._busy_file_tasks[task_id] = self._cache[task_id]
             return task_id
 
     def ensure_no_file_task(self) -> None:
