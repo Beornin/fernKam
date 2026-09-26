@@ -868,6 +868,14 @@ closed for other GPU work. "Index the rest" resumes it.
   calls the launcher through pywebview's bridge (`window.pywebview.api.quit`), which stops the
   backend, waits for its port to close, then closes the window. Tested in the exe by clicking
   Shutdown → Confirm: port closed at 2,193 ms, window at 2,194 ms, nothing left running.
+- **Culling zoom:** every photo in Review opens at fit. Double-click goes to 75% at that spot,
+  a click goes on to 100%, and double-clicking a zoomed photo returns to fit. A click that ends
+  a drag-to-pan doesn't count. The point under the cursor stays put: on an 8256×5504 frame the
+  cursor pixel went 5602,2202 → 5602,2199 → 5602,2199. The anchoring now waits for Svelte's
+  `tick()` instead of `requestAnimationFrame`, which never fires while the window is covered.
+- **No more leaked exiftool.** Each session's `exiftool -stay_open` outlived the forced stop
+  (5 orphans after three days). It now runs in a Windows job that dies with the backend.
+  Checked: 0 exiftool processes after closing.
 - **The watcher scans every 10 minutes, not seconds after a change.** Copying a card into
   AA_RAW had started a scan after every quiet moment of the copy. Changes still collect as
   they happen, but they're scanned at most once per interval, counted from the first unscanned

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -189,7 +189,7 @@
 		reviewPhotos = [...photos];
 		reviewIdx = 0;
 		reviewTrashedCount = 0;
-		reviewFit = false;
+		reviewFit = true;
 		reviewMode = true;
 		burstInfo = {};
 		api.photos.bursts(reviewPhotos.map(p => p.id)).then(({ bursts }) => {
@@ -273,6 +273,7 @@
 	}
 
 	function resetReviewView() {
+		reviewFit = true;   // every photo opens at fit
 		reviewZoom = 1;
 		reviewNatW = 0;
 	}
@@ -301,6 +302,15 @@
 	let reviewImgEl = $state<HTMLImageElement | undefined>(undefined);
 
 	const reviewCur = $derived(reviewPhotos[reviewIdx]);
+
+	// Every photo opens at fit, however you got to it: arrows, B, the
+	// filmstrip, auto-advance, or the next photo sliding in after a trash.
+	const reviewCurId = $derived(reviewCur?.id);
+	$effect(() => {
+		void reviewCurId;
+		reviewFit = true;
+		reviewZoom = 1;
+	});
 	const reviewFailed = $derived(
 		reviewCur !== undefined && reviewFailedId === reviewCur.id
 	);
@@ -605,27 +615,56 @@
 	}
 
 
+	/** Zoom to `next`, keeping the image pixel under (clientX, clientY) put.
+	 * Without the anchoring every step lands top-left, which on an 8256px frame
+	 * throws away whatever you were looking at. From fit, the letterbox around
+	 * the photo is accounted for. */
+	function zoomAt(next: number, clientX: number, clientY: number) {
+		const el = reviewScroll, img = reviewImgEl;
+		if (!el || !img || !reviewNatW || !img.naturalHeight) return;
+		const r = el.getBoundingClientRect();
+		const px = clientX - r.left, py = clientY - r.top;
+		let ix: number, iy: number;   // image pixel under the cursor now
+		if (reviewFit) {
+			const fz = fittedZoom();
+			ix = (px - (el.clientWidth - reviewNatW * fz) / 2) / fz;
+			iy = (py - (el.clientHeight - img.naturalHeight * fz) / 2) / fz;
+		} else {
+			ix = (el.scrollLeft + px) / reviewZoom;
+			iy = (el.scrollTop + py) / reviewZoom;
+		}
+		ix = Math.min(Math.max(ix, 0), reviewNatW);
+		iy = Math.min(Math.max(iy, 0), img.naturalHeight);
+		reviewFit = false;
+		reviewZoom = next;
+		// After Svelte has resized the image (not requestAnimationFrame, which
+		// never fires while the window is covered).
+		tick().then(() => {
+			el.scrollLeft = ix * next - px;
+			el.scrollTop = iy * next - py;
+		});
+	}
+
 	function reviewWheel(e: WheelEvent) {
 		if (!reviewScroll) return;
 		e.preventDefault();
-		const el = reviewScroll;
 		const before = reviewFit ? fittedZoom() : reviewZoom;
 		const next = Math.min(REVIEW_ZOOM_MAX, Math.max(REVIEW_ZOOM_MIN,
 			before * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-		if (next === before) return;
+		if (next !== before) zoomAt(next, e.clientX, e.clientY);
+	}
 
-		// Keep the pixel under the cursor put. Without this every zoom step
-		// anchors top-left, which on an 8256px frame throws away whatever you
-		// were looking at.
-		const r = el.getBoundingClientRect();
-		const px = e.clientX - r.left, py = e.clientY - r.top;
-		const ratio = next / before;
-		reviewFit = false;
-		reviewZoom = next;
-		requestAnimationFrame(() => {
-			el.scrollLeft = (el.scrollLeft + px) * ratio - px;
-			el.scrollTop = (el.scrollTop + py) * ratio - py;
-		});
+	// Culling zoom: each photo opens at fit. Double-click goes to 75% at that
+	// spot, a click there goes on to 100%, and double-clicking a zoomed photo
+	// returns to fit. A click that ends a drag-to-pan doesn't count.
+	let downX = 0, downY = 0;
+	function reviewClick(e: MouseEvent) {
+		if (e.detail !== 1 || Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return;
+		if (!reviewFit && reviewZoom < 1) zoomAt(1, e.clientX, e.clientY);
+	}
+	function reviewDblClick(e: MouseEvent) {
+		if (reviewFit) zoomAt(0.75, e.clientX, e.clientY);
+		else { reviewFit = true; reviewZoom = 1; }
 	}
 
 	/** The zoom that would fit the current photo in the viewport. */
@@ -638,6 +677,8 @@
 	}
 
 	function panStart(e: MouseEvent) {
+		downX = e.clientX;
+		downY = e.clientY;
 		// Panning depends on whether the image overflows, not on which mode we
 		// are in — a wheel-zoomed image is pannable even though reviewFit is off.
 		if (!reviewScroll) return;
@@ -763,7 +804,7 @@
 				<button
 					onclick={enterReview}
 					class="text-xs px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white flex items-center gap-1 transition-colors shrink-0"
-					title="Review photos at 1:1 zoom"
+					title="Review photos (cull)"
 				>
 					<Clapperboard size={12} /> Review
 				</button>
@@ -965,7 +1006,7 @@
 		{#each [
 			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'], ['B', 'keep this, reject rest of burst'],
 			['P', 'to Portfolio'], ['L', 'to LLC'], ['← →', 'prev / next'], ['⇧← ⇧→', 'prev / next moment'],
-			['Del', 'trash file'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
+			['Del', 'trash file'], ['dbl-click', '75% / back to fit'], ['click', '100%'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
 		] as [key, what]}
 			<span class="flex items-center gap-1">
 				<kbd class="px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 font-mono text-[10px]">{key}</kbd>
@@ -977,7 +1018,9 @@
 		</span>
 	</div>
 
-	<!-- Image area -->
+	<!-- Image area. Click/double-click zoom has a keyboard equivalent (F, fit/1:1),
+	     handled window-wide like every Review key. -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		bind:this={reviewScroll}
 		role="application"
@@ -988,6 +1031,8 @@
 		onmouseup={panEnd}
 		onmouseleave={panEnd}
 		onwheel={reviewWheel}
+		onclick={reviewClick}
+		ondblclick={reviewDblClick}
 	>
 		{#if reviewPhotos.length > 0}
 			{#if reviewPhotos[reviewIdx].media_type === 'video'}
