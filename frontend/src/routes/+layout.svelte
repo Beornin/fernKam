@@ -42,9 +42,43 @@ async function pollTasks() {
 	}
 }
 
+// Work started on a page (approving tags, merging, trashing…) is a request,
+// not a server task, so the task poll never saw it and the bar said "No
+// active process" while it ran. Every request that changes something shows
+// here until it finishes; ones done within 300 ms never flash.
+let actions = $state<{ id: number; label: string }[]>([]);
+let actionSeq = 0;
+const ACTION_LABELS: [RegExp, string][] = [
+	[/^tag-review\/tags\/\d+\/decide$/, 'Saving tag decisions and relearning the tag…'],
+	[/^tag-review\/tags\/\d+\/train$/, 'Learning the tag…'],
+	[/^tag-review\/tags\/\d+\/find-by-name$/, 'Finding photos by the tag name…'],
+	[/^tag-review\/tags\/\d+\/check$/, 'Checking with the vision model…'],
+	[/^tags\/\d+\/merge$/, 'Merging tags…'],
+	[/^photos\/batch-edit$/, 'Saving edits…'],
+	[/^photos\/\d+\/trash$/, 'Moving to the Recycle Bin…'],
+	[/^people\/\d+\/merge$/, 'Merging people…'],
+];
+function actionLabel(url: string): string {
+	const path = new URL(url, location.href).pathname.replace(/^\/api\//, '');
+	for (const [re, label] of ACTION_LABELS) if (re.test(path)) return label;
+	return `Working: ${path.split('/').filter(seg => !/^\d+$/.test(seg)).join(' ').replace(/-/g, ' ')}…`;
+}
+
 onMount(() => {
 	pollTasks();
 	taskInterval = setInterval(pollTasks, 3000);
+	const realFetch = window.fetch.bind(window);
+	window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+		const req = realFetch(input, init);
+		const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+		if (method === 'GET') return req;
+		const action = { id: ++actionSeq,
+			label: actionLabel(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url) };
+		const show = setTimeout(() => { actions = [...actions, action]; }, 300);
+		req.finally(() => { clearTimeout(show); actions = actions.filter(a => a.id !== action.id); }).catch(() => {});
+		return req;
+	};
+	return () => { window.fetch = realFetch; };
 });
 
 onDestroy(() => {
@@ -196,9 +230,9 @@ function isActive(item: typeof navItems[0]) {
 
 			<!-- Task status (center) -->
 			<div class="flex-1 flex items-center justify-center gap-2 min-w-0">
-				{#if taskRunning}
+				{#if taskRunning || actions.length}
 					<div class="w-3 h-3 border border-amber-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
-					<span class="text-amber-400 truncate">{taskMessage}</span>
+					<span class="text-amber-400 truncate">{[...(taskRunning ? [taskMessage] : []), ...actions.map(a => a.label)].join(' · ')}</span>
 				{:else}
 					<span class="text-zinc-600 truncate">{taskMessage}</span>
 				{/if}

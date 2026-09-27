@@ -87,4 +87,10 @@ assert (others >= THRESHOLD).mean() <= 0.01
 m5 = fit(pos[:1], np.zeros((0, DIM), np.float32), weak[:50], PREVALENCE)
 assert m5.cv_agreement is None and m5.cv_recall is None
 
+# 7. A taxonomic model (BioCLIP) is also asked for the Latin name in the tag's name.
+from fernkam.tag_learning import _prompts
+assert _prompts("Wildlife.Birds.Great_Egret", "Great Egret (Ardea alba)", True)[0] == "Ardea alba"
+assert "Ardea alba" not in _prompts("Wildlife.Birds.Great_Egret", "Great Egret (Ardea alba)", False)
+assert _prompts("Wildlife.Birds.Hawks", "Hawks", True) == ["Hawks", "Hawks, birds"]
+
 print(f"ok - tag classifier (look-alikes accepted {before:.0%} -> {after:.0%} after rejections)")

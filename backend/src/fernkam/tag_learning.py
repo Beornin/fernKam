@@ -59,6 +59,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Optional
@@ -650,16 +651,23 @@ async def trainable_tags(db) -> list[int]:
 
 # ── find by name ─────────────────────────────────────────────────────────────
 
-def _prompts(path: str) -> list[str]:
+_LATIN = re.compile(r"\(([A-Z][a-z]+(?: [a-z.]+){0,3})\)\s*$")
+
+
+def _prompts(path: str, name: str = "", scientific: bool = False) -> list[str]:
+    """What a text tower is asked for. A model trained on taxonomic names
+    (BioCLIP) also gets the Latin name from a "Great Egret (Ardea alba)" tag."""
     parts = path.split(".")
     leaf = parts[-1].replace("_", " ")
     out = [leaf]
     if len(parts) > 1:
         out.append(f"{leaf}, {parts[-2].replace('_', ' ').lower()}")
+    if scientific and (m := _LATIN.search(name)):
+        out.insert(0, m[1])
     return out
 
 
-def _text_vector(space_key: str, path: str) -> Optional[np.ndarray]:
+def _text_vector(space_key: str, path: str, name: str = "") -> Optional[np.ndarray]:
     """The tag's name through a model's text tower, or None if it has none."""
     from fernkam import clip_embed
     from fernkam import embed_models as em
@@ -672,7 +680,8 @@ def _text_vector(space_key: str, path: str) -> Optional[np.ndarray]:
         if not em.text_installed(space_key):
             return None
         tmpl = em.text_prompt(space_key)
-        vecs = em.embed_text(space_key, [tmpl.format(p) for p in _prompts(path)])
+        prompts = _prompts(path, name, em.MODELS[space_key].scientific_names)
+        vecs = em.embed_text(space_key, [tmpl.format(p) for p in prompts])
     v = np.asarray(vecs, np.float32).mean(axis=0)
     return v / max(float(np.linalg.norm(v)), 1e-12)
 
@@ -692,7 +701,7 @@ async def find_by_name(db, tag_id: int) -> dict:
     rank fusion) and the best NAME_SUGGESTIONS become suggestions marked as
     found by name. Does nothing for a tag that is already learning."""
     tag = (await db.execute(text(
-        "SELECT t.path::text AS path, t.is_person, t.is_fact, m.tag_id IS NOT NULL AS learning "
+        "SELECT t.path::text AS path, t.name, t.is_person, t.is_fact, m.tag_id IS NOT NULL AS learning "
         "FROM tags t LEFT JOIN tag_models m ON m.tag_id = t.id WHERE t.id = :t"), {"t": tag_id})).first()
     if not tag or tag.is_person or tag.is_fact:
         return {"suggestions": 0, "models": []}
@@ -704,7 +713,7 @@ async def find_by_name(db, tag_id: int) -> dict:
     fused: dict[int, float] = {}
     used = []
     for key in await name_models(db):
-        vec = await loop.run_in_executor(None, _text_vector, key, tag.path)
+        vec = await loop.run_in_executor(None, _text_vector, key, tag.path, tag.name)
         if vec is None:
             continue
         sp = ei.space(key)

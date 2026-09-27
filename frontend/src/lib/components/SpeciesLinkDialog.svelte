@@ -16,7 +16,8 @@
 
 	$effect(() => {
 		if (open) {
-			q = tagName;
+			// "Great Egret (Ardea alba)": the Latin name matches exactly on GBIF.
+			q = tagName.match(/\(([A-Z][a-z]+(?: [a-z.]+)*)\)\s*$/)?.[1] ?? tagName;
 			run();
 		}
 	});

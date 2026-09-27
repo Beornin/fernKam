@@ -54,6 +54,7 @@ class ModelInfo:
     gpu_recommended: bool = False
     thumb: str = "md"            # thumbnail it reads: md = 480 px, lg = 960 px (for 512 px models)
     recommended_24gb: bool = False
+    scientific_names: bool = False  # trained on taxonomic names: search it by the Latin name
     # Images per inference call. Attention memory grows with batch x tokens^2:
     # batch 32 at 512 px (1024 tokens) needs ~2 GB per layer, fills a 24 GB
     # card, and Windows then spills to system RAM (measured: 1 photo/s).
@@ -85,7 +86,8 @@ MODELS: dict[str, ModelInfo] = {
             "Wildlife. Trained on over 200 million images of organisms to tell similar "
             "species apart. Built once from the official weights.",
             768, "export", weights="hf-hub:imageomics/bioclip-2",
-            size_mb=1200, text_size_mb=500, gpu_recommended=True, recommended_24gb=True),
+            size_mb=1200, text_size_mb=500, gpu_recommended=True, recommended_24gb=True,
+            scientific_names=True),
     )
 }
 

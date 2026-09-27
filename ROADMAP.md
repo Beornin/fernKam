@@ -1056,6 +1056,23 @@ the archive's root tag was learning "looks like his photos", which the folder al
   Tag Review's queue drops by 44,447 fact links.
 - The files get the new keywords on the next Maintenance → Write metadata (39,880 photos).
 
+### Done · The status bar shows actions, and species tags carry Latin names
+
+- **Status bar.** It only showed server tasks, so approving tags in Tag Review (a request that
+  also relearns the tag) left it on "No active process". Every request that changes something
+  now shows there while it runs, with a label for the slow ones; one done within 300 ms never
+  flashes.
+- **Latin names reach BioCLIP.** Find-by-name built its text prompts from the tag's path label,
+  so a tag renamed "Great Egret (Ardea alba)" was still searched as "Great Egret". Models trained
+  on taxonomic names (`scientific_names`, BioCLIP 2) now get the Latin name first. The archive's
+  folders are named "Common (Latin)", which named 1,026 species tags (29 after fixing folder
+  typos and "aka" names); 1,097 of 1,114 species tags now have one. Three folders name a different
+  species than their tag and were left for the user.
+- **GBIF ranges were not fetched in bulk:** they only help photos with GPS, and 56 of the
+  archive's 41,105 have it; linking all species would cost about 38,000 GBIF requests. The Link
+  species dialog now searches by the Latin name, so linking a species with GPS photos is one
+  click.
+
 ### Planned, agreed with the user
 
 - **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders.
