@@ -15,6 +15,7 @@ class TagOut(BaseModel):
     path: str
     parent_id: Optional[int]
     is_person: bool
+    is_fact: bool = False
     children: list["TagOut"] = []
 
 

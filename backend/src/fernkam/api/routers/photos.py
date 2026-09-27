@@ -213,7 +213,7 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
     detail = PhotoDetail.model_validate(row)
     detail.tags = [pt.tag for pt in row.photo_tags if pt.tag]
     detail.unverified_tag_ids = [pt.tag_id for pt in row.photo_tags
-                                 if pt.tag and pt.verified_at is None and not pt.tag.is_person]
+                                 if pt.tag and pt.verified_at is None and not pt.tag.is_person and not pt.tag.is_fact]
     detail.faces = _enrich_faces(list(row.faces))
     return detail
 

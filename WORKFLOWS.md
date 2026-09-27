@@ -222,6 +222,13 @@ puts it back and flags the photo for write-back. Dismissing an entry changes not
 
 Unverified tags also show in the lightbox with a dashed outline and a ✓ to approve in place.
 
+**Subjects and facts.** Tag Review learns tags for *what is in* a photo, and one subject tag
+should serve every collection: a spider is the same Spider tag on anyone's photo, so its model
+learns from all of them. A tag that records a *fact about* the photo (who took it, where it is
+posted, "needs review") is marked as a fact in the Tags sidebar (pin icon). Tag Review doesn't
+learn, suggest or queue fact tags. **Merge into…** in the same sidebar folds a duplicate tag into
+another: photos, approvals and child tags move over (children with the same name merge too).
+
 **What happens:**
 
 - *Approve*: marks the tag verified (`photo_tags.verified_at`), or adds it if it was a

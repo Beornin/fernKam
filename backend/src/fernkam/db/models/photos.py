@@ -207,6 +207,9 @@ class Tag(Base):
     path: Mapped[str] = mapped_column(LtreeType, nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tags.id"))
     is_person: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A fact about the photo (who took it, where it's posted), not what's in
+    # it: Tag Review doesn't learn, suggest or queue it.
+    is_fact: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false())
 
     parent: Mapped[Optional["Tag"]] = relationship("Tag", remote_side="Tag.id", back_populates="children")
     children: Mapped[list["Tag"]] = relationship("Tag", back_populates="parent")

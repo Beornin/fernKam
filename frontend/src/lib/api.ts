@@ -43,6 +43,7 @@ export interface TagOut {
   path: string;
   parent_id: number | null;
   is_person: boolean;
+  is_fact: boolean;
   children: TagOut[];
 }
 
@@ -488,8 +489,10 @@ export const api = {
     list: (params?: { flat?: boolean; search?: string }, signal?: AbortSignal) => get<TagOut[]>('/api/tags', params, signal),
     create: (body: { name: string; parent_id?: number | null; is_person?: boolean }) =>
       fetch('/api/tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
-    update: (id: number, body: { name?: string; parent_id?: number | null }) =>
-      fetch(`/api/tags/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json() as Promise<TagOut>),
+    update: (id: number, body: { name?: string; parent_id?: number | null; is_fact?: boolean }) =>
+      fetch(`/api/tags/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => okJson<TagOut>(r)),
+    merge: (id: number, into: number) =>
+      fetch(`/api/tags/${id}/merge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ into }) }).then(r => okJson<TagOut>(r)),
     delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }).then(okVoid),
     removeFromPhotos: (id: number) =>
       fetch(`/api/tags/${id}/from-photos`, { method: 'DELETE' }).then(r => okJson<{ removed: number }>(r)),

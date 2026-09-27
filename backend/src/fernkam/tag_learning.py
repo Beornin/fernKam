@@ -497,8 +497,8 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
     links and refresh its suggestions. Returns the model's stats, or None when
     the tag has too few approved photos with vectors. Commits."""
     tag = (await db.execute(text(
-        "SELECT path::text, is_person FROM tags WHERE id = :t"), {"t": tag_id})).first()
-    if not tag or tag.is_person:
+        "SELECT path::text, is_person, is_fact FROM tags WHERE id = :t"), {"t": tag_id})).first()
+    if not tag or tag.is_person or tag.is_fact:
         return None
     image_spaces = await ei.active_spaces(db)
     if not image_spaces:
@@ -639,7 +639,7 @@ async def trainable_tags(db) -> list[int]:
         FROM tags t
         JOIN tags d ON d.path <@ t.path
         JOIN photo_tags pt ON pt.tag_id = d.id AND pt.verified_at IS NOT NULL
-        WHERE NOT t.is_person
+        WHERE NOT t.is_person AND NOT t.is_fact
           AND EXISTS (SELECT 1 FROM photo_tags own WHERE own.tag_id = t.id)
         GROUP BY t.id
         HAVING count(DISTINCT pt.photo_id) >= :min
@@ -692,9 +692,9 @@ async def find_by_name(db, tag_id: int) -> dict:
     rank fusion) and the best NAME_SUGGESTIONS become suggestions marked as
     found by name. Does nothing for a tag that is already learning."""
     tag = (await db.execute(text(
-        "SELECT t.path::text AS path, t.is_person, m.tag_id IS NOT NULL AS learning "
+        "SELECT t.path::text AS path, t.is_person, t.is_fact, m.tag_id IS NOT NULL AS learning "
         "FROM tags t LEFT JOIN tag_models m ON m.tag_id = t.id WHERE t.id = :t"), {"t": tag_id})).first()
-    if not tag or tag.is_person:
+    if not tag or tag.is_person or tag.is_fact:
         return {"suggestions": 0, "models": []}
     if tag.learning:
         return {"suggestions": 0, "models": [], "learning": True}

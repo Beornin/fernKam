@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { api, type TagOut } from '$lib/api';
-	import { Tag, ChevronRight, ChevronDown, User, Edit2, Trash2, Move, Search, Plus } from '@lucide/svelte';
+	import { Tag, ChevronRight, ChevronDown, User, Edit2, Trash2, Move, Search, Plus, Merge, Pin } from '@lucide/svelte';
 	import { buildFilterUrl } from '$lib/shellFilters';
 
 	let selectedTagId = $derived(Number($page.url.searchParams.get('tag_id')) || null);
@@ -17,6 +17,8 @@
 	let editName = $state('');
 	let movingId = $state<number | null>(null);
 	let moveParentId = $state<number | null>(null);
+	let mergingId = $state<number | null>(null);
+	let mergeIntoId = $state<number | null>(null);
 	let allTags = $state<TagOut[]>([]);
 	let selectedTagIds = $state(new Set<number>());
 	let bulkWorking = $state(false);
@@ -75,6 +77,25 @@
 			movingId = null;
 			await loadTags();
 		} catch (e) { console.error(e); }
+	}
+
+	async function saveMerge() {
+		const src = allTags.find(t => t.id === mergingId), dst = allTags.find(t => t.id === mergeIntoId);
+		if (!src || !dst) return;
+		if (!(await ask(`Merge "${src.path}" into "${dst.path}"? Its photos and child tags move there, then "${src.name}" is deleted.`))) return;
+		try {
+			await api.tags.merge(src.id, dst.id);
+			mergingId = null;
+			await loadTags();
+		} catch (e) { notify(e instanceof Error ? e.message : String(e), 'danger'); }
+	}
+
+	/** A fact (who took it, where it's posted) isn't learned or suggested by Tag Review. */
+	async function toggleFact(tag: TagOut) {
+		try {
+			await api.tags.update(tag.id, { is_fact: !tag.is_fact });
+			await loadTags();
+		} catch (e) { notify(e instanceof Error ? e.message : String(e), 'danger'); }
 	}
 
 	async function deleteTag(id: number) {
@@ -207,6 +228,8 @@
 
 					{#if tag.is_person}
 						<User size={12} class="text-sky-400 shrink-0" />
+					{:else if tag.is_fact}
+						<span title="Fact: not learned or suggested by Tag Review" class="shrink-0"><Pin size={12} class="text-violet-400" /></span>
 					{:else}
 						<Tag size={12} class="shrink-0 {isSelected ? 'text-amber-400' : 'text-zinc-500'}" />
 					{/if}
@@ -223,6 +246,11 @@
 							class="w-3 h-3 rounded border-zinc-600 bg-zinc-800 accent-amber-500 mr-0.5" />
 						<button onclick={() => startEdit(tag)} class="p-0.5 text-zinc-600 hover:text-zinc-300 rounded" title="Rename"><Edit2 size={11} /></button>
 						<button onclick={() => startMove(tag)} class="p-0.5 text-zinc-600 hover:text-zinc-300 rounded" title="Move"><Move size={11} /></button>
+						{#if !tag.is_person}
+							<button onclick={() => { mergingId = tag.id; mergeIntoId = null; }} class="p-0.5 text-zinc-600 hover:text-zinc-300 rounded" title="Merge into another tag"><Merge size={11} /></button>
+							<button onclick={() => toggleFact(tag)} class="p-0.5 rounded {tag.is_fact ? 'text-violet-400' : 'text-zinc-600 hover:text-zinc-300'}"
+								title={tag.is_fact ? 'Fact tag: click to let Tag Review learn it again' : 'Mark as a fact (who took it, where it is posted): Tag Review will not learn or suggest it'}><Pin size={11} /></button>
+						{/if}
 						<button onclick={() => deleteTag(tag.id)} class="p-0.5 text-zinc-600 hover:text-red-400 rounded" title="Delete"><Trash2 size={11} /></button>
 					</div>
 				</div>
@@ -252,6 +280,28 @@
 			<div class="flex gap-2 justify-end">
 				<button onclick={() => editingId = null} class="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm transition-colors">Cancel</button>
 				<button onclick={saveEdit} class="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-sm transition-colors">Save</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Merge modal -->
+{#if mergingId !== null}
+	{@const mergingTag = allTags.find(t => t.id === mergingId)}
+	<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+		<div class="bg-zinc-900 rounded-lg p-5 w-96 border border-zinc-800">
+			<h2 class="text-sm font-semibold text-zinc-100 mb-1">Merge "{mergingTag?.name}" into…</h2>
+			<p class="text-xs text-zinc-500 mb-3">Its photos and child tags move to the tag you pick (children with the same name merge too), then this tag is deleted.</p>
+			<select bind:value={mergeIntoId}
+				class="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-amber-500 mb-3">
+				<option value={null} disabled>Pick a tag</option>
+				{#each getAvailableParents(mergingTag!).filter(t => !t.is_person) as target}
+					<option value={target.id}>{target.path}</option>
+				{/each}
+			</select>
+			<div class="flex gap-2 justify-end">
+				<button onclick={() => mergingId = null} class="px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm transition-colors">Cancel</button>
+				<button onclick={saveMerge} disabled={mergeIntoId === null} class="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-sm transition-colors disabled:opacity-40">Merge</button>
 			</div>
 		</div>
 	</div>

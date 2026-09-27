@@ -31,12 +31,14 @@ State = Literal["unverified", "suggested", "approved", "rejected"]
 
 async def _tag(db, tag_id: int):
     tag = (await db.execute(text(
-        "SELECT id, name, path::text AS path, is_person FROM tags WHERE id = :t"
+        "SELECT id, name, path::text AS path, is_person, is_fact FROM tags WHERE id = :t"
     ), {"t": tag_id})).first()
     if not tag:
         raise HTTPException(404, "Tag not found")
     if tag.is_person:
         raise HTTPException(400, "People are reviewed on the Face Review page")
+    if tag.is_fact:
+        raise HTTPException(400, "Fact tags aren't reviewed")
     return tag
 
 
@@ -65,9 +67,9 @@ async def summary(db: DB) -> dict:
     row = (await db.execute(text("""
         SELECT
           (SELECT count(*) FROM photo_tags pt JOIN tags t ON t.id = pt.tag_id
-            WHERE NOT t.is_person AND pt.verified_at IS NULL) AS unverified,
+            WHERE NOT t.is_person AND NOT t.is_fact AND pt.verified_at IS NULL) AS unverified,
           (SELECT count(*) FROM photo_tags pt JOIN tags t ON t.id = pt.tag_id
-            WHERE NOT t.is_person AND pt.verified_at IS NOT NULL) AS approved,
+            WHERE NOT t.is_person AND NOT t.is_fact AND pt.verified_at IS NOT NULL) AS approved,
           (SELECT count(*) FROM tag_suggestions) AS suggested,
           (SELECT count(*) FROM tag_rejections) AS rejected,
           (SELECT count(*) FROM tag_models) AS models,
@@ -99,7 +101,7 @@ async def list_tags(db: DB) -> list[dict]:
         LEFT JOIN s ON s.tag_id = t.id
         LEFT JOIN r ON r.tag_id = t.id
         LEFT JOIN tag_models m ON m.tag_id = t.id
-        WHERE NOT t.is_person
+        WHERE NOT t.is_person AND NOT t.is_fact
         ORDER BY COALESCE(c.unverified, 0) + COALESCE(s.n, 0) DESC,
                  (c.tag_id IS NULL AND r.tag_id IS NULL), t.path
     """))).all()

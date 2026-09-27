@@ -1025,6 +1025,37 @@ the dedup staging folders). A photo the scan sees moved out of them, still unsca
 detected then. Detecting faces on one photo still works anywhere. Checked in
 `test_prep_folders.py`.
 
+### Done · Short videos get a thumbnail, so the image models index them
+
+Every image model stuck at 118,811 of 118,932: 121 videos were "unreadable" on every run. Video
+thumbnails grab a frame 1 s in; 115 of them are phone clips of 0.1–0.9 s, where ffmpeg exits 0
+having written nothing. The pre-created temp file hid that. Now it falls back to the first
+frame, and all 115 give a picture. The other 6 are broken files (four empty Pixel MP4s, a
+14 KB MOV, a 28 KB GoPro chapter) and stay unindexed. Checked in `test_video_thumb.py`.
+The Models panel was already live (it re-reads the counts every 4 s while open).
+
+### Done · One subject tree, fact tags, and Merge
+
+The library had three parallel species vocabularies: a relative's archive grouped by common
+name under his own name (1,127 tags, 28,557 photos), the user's family-based `Wildlife` tree
+(130 tags) and a flat `Scientific_Names` list (73). 40 species were in two of them, so Tag Review
+would learn and suggest each twice. And since a parent learns from its children's approvals,
+the archive's root tag was learning "looks like his photos", which the folder already says.
+
+- **Fact tags** (`tags.is_fact`, migration 0034): who took it, where it's posted, needs review.
+  Tag Review doesn't learn, suggest or queue them. Pin toggle in the Tags sidebar.
+- **Merge into…** (`POST /api/tags/{id}/merge`): photos, approvals and rejections move to the
+  target, same-named children merge recursively, the rest move under it. Checked in
+  `test_tag_merge.py` (runs in a rolled-back transaction).
+- **The regroup itself** was a one-off script, previewed in a rolled-back transaction and applied
+  after a backup: his groups became the shared `Wildlife` tree, 44 of the user's species merged
+  into his entries, 48 family groups folded into his groups, each Latin tag merged into its
+  species (renamed "Common (Latin)", 72), and his name became one flat fact tag on every file of
+  his folder (41,105). Tags 1,336 → 1,164, no duplicate species left. Great Egret, for
+  example, now learns from 650 photos (414 his, 236 the user's) instead of two separate tags.
+  Tag Review's queue drops by 44,447 fact links.
+- The files get the new keywords on the next Maintenance → Write metadata (39,880 photos).
+
 ### Planned, agreed with the user
 
 - **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders.
