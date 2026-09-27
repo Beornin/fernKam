@@ -275,7 +275,8 @@ def probe_video_duration(src: Path) -> float | None:
 
 
 def _video_thumbnail(src: Path, dest: Path, size: str) -> Path | None:
-    """Extract a frame at 10% into the video and save as WebP thumbnail."""
+    """Save a frame 1 s in (past a fade from black) as a WebP thumbnail; the
+    first frame for clips shorter than that (phone motion clips, 0.1-0.9 s)."""
     ffmpeg = _resolve_ffmpeg()
     if not ffmpeg:
         return None
@@ -285,21 +286,25 @@ def _video_thumbnail(src: Path, dest: Path, size: str) -> Path | None:
         tmp_path = Path(tmp.name)
 
     try:
-        result = subprocess.run(
-            [
-                str(ffmpeg),
-                "-ss", "00:00:01",
-                "-i", str(src),
-                "-vframes", "1",
-                "-vf", f"scale={max_dim}:{max_dim}:force_original_aspect_ratio=decrease",
-                "-q:v", "3",
-                "-y",
-                str(tmp_path),
-            ],
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode != 0 or not tmp_path.exists():
+        for seek in ("1", "0"):
+            # Seeking past the end still exits 0, leaving the temp file empty.
+            result = subprocess.run(
+                [
+                    str(ffmpeg),
+                    "-ss", seek,
+                    "-i", str(src),
+                    "-vframes", "1",
+                    "-vf", f"scale={max_dim}:{max_dim}:force_original_aspect_ratio=decrease",
+                    "-q:v", "3",
+                    "-y",
+                    str(tmp_path),
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and tmp_path.stat().st_size:
+                break
+        else:
             return None
 
         with Image.open(tmp_path) as img:
