@@ -41,13 +41,11 @@ FILE_MUTATING_TASKS = frozenset({
     "workflow_sorting",
     "workflow_remove_nonkeep_raw",
     "workflow_move_raws",
-    "workflow_pureraw",   # writes JPGs into AA_RAW; Remove non-keep RAW mid-run would bin NEFs not developed yet
-    "workflow_finish_shoot",
 })
 
-# Tasks that saturate the GPU. Two at once (a model index and PureRAW, say)
+# Tasks that saturate the GPU. Two at once (two model indexes, say)
 # overflow 24 GB of VRAM into system RAM and both crawl, so they take turns.
-GPU_TASKS = frozenset({"model_install", "embed_photos", "vision_check", "workflow_pureraw"})
+GPU_TASKS = frozenset({"model_install", "embed_photos", "vision_check"})
 
 
 def _clash(a: str, b: str) -> bool:

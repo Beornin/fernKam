@@ -255,15 +255,6 @@
 		reviewJump(1);
 	}
 
-	/** P / L: send this photo to Portfolio (green) or the LLC folder (blue) at Finish shoot. */
-	function reviewDestination(label: 4 | 5) {
-		const cur = reviewPhotos[reviewIdx];
-		if (!cur || reviewLoading) return;
-		const next = cur.color_label === label ? 0 : label;
-		applyToPhotos([cur.id], { color_label: next },
-			next === 0 ? 'Destination cleared' : next === 4 ? 'Goes to Portfolio (green)' : 'Goes to the LLC folder (blue)');
-	}
-
 	function exitReview() {
 		reviewMode = false;
 		if (reviewTrashedCount > 0) {
@@ -396,8 +387,6 @@
 			else if (e.key === '0') { e.preventDefault(); reviewRate(0); }
 			else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); reviewToggleReject(); }
 			else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); reviewKeepBest(); }
-			else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); reviewDestination(4); }
-			else if (e.key === 'l' || e.key === 'L') { e.preventDefault(); reviewDestination(5); }
 		}
 	}
 
@@ -965,11 +954,6 @@
 					{b.focus_stack ? 'Focus stack' : 'Burst'} {b.rank + 1}/{b.size}{!b.focus_stack && b.rank === 0 ? ' · sharpest' : ''}
 				</span>
 			{/if}
-			{#if reviewPhotos[reviewIdx]?.color_label === 4 || reviewPhotos[reviewIdx]?.color_label === 5}
-				<span class="text-xs px-2 py-0.5 rounded-full {reviewPhotos[reviewIdx].color_label === 4 ? 'bg-green-500/20 text-green-300' : 'bg-blue-500/20 text-blue-300'}">
-					to {reviewPhotos[reviewIdx].color_label === 4 ? 'Portfolio' : 'LLC'}
-				</span>
-			{/if}
 		</div>
 		<div class="flex items-center gap-2">
 			<span class="text-zinc-400 text-sm">{reviewIdx + 1} / {reviewPhotos.length}</span>
@@ -1005,7 +989,7 @@
 	<div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 bg-zinc-950/90 border-b border-zinc-800 text-[11px] text-zinc-500">
 		{#each [
 			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'], ['B', 'keep this, reject rest of burst'],
-			['P', 'to Portfolio'], ['L', 'to LLC'], ['← →', 'prev / next'], ['⇧← ⇧→', 'prev / next moment'],
+			['← →', 'prev / next'], ['⇧← ⇧→', 'prev / next moment'],
 			['Del', 'trash file'], ['dbl-click', '75% / back to fit'], ['click', '100%'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
 		] as [key, what]}
 			<span class="flex items-center gap-1">

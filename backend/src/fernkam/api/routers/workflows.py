@@ -1,8 +1,7 @@
 """File-system workflow runner.
 
-POST /api/workflows/run/sorting          — video sort workflow (background)
 POST /api/workflows/run/remove-nonkeep-raw — remove NEF-without-JPG (background)
-POST /api/workflows/run/develop-pureraw  — RAW -> JPG with DxO PureRAW (background)
+POST /api/workflows/run/sorting          — AA_RAW + SORT ME -> AC_SORTED/YYYY/MM (background)
 GET  /api/workflows/task/{task_id}       — poll output / status
 """
 from __future__ import annotations
@@ -15,7 +14,7 @@ import sys
 import threading
 from typing import Optional
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text as _sql
 
@@ -34,15 +33,7 @@ class SortingRequest(BaseModel):
     dry_run: bool = True
     raw_dir: Optional[str] = None       # default: <library>/<RAW_INTAKE_FOLDER>
     sort_me_dir: Optional[str] = None   # default: <library>/AB_TO_SORT/SORT ME
-    export_root: Optional[str] = None   # default: <library>/<DEDUP_ARCHIVE_FOLDER> (Ordered by Dates)
-
-
-class FinishShootRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    dry_run: bool = True
-    shoot: str
-    destination: str = "dates"          # dates | portfolio | client
-    portfolio_folder: str = ""          # e.g. Portfolio/Frogs
+    export_root: Optional[str] = None   # default: <library>/AC_SORTED
 
 
 class RemoveNonKeepRawRequest(BaseModel):
@@ -55,13 +46,6 @@ class MoveRawsToFoldersRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     dry_run: bool = True
     starting_folder: Optional[str] = None
-
-
-class DevelopPureRawRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    dry_run: bool = True
-    folder: Optional[str] = None     # default: the whole intake folder (fresh shoots only)
-    preview: bool = False            # open PureRAW's settings window first
 
 
 class SyncStackTagsRequest(BaseModel):
@@ -169,7 +153,7 @@ async def run_sorting(req: SortingRequest) -> dict:
 
     s = get_settings()
     lib = Path(s.library_root)
-    export_root = req.export_root or str(lib / s.dedup_archive_folder)
+    export_root = req.export_root or str(lib / "AC_SORTED")
     task_id = await task_manager.create_task(
         "workflow_sorting", f"{'Preview: ' if req.dry_run else ''}Sorting into {export_root}")
     _start(task_id, sorting_video.run, req.dry_run, scan=None,
@@ -177,65 +161,6 @@ async def run_sorting(req: SortingRequest) -> dict:
            sort_me_dir=req.sort_me_dir or str(lib / "AB_TO_SORT" / "SORT ME"),
            export_root=export_root)
     return {"task_id": task_id, "status": "started"}
-
-
-@router.post("/run/finish-shoot")
-async def run_finish_shoot(req: FinishShootRequest) -> dict:
-    from fernkam.task_manager import task_manager
-    from fernkam.workflows import finish_shoot
-
-    task_id = await task_manager.create_task(
-        "workflow_finish_shoot", f"{'Preview: ' if req.dry_run else ''}Finish shoot: {req.shoot}")
-    _start(task_id, finish_shoot.run, req.dry_run, scan=None, shoot=req.shoot,
-           destination=req.destination, portfolio_folder=req.portfolio_folder)
-    return {"task_id": task_id, "status": "started"}
-
-
-@router.get("/shoot-suggestion")
-async def shoot_suggestion(db: DB, shoot: str) -> dict:
-    """Where a shoot's keepers probably belong, from the photos they look like.
-
-    For up to 40 of the shoot's pictures, the 10 nearest photos already filed
-    outside the intake (CLIP). Portfolio is suggested when most neighbours are
-    there, with their most common Portfolio folder.
-    """
-    from collections import Counter
-    from pathlib import Path
-    from fernkam.config import get_settings
-
-    s = get_settings()
-    root, intake = Path(s.library_root), s.raw_intake_folder
-    try:
-        album = Path(shoot).resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        album = shoot.strip("/\\").replace("\\", "/")
-    vecs = (await db.execute(_sql("""
-        SELECT embedding_v::text AS v FROM photos
-        WHERE album_path IN (:a, :j) AND embedding_v IS NOT NULL AND media_type = 'image'
-        ORDER BY random() LIMIT 40"""), {"a": album, "j": f"{album}/jpg"})).all()
-    await db.execute(_sql("SET LOCAL hnsw.ef_search = 200"))   # the shoot's own frames crowd the top
-    where, folders = Counter(), Counter()
-    for r in vecs:
-        # Literal LIMIT: a bound one makes the planner skip the HNSW index.
-        near = (await db.execute(_sql(
-            "SELECT album_path FROM photos WHERE embedding_v IS NOT NULL "
-            "ORDER BY embedding_v <=> CAST(:v AS vector) LIMIT 100"), {"v": r.v})).scalars().all()
-        near = [a for a in near if a.split("/")[0] != intake][:10]
-        for a in near:
-            if a.split("/")[0] == s.portfolio_folder:
-                where["portfolio"] += 1
-                folders[a[:-4] if a.upper().endswith("/RAW") else a] += 1
-            else:
-                where["dates"] += 1
-    total = sum(where.values())
-    share = where["portfolio"] / total if total else 0.0
-    return {
-        "destination": "portfolio" if share >= 0.5 else "dates",
-        "portfolio_folder": folders.most_common(1)[0][0] if folders else "",
-        "portfolio_share": round(share, 2),
-        "sampled": len(vecs),
-        "client_folder": bool(s.client_folder),
-    }
 
 
 @router.post("/run/remove-nonkeep-raw")
@@ -288,52 +213,6 @@ def _start(task_id: str, fn, dry_run: bool, scan: Optional[str] = "", **kwargs) 
                 pass  # the library watcher picks the changes up
 
     asyncio.create_task(go(), name=f"fernkam-workflow-{task_id}")
-
-
-async def start_develop(folder: Optional[str] = None, dry_run: bool = True, preview: bool = False) -> str:
-    """Start the PureRAW develop workflow as a task, then scan what it made.
-
-    Used by the Workflows page and by the automatic run after a scan finds a
-    fresh shoot in the intake folder. Raises TaskConflict like any file task.
-    """
-    from pathlib import Path
-    from fernkam.config import get_settings
-    from fernkam.task_manager import task_manager
-    from fernkam.workflows import develop_pureraw
-
-    s = get_settings()
-    folder = folder or str(Path(s.library_root) / s.raw_intake_folder)
-    task_id = await task_manager.create_task(
-        "workflow_pureraw", f"{'Preview: ' if dry_run else ''}Develop with PureRAW: {folder}")
-    loop = asyncio.get_running_loop()
-
-    def progress(msg: str) -> None:
-        asyncio.run_coroutine_threadsafe(task_manager.update_task(task_id, message=msg), loop)
-
-    _start(task_id, develop_pureraw.run, dry_run, scan=folder, folder=folder, preview=preview, progress=progress)
-    return task_id
-
-
-@router.post("/run/develop-pureraw")
-async def run_develop_pureraw(req: DevelopPureRawRequest) -> dict:
-    return {"task_id": await start_develop(req.folder, req.dry_run, req.preview), "status": "started"}
-
-
-@router.get("/pureraw-auto")
-async def get_pureraw_auto(db: DB) -> dict:
-    """Develop fresh intake shoots with PureRAW automatically after a scan."""
-    from pathlib import Path
-    from fernkam.config import get_settings
-    from fernkam.db.app_settings import get_setting
-    return {"enabled": (await get_setting(db, "pureraw_auto", "0")) == "1",
-            "installed": Path(get_settings().pureraw_exe).is_file()}
-
-
-@router.post("/pureraw-auto")
-async def set_pureraw_auto(db: DB, enabled: bool = Body(..., embed=True)) -> dict:
-    from fernkam.db.app_settings import set_setting
-    await set_setting(db, "pureraw_auto", "1" if enabled else "0")
-    return await get_pureraw_auto(db)
 
 
 @router.post("/run/sync-stack-tags")

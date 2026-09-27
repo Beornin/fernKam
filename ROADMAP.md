@@ -996,6 +996,22 @@ for later.
   - `FocusShiftShooting` is read from the NEF, because PureRAW's JPGs drop it. Those frames stay
     together, unranked.
 
+### Done · Workflows in the order they're run; Develop and Finish shoot removed
+
+The user culls by hand in PureRAW's JPGs and then runs two workflows, so the page now lists
+them in that order: **Remove non-keep RAW**, then **Sort by Date**.
+
+- **Develop with DxO PureRAW is gone**: the workflow, the auto-develop setting and `PURERAW_EXE`.
+  Plugin mode's settings never persisted reliably (see above), and the user runs PureRAW by hand.
+- **Finish shoot is gone**, with its Suggest, `CLIENT_FOLDER`, and Review Mode's **P**/**L** keys
+  that fed it. Remove non-keep RAW and Sort by Date cover the same ground.
+- **Sort by Date pulls all of AA_RAW**, not just its videos, into SORT ME, then sorts SORT ME
+  into `AC_SORTED/YYYY/MM` again (the user wants that check stage back). Format folders stay:
+  `<shoot>/jpg/x.jpg` lands in `YYYY/MM/jpg/` beside `YYYY/MM/x.NEF`, so Remove non-keep RAW
+  still pairs them. Undated files wait in SORT ME with their shoot folders; emptied shoot
+  folders are removed. Checked in `test_sorting.py`.
+- Burst ranking stays: it's Review Mode, not Finish shoot.
+
 ### Planned, agreed with the user
 
 - **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders.
