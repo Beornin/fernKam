@@ -472,7 +472,7 @@ export const api = {
     status: () => get<{ embedded: number; total: number; remaining: number }>('/api/semantic/status'),
     embed: (params?: { limit?: number }) =>
       fetch(`/api/semantic/embed${params?.limit ? `?limit=${params.limit}` : ''}`, { method: 'POST' })
-        .then(r => r.json() as Promise<{ task_id: string | null; queued: number; message: string }>),
+        .then(r => okJson<{ task_id: string | null; queued: number; message: string }>(r)),
     search: (params: { q: string; limit?: number; min_score?: number }, signal?: AbortSignal) =>
       get<{ query: string; count: number; results: SemanticHit[] }>('/api/semantic/search', params, signal),
     similar: (photoId: number, params?: { limit?: number; min_score?: number }) =>

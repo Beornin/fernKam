@@ -35,7 +35,8 @@
 
 	async function install(m: ImageModelInfo) {
 		try {
-			await api.tagReview.installModel(m.key);
+			// CLIP is built in: its indexer is Discover's.
+			await (m.source === 'builtin' ? api.semantic.embed() : api.tagReview.installModel(m.key));
 			started = { ...started, [m.key]: m.installed ? 'Indexing new photos…' : (m.source === 'export' ? 'Building from the official weights…' : 'Downloading…') };
 			load();
 		} catch (e) {
@@ -129,7 +130,12 @@
 							<p class="mt-1 text-emerald-400">{started[m.key]} Progress is on the Tasks page.</p>
 						{/if}
 						{#if m.source === 'builtin'}
-							{#if !m.installed}<p class="mt-1 text-zinc-500">Index it on <a href="/discover" class="underline">Discover</a>.</p>{/if}
+							{#if !m.installed}<p class="mt-1 text-zinc-500">Index it on <a href="/discover" class="underline">Discover</a>.</p>
+							{:else if m.indexed < (info?.photos ?? 0)}
+								<button onclick={() => install(m)} class="mt-2 px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 flex items-center gap-1">
+									<RefreshCw size={11} /> Index the rest
+								</button>
+							{/if}
 						{:else}
 							<div class="mt-2 flex flex-wrap gap-2">
 								{#if !m.installed}
