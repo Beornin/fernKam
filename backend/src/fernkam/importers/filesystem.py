@@ -335,6 +335,7 @@ async def scan_library(
     # ── Phase 1b: moved / renamed files keep their row ─────────────────────
     thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
     moves, removed, new_files, known_hashes = await _match_moves(db, removed, new_files, loop, thumb_sem)
+    left_prep: list[int] = []
     for photo_id, (_rid, old_album, old_name), (_path, album, fname, mtime) in moves:
         res = await db.execute(
             update(Photo)
@@ -345,8 +346,19 @@ async def scan_library(
             stats["moved"] = stats.get("moved", 0) + 1
             await record_outside_change(db, photo_id, "moved", {
                 "from": _display_path(old_album, old_name), "to": _display_path(album, fname)})
+            if settings.is_prep(old_album) and not settings.is_prep(album):
+                left_prep.append(photo_id)
     if moves:
         await db.commit()
+    if photo_added_callback and left_prep:
+        # Filed out of AA_RAW/AB_TO_SORT/AC_SORTED: detect the faces skipped there.
+        for photo_id in (await db.execute(select(Photo.id).where(
+                Photo.id.in_(left_prep), Photo.faces_scanned_at.is_(None),
+                Photo.media_type == "image"))).scalars().all():
+            try:
+                await photo_added_callback(photo_id)
+            except Exception as cbe:
+                log.warning("photo_added_callback error for %d: %s", photo_id, cbe)
 
     stats["total"] = len(existing_to_update) + len(new_files)
     log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
@@ -365,6 +377,7 @@ async def scan_library(
 
         # Insert photos to DB (sequential within batch, savepoint per photo)
         batch_photos: list[tuple[int, Path, str]] = []  # (photo_id, path, media_type)
+        face_ids: list[int] = []   # not in a prep folder (see Settings.prep_folders)
         for (full_path, album_path, filename, file_mtime), metadata in zip(batch, metadatas):
             try:
                 async with db.begin_nested():  # savepoint — isolates per-photo failures
@@ -374,6 +387,8 @@ async def scan_library(
                         sha256=known_hashes.get(full_path),
                     )
                 batch_photos.append((photo.id, full_path, photo.media_type))
+                if not settings.is_prep(album_path):
+                    face_ids.append(photo.id)
                 added_ids.append(photo.id)
                 stats["added"] += 1
             except Exception as exc:
@@ -407,8 +422,8 @@ async def scan_library(
 
         # Fire callback per photo immediately so callers can pipeline face
         # detection while the next import batch is in flight.
-        if photo_added_callback and batch_photos:
-            for photo_id, _, _ in batch_photos:
+        if photo_added_callback:
+            for photo_id in face_ids:
                 try:
                     await photo_added_callback(photo_id)
                 except Exception as cbe:
@@ -469,16 +484,16 @@ async def scan_library(
 
         outcomes = await asyncio.gather(
             *[_refresh(pid, fp) for fp, _a, _f, _m, pid in batch], return_exceptions=True)
-        changed = [(pid, fp) for (fp, _a, _f, _m, pid), o in zip(batch, outcomes) if o == "changed"]
+        changed = [(pid, fp, a) for (fp, a, _f, _m, pid), o in zip(batch, outcomes) if o == "changed"]
         if changed:
-            ids = [pid for pid, _ in changed]
+            ids = [pid for pid, *_ in changed]
             await _forget_pixel_derived_data(db, ids)
             await db.commit()
             stats["pixels_changed"] = stats.get("pixels_changed", 0) + len(ids)
             pixel_changed_ids.extend(ids)
             if photo_added_callback:
-                for pid, fp in changed:
-                    if media_type_for(fp) == "image":
+                for pid, fp, a in changed:
+                    if media_type_for(fp) == "image" and not settings.is_prep(a):
                         try:
                             await photo_added_callback(pid)  # re-detect faces
                         except Exception as cbe:

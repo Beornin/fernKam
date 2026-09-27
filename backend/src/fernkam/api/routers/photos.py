@@ -19,6 +19,12 @@ from fernkam.services.photo_query import PhotoFilters, apply_cursor, apply_sort,
 router = APIRouter()
 
 
+def outside_prep():
+    """Faces aren't detected in AA_RAW/AB_TO_SORT/AC_SORTED (Settings.prep_folders)."""
+    from fernkam.config import get_settings
+    return func.split_part(func.btrim(Photo.album_path, "/"), "/", 1).not_in(get_settings().prep_folders)
+
+
 @router.get("/unscanned-count")
 async def unscanned_count(db: DB) -> dict:
     """Count of photos not yet run through InsightFace detection."""
@@ -27,6 +33,7 @@ async def unscanned_count(db: DB) -> dict:
         .where(Photo.status == 1)
         .where(Photo.media_type == "image")
         .where(Photo.faces_scanned_at.is_(None))
+        .where(outside_prep())
     )).scalar_one()
     return {"count": n}
 

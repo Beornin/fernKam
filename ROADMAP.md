@@ -1006,11 +1006,24 @@ them in that order: **Remove non-keep RAW**, then **Sort by Date**.
 - **Finish shoot is gone**, with its Suggest, `CLIENT_FOLDER`, and Review Mode's **P**/**L** keys
   that fed it. Remove non-keep RAW and Sort by Date cover the same ground.
 - **Sort by Date pulls all of AA_RAW**, not just its videos, into SORT ME, then sorts SORT ME
-  into `AC_SORTED/YYYY/MM` again (the user wants that check stage back). Format folders stay:
-  `<shoot>/jpg/x.jpg` lands in `YYYY/MM/jpg/` beside `YYYY/MM/x.NEF`, so Remove non-keep RAW
-  still pairs them. Undated files wait in SORT ME with their shoot folders; emptied shoot
-  folders are removed. Checked in `test_sorting.py`.
+  into `AC_SORTED` again (the user wants that check stage back). First version put every file
+  in `YYYY/MM`, which merged the three live shoots (847 files) into one `2026/09` although they
+  go to different places. They were moved back by the catalogue's record. Now **a shoot moves
+  whole** to `AC_SORTED/YYYY/MM/<shoot>/`, `jpg/` and all, dated by its most common month (so one
+  frame with a reset clock doesn't drag it to 2000). Loose files go to `YYYY/MM/` by their own
+  date. Undated loose files, and shoots with no date at all, wait in SORT ME; emptied shoot
+  folders are removed. Live preview: 3 shoots → `2026/09/<shoot>`, nothing undated, no renames.
+  Checked in `test_sorting.py`.
 - Burst ranking stays: it's Review Mode, not Finish shoot.
+
+### Done · No face detection in the prep folders
+
+`AA_RAW`, `AB_TO_SORT` and `AC_SORTED` only hold photos on their way to being filed. Live: all
+839 pictures there had been face-scanned, which found **1 face**. Now the scan, the pixel-change
+re-detect and "scan unscanned photos" skip them (`Settings.prep_folders`, the intake folder plus
+the dedup staging folders). A photo the scan sees moved out of them, still unscanned, is
+detected then. Detecting faces on one photo still works anywhere. Checked in
+`test_prep_folders.py`.
 
 ### Planned, agreed with the user
 

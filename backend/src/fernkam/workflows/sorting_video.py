@@ -1,19 +1,21 @@
 """Pull AA_RAW into SORT ME, then sort SORT ME into AC_SORTED/YYYY/MM.
 
-Everything in the RAW intake folder (culled shoots: keeper RAWs, their jpg/
-folder, camera videos) and everything in SORT ME is moved to
-<export_root>/YYYY/MM/ by the date it was taken:
-  - Google Pixel names (PXL_YYYYMMDD_...) carry the date;
-  - otherwise the camera date, read by exiftool (EXIF DateTimeOriginal /
-    CreateDate, QuickTime dates for videos).
-A file in a format folder keeps it: <shoot>/jpg/x.jpg lands in YYYY/MM/jpg/,
-beside YYYY/MM/x.NEF, so the pair still matches for Remove non-keep RAW.
+Everything in the RAW intake folder and in SORT ME is moved by the date it
+was taken:
+  - a shoot (a folder in AA_RAW or SORT ME) moves whole, with its jpg/ and
+    any other subfolders, to <export_root>/YYYY/MM/<shoot>/, dated by the
+    month most of its files were taken in, so shoots stay apart;
+  - loose files (a dump straight into AA_RAW or SORT ME) go to
+    <export_root>/YYYY/MM/, each by its own date.
+Dates come from Google Pixel names (PXL_YYYYMMDD_...), otherwise the camera
+date read by exiftool (EXIF DateTimeOriginal / CreateDate, QuickTime dates
+for videos).
 
-A file with no camera date is not guessed from its modified time (a copy or an
-edit changes that). It waits in SORT ME, and one from AA_RAW is pulled there
-with its folders, so it can be dated by hand. A file already at its
-destination (same name and size) is left in place and listed. Folders the
-moves empty are removed.
+Nothing is dated from its modified time (a copy or an edit changes that). A
+loose file with no camera date, or a shoot where no file has one, waits in
+SORT ME (one from AA_RAW is pulled there, keeping its folders) and is listed,
+so it can be dated by hand. A file already at its destination (same name and
+size) is left in place and listed. Folders the moves empty are removed.
 
 Files are moved, not copied. The library scan afterwards matches moved files
 to their catalogue rows by content, so tags and ratings follow them.
@@ -23,6 +25,7 @@ from __future__ import annotations
 import re
 import shutil
 import time
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -30,7 +33,6 @@ from typing import Optional
 from fernkam.workflows.shared import ALL_EXTENSIONS, format_elapsed, gather_files
 
 _PIXEL = re.compile(r"^PXL_(\d{4})(\d{2})\d{2}_")
-FORMAT_DIRS = {e[1:] for e in ALL_EXTENSIONS} | {"raw"}   # jpg/, RAW/, tif/, ...
 
 
 def _pixel_month(name: str) -> Optional[tuple[str, str]]:
@@ -54,29 +56,43 @@ def plan(raw_dir: str, sort_me_dir: str, export_root: str,
     """Returns (moves, undated, already_there), each a list of (src, dest).
 
     An undated file's dest is where it waits in SORT ME: itself, or for one
-    from AA_RAW, the same folders under SORT ME. `dates` maps files to the
-    date they were taken; read with exiftool when not given (tests pass it).
+    from AA_RAW, the same path under SORT ME. `dates` maps files to the date
+    they were taken; read with exiftool when not given (tests pass it).
     """
     raw, sort_me = Path(raw_dir), Path(sort_me_dir)
-    files = gather_files(sort_me_dir, ALL_EXTENSIONS) + gather_files(raw_dir, ALL_EXTENSIONS)
+    files = ([(sort_me, f) for f in gather_files(sort_me_dir, ALL_EXTENSIONS)]
+             + [(raw, f) for f in gather_files(raw_dir, ALL_EXTENSIONS)])
     if dates is None:
         from fernkam.metadata_sync import read_many_metadata
-        need = [f for f in files if not _pixel_month(f.name)]
+        need = [f for _, f in files if not _pixel_month(f.name)]
         meta = read_many_metadata(need) if need else {}
         dates = {f: (meta.get(f) or {}).get("taken_at") for f in need}
 
+    def month(f: Path) -> Optional[tuple[str, str]]:
+        dt = dates.get(f)
+        return _pixel_month(f.name) or (dt and (f"{dt.year:04d}", f"{dt.month:02d}"))
+
+    shoot_months: dict[Path, Counter] = defaultdict(Counter)
+    for root, f in files:
+        rel = f.relative_to(root)
+        if len(rel.parts) > 1 and (m := month(f)):
+            shoot_months[root / rel.parts[0]][m] += 1
+
     moves, undated, already = [], [], []
     taken: set[Path] = set()
-    for f in files:
-        dt = dates.get(f)
-        ym = _pixel_month(f.name) or (dt and (f"{dt.year:04d}", f"{dt.month:02d}"))
+    for root, f in files:
+        rel = f.relative_to(root)
+        if len(rel.parts) > 1:      # in a shoot: it moves with the shoot
+            c = shoot_months.get(root / rel.parts[0])
+            ym = c.most_common(1)[0][0] if c else None
+        else:
+            ym = month(f)
         if not ym:
-            dest = _free_name(sort_me / f.relative_to(raw), taken) if f.is_relative_to(raw) else f
+            dest = f if root == sort_me else _free_name(sort_me / rel, taken)
             taken.add(dest)
             undated.append((f, dest))
             continue
-        fmt = f.parent.name if f.parent.name.lower() in FORMAT_DIRS else ""
-        dest = Path(export_root, *ym, fmt) / f.name
+        dest = Path(export_root, *ym) / rel
         if dest.exists() and dest.stat().st_size == f.stat().st_size:
             already.append((f, dest))
             continue

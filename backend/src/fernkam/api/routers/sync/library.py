@@ -312,11 +312,13 @@ async def backfill_video_duration(db: DB) -> dict:
 
 @router.post("/scan-faces")
 async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
-    """Run face detection on photos where faces_scanned_at IS NULL.
+    """Run face detection on photos where faces_scanned_at IS NULL, outside the
+    prep folders (AA_RAW, AB_TO_SORT, AC_SORTED).
 
     Cancellable via /tasks/{task_id}/cancel. Runs in background.
     """
     import asyncio
+    from fernkam.api.routers.photos import outside_prep
     from fernkam.task_manager import task_manager
 
     # Pick the candidate photo IDs immediately so we can return a count.
@@ -325,6 +327,7 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
         .where(Photo.status == 1)
         .where(Photo.media_type == "image")
         .where(Photo.faces_scanned_at.is_(None))
+        .where(outside_prep())
     )
     if request.album_path:
         q = q.where(Photo.album_path.like(f"{request.album_path.lstrip('/')}%"))

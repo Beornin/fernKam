@@ -138,6 +138,15 @@ class Settings(BaseSettings):
     raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
     portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
 
+    @property
+    def prep_folders(self) -> list[str]:
+        """AA_RAW, AB_TO_SORT, AC_SORTED: photos only pass through on the way to
+        being filed. Faces aren't detected there; they are once a photo leaves."""
+        return [self.raw_intake_folder, *(f.strip() for f in self.dedup_staging_folders.split(",") if f.strip())]
+
+    def is_prep(self, album_path: str) -> bool:
+        return album_path.strip("/").split("/")[0] in self.prep_folders
+
     @field_validator("thumb_cache_dir", "backup_dir")
     @classmethod
     def _anchor_to_backend(cls, v: str) -> str:

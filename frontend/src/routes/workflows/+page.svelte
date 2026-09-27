@@ -45,7 +45,7 @@
 		{
 			id: 'sorting',
 			label: 'Sort by Date',
-			description: "Pulls everything in AA_RAW into SORT ME, then moves SORT ME into AC_SORTED/YYYY/MM by the date taken (Pixel file names, else the camera date via exiftool). Format folders are kept: a shoot's jpg/ lands in YYYY/MM/jpg/ beside its RAWs. A file with no camera date waits in SORT ME (with its shoot folders) and is listed, so it can be dated by hand. Emptied shoot folders are removed. Blank fields use the library's folders.",
+			description: "Pulls everything in AA_RAW into SORT ME, then moves SORT ME into AC_SORTED by the date taken (Pixel file names, else the camera date via exiftool). A shoot folder moves whole, jpg/ and all, to AC_SORTED/YYYY/MM/<shoot>/, dated by the month most of it was taken in. Loose files go to AC_SORTED/YYYY/MM/ each by its own date. Anything with no camera date waits in SORT ME and is listed, so it can be dated by hand. Emptied shoot folders are removed. Blank fields use the library's folders.",
 			color: 'violet',
 			fields: [
 				{ key: 'raw_dir',      label: 'Pull from',   placeholder: 'blank = <library>\\AA_RAW' },

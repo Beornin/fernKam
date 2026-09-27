@@ -99,6 +99,11 @@ approved. Removing one with the tag picker is not a rejection: only Tag Review r
 **User action:** runs automatically during a scan; also Maintenance/Face Review "scan unscanned
 photos", or detect faces on a single photo.
 
+**Not in the prep folders.** Photos in `AA_RAW`, `AB_TO_SORT` and `AC_SORTED` only pass through,
+so the scan and "scan unscanned photos" skip them. When the scan sees a photo filed out of them
+(a move matched by content), it detects that photo's faces then. Detecting faces on a single
+photo still works anywhere.
+
 **What happens:**
 1. Decodes the image (RAW files are skipped) and runs InsightFace (`buffalo_l`) on the GPU if
    available, otherwise the CPU. Detections below `MIN_DET_SCORE` or smaller than
@@ -337,7 +342,7 @@ Sort and Move count as file jobs, so only one runs at a time.
 | Workflow | Does |
 |---|---|
 | Remove non-keep RAW | Sends RAW files with no matching JPEG/derivative (the shot was culled) to the Recycle Bin |
-| Sort by Date | Pulls everything in AA_RAW into SORT ME, then moves SORT ME into `AC_SORTED/YYYY/MM`. The date comes from Pixel file names, else the camera date via exiftool (videos included). Format folders are kept: a shoot's `jpg/` lands in `YYYY/MM/jpg/` beside its RAWs, so the pair still matches. A file with **no camera date waits in SORT ME** (a pulled one keeps its shoot folders) and is listed. A file already there with the same name and size is left in place. Shoot folders the moves empty are removed |
+| Sort by Date | Pulls everything in AA_RAW into SORT ME, then moves SORT ME into `AC_SORTED/YYYY/MM`. The date comes from Pixel file names, else the camera date via exiftool (videos included). A shoot folder moves whole, `jpg/` and all, to `AC_SORTED/YYYY/MM/<shoot>/`, dated by the month most of it was taken in, so shoots headed for different places stay apart. Loose files go to `YYYY/MM/` each by its own date. A loose file with **no camera date**, or a shoot with none at all, **waits in SORT ME** and is listed. A file already there with the same name and size is left in place. Shoot folders the moves empty are removed |
 | Move RAWs to folders | Moves RAW files into a `RAW/` subfolder next to their JPEGs |
 | Sync stack tags | Detects RAW+JPEG stacks, then (on Apply) writes merged tags/rating/label into every member's file |
 
