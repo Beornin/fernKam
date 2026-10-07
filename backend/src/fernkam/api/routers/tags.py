@@ -117,6 +117,11 @@ async def update_tag(
     
     # Update name if provided
     if name is not None:
+        from fernkam.tag_learning import _LATIN
+        latin = lambda s: (m := _LATIN.search(s)) and m[1]
+        if latin(name) != latin(tag.name):   # another species: GBIF looks it up again at Learn all
+            await db.execute(text("DELETE FROM species_status WHERE tag_id = :t"), {"t": tag_id})
+            await db.execute(text("DELETE FROM tag_species WHERE tag_id = :t"), {"t": tag_id})
         tag.name = name
     if is_fact is not None:
         tag.is_fact = is_fact

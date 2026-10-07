@@ -9,12 +9,14 @@
 		type TagReviewState,
 		type TagReviewSummary,
 		type TagReviewTag,
+		type TagOut,
 	} from '$lib/api';
 	import { notify } from '$lib/dialog.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import TagModelsPanel from '$lib/components/TagModelsPanel.svelte';
-	import SpeciesLinkDialog from '$lib/components/SpeciesLinkDialog.svelte';
-	import type { GbifTaxon } from '$lib/api';
+	import { thumbSizeStore } from '$lib/stores';
+	import { getThumbSize } from '$lib/thumbUtils';
 	import { Tags, Search, Check, X, Brain, RefreshCw, AlertTriangle, History, ChevronLeft, ChevronRight, Cpu, Eye, Type, Globe } from '@lucide/svelte';
 
 	const PAGE = 60;
@@ -40,14 +42,14 @@
 	let learnAllCheck = $state(true);
 	let checking = $state(false);
 	let finding = $state(false);
-	let speciesOpen = $state(false);
 	// Tiles the user clicked. On every tab but Rejected that means "wrong";
 	// on Rejected it means "right after all".
 	let marked = $state(new Set<number>());
 
 	const filteredTags = $derived(
 		search.trim()
-			? tags.filter(t => t.path.toLowerCase().includes(search.trim().toLowerCase()))
+			// Name or path: a path label is "Great_Egret", so searching it alone missed "Great Egret".
+			? tags.filter(t => `${t.name} ${t.path.replace(/_/g, ' ')}`.toLowerCase().includes(search.trim().toLowerCase()))
 			: tags
 	);
 	const markMeansRight = $derived(tab === 'rejected');
@@ -59,7 +61,11 @@
 			...(vision.ready ? [['vision_no', 'Vision model disputes first']] as [string, string][] : []),
 		],
 		suggested: [['score', 'Best first'], ['vision_yes', 'Vision model agrees first'], ['date', 'By date']],
-		approved: [['date', 'By date'], ['recent', 'Recently approved']],
+		approved: [
+			['date', 'By date'], ['recent', 'Recently approved'],
+			...(detail?.model ? [['doubtful', 'Most doubtful first']] as [string, string][] : []),
+			...(vision.ready ? [['vision_no', 'Vision model disputes first']] as [string, string][] : []),
+		],
 		rejected: [['recent', 'Recently rejected']],
 	});
 
@@ -180,7 +186,7 @@
 	/** Ask the local vision model about this tab's photos (background task),
 	 * then refresh as answers arrive. */
 	async function doubleCheck() {
-		if (selectedId === null || (tab !== 'suggested' && tab !== 'unverified')) return;
+		if (selectedId === null || tab === 'rejected') return;
 		checking = true;
 		try {
 			const r = await api.tagReview.check(selectedId, { state: tab });
@@ -227,44 +233,6 @@
 		}
 	}
 
-	/** Follow a background task, then refresh this tag's panel and photos. */
-	async function followTask(taskId: string) {
-		const id = selectedId;
-		for (let i = 0; i < 400 && selectedId === id; i++) {
-			await new Promise(res => setTimeout(res, 1500));
-			const task = (await api.sync.tasks()).tasks.find(x => x.id === taskId);
-			if (!task || task.status !== 'running') {
-				if (task) result = task.message;
-				break;
-			}
-			result = task.message;
-		}
-		if (selectedId === id) await Promise.all([loadDetail(), loadPhotosKeepMarks()]);
-	}
-
-	async function linkSpecies(t: GbifTaxon) {
-		if (selectedId === null) return;
-		try {
-			const r = await api.tagReview.linkSpecies(selectedId, t);
-			result = `Linked to ${t.common_name ?? t.scientific_name}. Fetching its GBIF range for your places…`;
-			await loadDetail();
-			await followTask(r.task_id);
-		} catch (e) {
-			notify(e instanceof Error ? e.message : String(e), 'danger');
-		}
-	}
-
-	async function refreshSpecies() {
-		if (selectedId === null) return;
-		try {
-			const r = await api.tagReview.refreshSpecies(selectedId);
-			result = 'Fetching GBIF range data for new places…';
-			await followTask(r.task_id);
-		} catch (e) {
-			notify(e instanceof Error ? e.message : String(e), 'danger');
-		}
-	}
-
 	async function unlinkSpecies() {
 		if (selectedId === null) return;
 		await api.tagReview.unlinkSpecies(selectedId);
@@ -284,8 +252,46 @@
 		}
 	}
 
+	// Right-click: open the photo, or say what it really shows. Approving the
+	// other tag teaches that tag; rejecting this one teaches this tag it was wrong.
+	let menu = $state<{ x: number; y: number; i: number } | null>(null);
+	let retagFor = $state<TagReviewPhoto | null>(null);
+	let allTags = $state<TagOut[]>([]);
+	let tagQuery = $state('');
+	const tagMatches = $derived.by(() => {
+		const words = tagQuery.toLowerCase().split(/\s+/).filter(Boolean);
+		return allTags.filter(t => !t.is_fact && !t.is_person && t.id !== selectedId
+			&& words.every(w => `${t.name} ${t.path.replace(/_/g, ' ')}`.toLowerCase().includes(w))).slice(0, 60);
+	});
+	const menuItem = 'w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 transition-colors';
+
+	async function startRetag(p: TagReviewPhoto) {
+		menu = null;
+		if (!allTags.length) allTags = await api.tags.list({ flat: true });
+		tagQuery = '';
+		retagFor = p;
+	}
+
+	async function retag(t: TagOut) {
+		const p = retagFor;
+		retagFor = null;
+		if (!p || selectedId === null || !detail) return;
+		const was = detail.name;
+		try {
+			await api.tagReview.decide(t.id, { approve: [p.photo_id], reject: [] });
+			if (tab !== 'rejected') await api.tagReview.decide(selectedId, { approve: [], reject: [p.photo_id] });
+			photos = photos.filter(x => x.photo_id !== p.photo_id);
+			marked.delete(p.photo_id);
+			marked = new Set(marked);
+			result = `Tagged ${t.name}${tab !== 'rejected' ? `, not ${was}` : ''}: both tags learn from it.`;
+			await Promise.all([loadDetail(), loadTags(), loadSummary()]);
+		} catch (e) {
+			notify(`Could not retag: ${e instanceof Error ? e.message : e}`, 'danger');
+		}
+	}
+
 	function onKeydown(e: KeyboardEvent) {
-		if (previewIndex !== null || selectedId === null || !photos.length) return;
+		if (previewIndex !== null || menu !== null || retagFor !== null || selectedId === null || !photos.length) return;
 		const t = e.target as HTMLElement;
 		if (t.closest('input, textarea, select, [contenteditable]')) return;
 		const k = e.key.toLowerCase();
@@ -305,10 +311,6 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if detail}
-	<SpeciesLinkDialog bind:open={speciesOpen} tagName={detail.name} onLink={linkSpecies} />
-{/if}
-
 <TagModelsPanel bind:open={modelsOpen} onChanged={() => { loadVision(); loadSummary(); if (selectedId !== null) loadDetail(); }} />
 
 {#if previewIndex !== null && photos[previewIndex]}
@@ -318,6 +320,43 @@
 		onPrev={previewIndex > 0 ? () => { previewIndex = (previewIndex ?? 1) - 1; } : undefined}
 		onNext={previewIndex < photos.length - 1 ? () => { previewIndex = (previewIndex ?? 0) + 1; } : undefined}
 	/>
+{/if}
+
+{#if menu && photos[menu.i]}
+	{@const m = menu}
+	<ContextMenu x={m.x} y={m.y} onClose={() => menu = null}>
+		<button class={menuItem} onclick={() => { menu = null; previewIndex = m.i; }}>Open full screen</button>
+		<button class={menuItem} onclick={() => startRetag(photos[m.i])}>It's actually another tag…</button>
+	</ContextMenu>
+{/if}
+
+{#if retagFor}
+	{@const rp = retagFor}
+	<div class="fixed inset-0 z-[95] bg-black/60 flex items-center justify-center" role="presentation" onclick={() => retagFor = null}>
+		<div class="w-[560px] max-w-[92vw] max-h-[70vh] flex flex-col bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl p-3 gap-2"
+			role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+			<div class="flex items-center gap-3">
+				<img src="/media/thumbnail/{rp.photo_id}?size=sm" alt="" class="w-16 h-16 object-cover rounded" />
+				<p class="text-sm text-zinc-200">What does this photo really show?
+					<span class="block text-[11px] text-zinc-500">The tag you pick is approved on it{tab !== 'rejected' ? `, and ${detail?.name} is rejected` : ''}. Both learn from it.</span></p>
+			</div>
+			<!-- svelte-ignore a11y_autofocus -->
+			<input autofocus bind:value={tagQuery} placeholder="Type part of a name: dusky seaside, ammospiza…"
+				onkeydown={(e) => { if (e.key === 'Enter' && tagMatches[0]) retag(tagMatches[0]); if (e.key === 'Escape') retagFor = null; }}
+				class="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-emerald-500" />
+			<div class="overflow-y-auto">
+				{#each tagMatches as t, j (t.id)}
+					<button onclick={() => retag(t)}
+						class="w-full text-left px-2 py-1 text-xs rounded {j === 0 ? 'bg-emerald-500/10 text-emerald-200' : 'text-zinc-300 hover:bg-zinc-800'}">
+						{t.name}<span class="text-zinc-500"> · {pretty(t.path)}</span>
+					</button>
+				{:else}
+					<p class="px-2 py-2 text-xs text-zinc-500">No tag matches.</p>
+				{/each}
+			</div>
+			<p class="text-[10px] text-zinc-500">Enter picks the highlighted tag · Esc cancels</p>
+		</div>
+	</div>
 {/if}
 
 <div class="flex flex-col h-full bg-zinc-950">
@@ -482,16 +521,12 @@
 								<span>
 									Range prior: <b class="text-zinc-200">{detail.species.common_name ?? detail.species.scientific_name}</b>
 									{#if detail.species.common_name}<i class="text-zinc-400">{detail.species.scientific_name}</i>{/if}
-									({detail.species.class_name}) · GBIF data for {detail.species.places_with_data} of {detail.species.places} places
+									({detail.species.class_name}) · GBIF data for {detail.species.places_with_data} of {detail.species.places} places{#if detail.species.places_with_data < detail.species.places}; the rest comes when it next learns{/if}
 								</span>
-								{#if detail.species.places_with_data < detail.species.places}
-									<button onclick={refreshSpecies} class="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Update</button>
-								{/if}
-								<button onclick={() => speciesOpen = true} class="px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-200">Change</button>
-								<button onclick={unlinkSpecies} class="px-1.5 py-0.5 rounded text-zinc-500 hover:text-red-400">Unlink</button>
+								<button onclick={unlinkSpecies} class="px-1.5 py-0.5 rounded text-zinc-500 hover:text-red-400"
+									title="Drop the range prior, e.g. for a species you photograph in zoos">Unlink</button>
 							{:else}
-								<span class="text-zinc-500">A species? Link it to GBIF so where and when it is recorded becomes a prior.</span>
-								<button onclick={() => speciesOpen = true} class="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Link species…</button>
+								<span class="text-zinc-500">No range prior. Name a species tag with its Latin name, like "Great Egret (Ardea alba)", and it links to GBIF at the next Learn all tags.</span>
 							{/if}
 						</div>
 						{#if detail.vision.checked}
@@ -503,7 +538,7 @@
 						{/if}
 					</div>
 
-					{#if vision.ready && (tab === 'suggested' || tab === 'unverified') && photos.length}
+					{#if vision.ready && tab !== 'rejected' && photos.length}
 						<button onclick={doubleCheck} disabled={checking}
 							class="float-right -mt-1 text-xs px-2 py-1 rounded bg-sky-800/70 hover:bg-sky-700 text-sky-100 flex items-center gap-1 disabled:opacity-50"
 							title="Ask {vision.model} whether each photo here shows this tag">
@@ -512,11 +547,11 @@
 					{/if}
 					<p class="text-[11px] text-zinc-500 mb-3">
 						{#if tab === 'rejected'}
-							Click the photos that do have this tag after all, then Restore. Space previews.
+							Click the photos that do have this tag after all, then Restore. Space previews; right-click to retag.
 						{:else if tab === 'approved'}
-							Click any photo that should not have this tag, then Reject. Space previews.
+							Click any photo that should not have this tag, then Reject. Space previews; right-click to retag.
 						{:else}
-							Click the photos that are wrong (or ← → and X), then Enter approves the rest. Space previews.
+							Click the photos that are wrong (or ← → and X), then Enter approves the rest. Space previews; right-click to retag.
 						{/if}
 					</p>
 					{#if result}<p class="text-xs text-emerald-400 mb-3">{result}</p>{/if}
@@ -536,19 +571,20 @@
 							</p>
 						</div>
 					{:else}
-						<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(150px, 1fr))">
+						<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax({$thumbSizeStore}px, 1fr))">
 							{#each photos as p, i (p.photo_id)}
 								{@const isMarked = marked.has(p.photo_id)}
 								<button
 									onclick={() => { focused = i; toggle(p.photo_id); }}
 									ondblclick={() => { previewIndex = i; }}
+									oncontextmenu={(e) => { e.preventDefault(); focused = i; menu = { x: e.clientX, y: e.clientY, i }; }}
 									onmouseenter={() => focused = i}
 									title="{p.album_path}/{p.filename}"
 									class="relative rounded-lg overflow-hidden border-2 transition-all text-left
 										{isMarked ? (markMeansRight ? 'border-emerald-500' : 'border-red-500') : i === focused ? 'border-emerald-400/70' : 'border-transparent'}"
 								>
 									<div class="aspect-square bg-zinc-800">
-										<img src="/media/thumbnail/{p.photo_id}?size=md" alt={p.filename}
+										<img src="/media/thumbnail/{p.photo_id}?size={getThumbSize($thumbSizeStore)}" alt={p.filename}
 											class="w-full h-full object-cover transition-opacity {isMarked && !markMeansRight ? 'opacity-40' : ''}" loading="lazy" />
 									</div>
 									{#if p.source === 'name'}

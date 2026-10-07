@@ -269,16 +269,16 @@ each tag's best 30 new suggestions. The answers are never used as labels.
 
 **Where and when.** Two more experts learn from your approvals where a tag turns up (closeness
 to the clusters your photos are taken in) and when (day of year, time of day). A photo without
-GPS or a date is judged by what it has. For a species, **Link species…** (the learning panel)
-finds it on GBIF by common or scientific name. fernKam then fetches, for each 1° cell your
-photos are in (up to 800), how many records of the species GBIF holds in the surrounding 3°×3°
+GPS or a date is judged by what it has. A species tag named with its Latin name ("Great Egret
+(Ardea alba)") links itself to GBIF at the next **Learn all tags**. Before it learns, fernKam
+fetches, for each 1° cell your photos are in (up to 800), how many records of the species GBIF holds in the surrounding 3°×3°
 box per month, and the same for its whole class (all birds, say). The species' share of those
 records is the prior: it corrects for places where people simply record a lot. It joins the
 tag's ensemble as a third context expert, so its weight is learned per tag. Photos taken where
 and when the species is not recorded get a red *not here* badge (amber *rare* below 0.2% of the
-class's records), and find-by-name skips them. **Learn all tags** fetches range data for new
-places first. Only aggregate counts are fetched, never anything about your photos beyond the
-boxes asked about.
+class's records), and find-by-name skips them. **Unlink** drops the prior (a zoo species, say);
+renaming the Latin name links it again. Range data for new places comes at the next learn.
+Only aggregate counts are fetched, never anything about your photos beyond the boxes asked about.
 
 **Find by name** (a tag that is not learning yet). The models that have a text tower (CLIP,
 and SigLIP 2 once its text tower is added) rank photos by how well they match the tag's name.

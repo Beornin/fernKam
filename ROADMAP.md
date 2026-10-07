@@ -398,8 +398,8 @@ would be pure waste. Phase 0.2 putting thumbnails on disk is what makes this che
 Semantic search, with only ~10% of the library indexed at the time:
 
 ```
-"a dog playing outside"      -> 0.316  Family Adventures/Dog Park 3-24-2021
-"birthday cake with candles" -> 0.317  Birthdays/Ben 33rd
+"a dog playing outside"      -> 0.316  Outings/Dog park
+"birthday cake with candles" -> 0.317  Birthdays/Party
 "sunset over water"          -> 0.302  Anniversaries (evening shots)
 ```
 
@@ -1072,6 +1072,105 @@ the archive's root tag was learning "looks like his photos", which the folder al
   archive's 41,105 have it; linking all species would cost about 38,000 GBIF requests. The Link
   species dialog now searches by the Latin name, so linking a species with GPS photos is one
   click.
+
+### Done · Two fixes found while writing the user guide
+
+A screen-by-screen guide (kept outside the repo, since it shows the library) meant clicking
+every control. Two didn't hold up:
+- **Tag Review's tag search** matched only the path label, so "Great Egret" found nothing
+  (the label is `Great_Egret`). It matches the name and the path now.
+- **Discover's suggested tags** (neighbour votes) offered fact tags: a heron photo was
+  suggested the archive's attribution tag. Fact tags are excluded, as in Tag Review.
+
+Open, from the same pass: the People page's merge/split UI has no button to open it; People
+isn't in the rail or Tools; promote-to-portfolio has no UI; `BatchEditBar` is unused; the
+Tasks page is light-themed with no Cancel; Move → Root does nothing.
+
+### Done · Trusted folders as approvals, models as second eyes, species status from GBIF
+
+- **Folders the user trusts count as approvals.** The archive's scans and the Portfolio are
+  filed in species folders named "Common (Latin)". A wildlife tag whose Latin name appears in
+  the photo's folders or file name (subspecies and folder typos accepted: *Ardea alba egretta*,
+  *Egreta Thula*; similar species score 0.58–0.76 and are not) was approved: 61,310 links
+  (58,740 archive, 2,570 Portfolio). Tags able to learn: 2 → 606. 14 real disagreements (Marsh vs
+  Swamp Rabbit) and 2,275 with nothing to compare stay for review. One-off, with an undo list.
+- **Second pair of eyes on approvals.** Training already scored every approved photo with the
+  fold models that never saw it; those scores are now kept in `photo_tags.model_score`, and the
+  Approved tab sorts *Most doubtful first* and can be Double-checked by the vision model. In the
+  test, an egret filed as a heron is the approval doubted most.
+- **Scan dates aren't photo dates.** 22,695 archive photos come from a film scanner (Nikon Super
+  Coolscan): their date is the scan day (570 slides on 22 July 2015). The place/season/range
+  experts now treat a scanner's photos, and 1969-12-31 placeholders, as undated.
+- **Species status from GBIF** (`species_status.py`, migration 0035): each species tag's IUCN
+  category and whether GRIIS lists it as introduced to the contiguous US, as fact tags under
+  *Status* on every photo carrying the species, kept in step at each Learn all tags. 1,097 species
+  in 95 s: 19 CR, 27 EN, 43 VU, 50 NT, 1 EX; 24 introduced (Burmese Python, Cane Toad, Cuban Tree
+  Frog…). Least Concern and "native" aren't tagged. GRIIS lists the domestic dog under *Canis
+  lupus* and the native Eastern Hercules beetle; the first is excluded by exact matching, the
+  second corrected by hand. Only species names go to GBIF.
+- **Range prior without clicks; Link species removed.** The same lookup links the tag to its GBIF
+  taxon, once, when the tag is first seen (Unlink sticks; renaming the Latin name looks it up
+  again). A tag fetches its range for new places whenever it learns (and before Find by name), so
+  the Link / Update / Change buttons, their dialog and three endpoints are gone. Ray-finned fish
+  have no class in GBIF's backbone, so their order corrects for effort; a genus-only tag ("Boa",
+  "Hibiscus sp.") links to the genus. 1,064 tags linked; 34 Latin names GBIF can't place (typos,
+  outdated names, genus homonyms) wait for a rename.
+- **GBIF rate limit.** GBIF answers 429 under load (no published rate). A 429 had stopped every
+  range fetch after a few places, which is why no range data had ever been saved. All GBIF calls
+  now wait it out (Retry-After, else backoff) and one failed place no longer ends the fetch.
+  Re-checking all 1,097 status lookups changed nothing. Great Egret end to end: 34 of 34 places,
+  Range (GBIF) weight 4%, learn 16 s. First Learn all: ~560 species × 34 places, roughly an hour,
+  then cached.
+- **The scan says when it is matching moved files.** After the walk, a scan hashes every new file
+  to find ones moved outside fernKam; 6,860 moved archive scans were 466 GB, about 3.5 hours at
+  38 MB/s on the D: hard drive, while the status bar still showed the walk's last folder. It now
+  reads "Matching moved or renamed files by content… n of N new files read", and Cancel stops
+  the queued hashes (it used to wait for all of them).
+- **Models panel names what can't be indexed.** "Index the rest" kept showing for the last 6 of
+  119,246 photos and every click indexed 0: they are videos no model can read (four 0-byte
+  clips, two damaged ones). The panel now lists them (when 20 or fewer are left) and
+  the button reads "Try the 6 again".
+- **File metadata: rights, credit and usage permissions, written into the file.** Photos
+  right-click → "Edit file metadata (rights, usage)…": Creator, Copyright, Credit line, Source,
+  Rights web page and Instructions (standard XMP/EXIF fields Lightroom, digiKam and Photoshop
+  read), plus usage notes ("date — who: use") appended under XMP Rights Usage Terms, and a fact
+  tag Usage › who to find them. Only changed, non-empty fields are written; nothing is cleared.
+  Title, caption, rating and tags stay fernKam's (edited in the app, written at write-back). The
+  photo viewer has "Show all file metadata": every tag exiftool reads, by group, with a filter.
+  Line breaks travel through exiftool's session as &#xa; (-E): it reads one argument per line,
+  and its plain output turns a line break into ".", so values are read back as JSON.
+- **Tag Review: right-click → "It's actually another tag…".** A search over every subject tag;
+  picking one approves it on the photo and rejects the tag being reviewed (not on the Rejected
+  tab, where it already is), so both tags learn from the one correction (e.g. a Dusky Seaside
+  Sparrow suggested as a Savannah Sparrow). Two calls to the existing decide endpoint; no
+  backend change.
+- **Rotate and flip from the right-click menu** (Photos grid; the selection or the photo clicked).
+  Lossless: images get the EXIF Orientation tag (JPEG, TIFF, RAW alike), videos the QuickTime
+  Rotation tag (no flips). The new value is found by turning a 3×2 probe with Pillow's own reading
+  of each value, so it can't disagree with the thumbnails; a test writes every turn with exiftool
+  and checks Pillow shows it. Hash, size and sync time are updated so the next scan doesn't call
+  it an outside edit; the thumbnail is redrawn at once, faces and image-model vectors in the
+  background. Finding photos that need turning automatically is not in yet: a CLIP or SigLIP
+  probe on the stored vectors was right 55–61% of the time (its most confident picks are real
+  upside-down scans, the rest isn't good enough).
+- **The vision check works with qwen3-vl:32b, twelve times faster.** Two bugs. Ollama's 32k
+  default context put a quarter of the model on the CPU (29 GB on a 24 GB card): 3.5 photos a
+  minute. One photo and one question need 1,114 tokens, so it now asks for 4k: 100% GPU,
+  ~40 a minute. And qwen3-vl thinks even with `think: false`, so the 4-token answer was
+  "<think>\nSo," and every verdict came back unsure. The verdict now comes from the yes/no odds
+  at the first token when the word is missing: on 100 look-alike Level 2 pairs it was right 79%
+  of the time (letting it reason: 78%, at 6.8 s a photo instead of 1.4 s).
+- **The vision check after Learn all tags crawled at 1 photo a minute**, with fernKam open. Its
+  own image and face models (0.45 GB) and a browser (0.5 GB) left no room, and Windows pushed
+  0.89 GB of the 21 GB vision model into shared memory: reading one photo took 115 s instead
+  of ~1 s. The check now releases fernKam's image and face models first (both reload when next
+  needed) and asks for a 2k context (a photo and question measure 1,113 tokens), which halves
+  the cache again. It checks each tag's best 10 suggestions, not 30 (7,007 photos queued
+  became 2,941); Tag Review checks more on request. Tasks has a **Cancel** button on running
+  jobs (the backend could cancel, nothing showed it), and the vision step now stops within a
+  photo instead of at the end of a tag.
+- **The size slider scales every photo grid**: Tag Review (was 150 px, `md`) and the four Face
+  Review grids (110–140 px) now follow it like Photos, Stacks, Smart albums and People.
 
 ### Planned, agreed with the user
 

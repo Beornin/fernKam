@@ -248,7 +248,7 @@ async def suggest_tags_for_photo(
         SELECT t.id, t.name, t.path::text, SUM(nb.score) AS weight, COUNT(*) AS votes
         FROM nb
         JOIN photo_tags pt ON pt.photo_id = nb.id AND pt.verified_at IS NOT NULL
-        JOIN tags t ON t.id = pt.tag_id
+        JOIN tags t ON t.id = pt.tag_id AND NOT t.is_fact   -- who took it isn't what it shows
         WHERE nb.score >= :min_score
           AND NOT EXISTS (SELECT 1 FROM photo_tags mine
                           WHERE mine.photo_id = :pid AND mine.tag_id = t.id)
@@ -349,7 +349,7 @@ async def suggest_tags_bulk(
                    ROW_NUMBER() OVER (PARTITION BY nb.src_id ORDER BY SUM(nb.score) DESC) AS rn
             FROM nb
             JOIN photo_tags pt ON pt.photo_id = nb.nb_id AND pt.verified_at IS NOT NULL
-            JOIN tags t ON t.id = pt.tag_id
+            JOIN tags t ON t.id = pt.tag_id AND NOT t.is_fact
             WHERE nb.score >= :min_score
               AND NOT EXISTS (SELECT 1 FROM tag_rejections r
                               WHERE r.photo_id = nb.src_id AND r.tag_id = t.id)

@@ -20,7 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
-from fernkam import embed_index, embed_models, photo_context, species_range, tag_learning, vision_check
+from fernkam import embed_index, embed_models, photo_context, species_range, species_status, tag_learning, vision_check
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -172,7 +172,8 @@ async def tag_photos(
             sort, "p.taken_at NULLS LAST, p.id")
     elif state == "approved":
         src = ("photo_tags x", "x.tag_id = :t AND x.verified_at IS NOT NULL", "x.model_score")
-        order = "x.verified_at DESC, p.id DESC" if sort == "recent" else "p.taken_at NULLS LAST, p.id"
+        order = {"recent": "x.verified_at DESC, p.id DESC",
+                 "doubtful": "x.model_score ASC NULLS LAST, p.id"}.get(sort, "p.taken_at NULLS LAST, p.id")
     elif state == "suggested":
         src = ("tag_suggestions x", "x.tag_id = :t", "x.score")
         order = "p.taken_at NULLS LAST, p.id" if sort == "date" else "x.score DESC, p.id"
@@ -337,7 +338,7 @@ async def find_by_name(tag_id: int, db: DB) -> dict:
 async def check_tag(
     tag_id: int,
     db: DB,
-    state: Literal["suggested", "unverified"] = Body("suggested", embed=True),
+    state: Literal["suggested", "unverified", "approved"] = Body("suggested", embed=True),
     limit: int = Body(300, embed=True, ge=1, le=2000),
 ) -> dict:
     """Ask the local vision model about this tab's photos, as a background task."""
@@ -383,84 +384,10 @@ async def check_tag(
 
 # ── species (GBIF range priors) ──────────────────────────────────────────────
 
-@router.get("/species-search")
-async def species_search(q: str = Query(..., min_length=2)) -> list[dict]:
-    """GBIF taxa for a common or scientific name."""
-    import httpx
-    try:
-        return await species_range.search(q)
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Could not reach GBIF ({exc.__class__.__name__}). Is the internet reachable?")
-
-
-async def _start_range_fetch(tag_id: int, name: str) -> str:
-    from fernkam.task_manager import task_manager
-    task_id = await task_manager.create_task("species_range", f"Fetching GBIF range data for {name}…")
-
-    async def run() -> None:
-        from fernkam.db.session import async_session_factory
-
-        async def progress(done: int, total: int) -> None:
-            await task_manager.update_task(task_id, message=f"GBIF range for {name}: {done}/{total} places",
-                                           progress={"done": done, "total": total})
-        try:
-            async with async_session_factory() as bdb:
-                r = await species_range.fetch_range(bdb, tag_id, progress)
-                msg = f"GBIF range for {name}: {r['cells']} places ready"
-                if (await bdb.execute(text("SELECT 1 FROM tag_models WHERE tag_id = :t"), {"t": tag_id})).first():
-                    await task_manager.update_task(task_id, message=f"{msg}; relearning the tag…")
-                    await tag_learning.train_tag(bdb, tag_id)
-                    msg += "; tag relearned with it"
-                await task_manager.update_task(task_id, status="completed", message=msg)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("GBIF range fetch failed")
-            await task_manager.update_task(task_id, status="failed", message=f"GBIF: {str(exc)[:400]}")
-
-    asyncio.create_task(run(), name=f"fernkam-range-{tag_id}")
-    return task_id
-
-
-@router.post("/tags/{tag_id}/species")
-async def link_species(
-    tag_id: int,
-    db: DB,
-    taxon_key: int = Body(...),
-    scientific_name: str = Body(...),
-    class_key: int = Body(...),
-    common_name: str | None = Body(None),
-    rank: str | None = Body(None),
-    class_name: str | None = Body(None),
-) -> dict:
-    """Link a tag to a GBIF taxon and fetch its range around the library's
-    places (then relearn the tag if it is learning)."""
-    await _tag(db, tag_id)
-    if taxon_key == class_key:
-        raise HTTPException(400, "Link a species, genus or family, not a whole class")
-    await db.execute(text("""
-        INSERT INTO tag_species (tag_id, taxon_key, scientific_name, common_name, rank, class_key, class_name)
-        VALUES (:t, :k, :sn, :cn, :r, :ck, :cl)
-        ON CONFLICT (tag_id) DO UPDATE SET taxon_key = EXCLUDED.taxon_key,
-            scientific_name = EXCLUDED.scientific_name, common_name = EXCLUDED.common_name,
-            rank = EXCLUDED.rank, class_key = EXCLUDED.class_key, class_name = EXCLUDED.class_name,
-            linked_at = now(), range_fetched_at = NULL
-    """), {"t": tag_id, "k": taxon_key, "sn": scientific_name, "cn": common_name, "r": rank,
-           "ck": class_key, "cl": class_name})
-    await db.commit()
-    return {"task_id": await _start_range_fetch(tag_id, common_name or scientific_name)}
-
-
-@router.post("/tags/{tag_id}/species/refresh")
-async def refresh_species(tag_id: int, db: DB) -> dict:
-    """Fetch range data for places added since the last fetch."""
-    row = (await db.execute(text(
-        "SELECT scientific_name, common_name FROM tag_species WHERE tag_id = :t"), {"t": tag_id})).first()
-    if not row:
-        raise HTTPException(400, "This tag is not linked to a species")
-    return {"task_id": await _start_range_fetch(tag_id, row.common_name or row.scientific_name)}
-
-
 @router.delete("/tags/{tag_id}/species")
 async def unlink_species(tag_id: int, db: DB) -> dict:
+    """Drop a tag's range prior (a zoo species, say). Species tags link
+    themselves once, at their first status lookup, so this sticks."""
     await db.execute(text("DELETE FROM tag_species WHERE tag_id = :t"), {"t": tag_id})
     await db.commit()
     return {"unlinked": tag_id}
@@ -493,7 +420,15 @@ async def models(db: DB) -> dict:
             "indexed": counts[m.key],
             "export_command": embed_models.export_command(m.key) if m.source == "export" else None,
         })
+    # What no model has a vector for, when only a few are left: files that can't
+    # be read (empty or damaged), so "Index the rest" can't help them.
+    left = (await db.execute(text("""
+        SELECT id, album_path, filename, file_size FROM photos
+        WHERE status = 1 AND media_type IN ('image', 'video') AND embedding_v IS NULL ORDER BY id LIMIT 21
+    """))).all()
     return {"models": out, "photos": total, "gpu": gpu, "uv_available": shutil.which("uv") is not None,
+            "left": [{"id": r.id, "path": f"{r.album_path}/{r.filename}", "empty": not r.file_size}
+                     for r in left] if len(left) <= 20 else [],
             "vision": {**await vision_check.status(db), "agreement": await vision_check.agreement(db)}}
 
 
@@ -578,19 +513,22 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
         done = suggestions = failed = 0
         try:
             async with async_session_factory() as bdb:
+                # New species' IUCN / introduced status, and the Status fact tags
+                # on every photo carrying a species (species_status).
+                try:
+                    async def status_progress(n: int, total: int) -> None:
+                        await task_manager.update_task(task_id, message=f"Species status from GBIF… {n}/{total}")
+                    await species_status.fetch(bdb, status_progress)
+                    await species_status.apply(bdb)
+                    await bdb.commit()
+                except Exception:  # noqa: BLE001 — learn without fresh status
+                    logger.warning("species status update failed", exc_info=True)
+                    await bdb.rollback()
                 for tid in tag_ids:
                     task = await task_manager.get_task(task_id)
                     if task and task.status == "cancelled":
                         return
                     try:
-                        linked = (await bdb.execute(text(
-                            "SELECT 1 FROM tag_species WHERE tag_id = :t"), {"t": tid})).first()
-                        if linked:   # places added since the last fetch
-                            try:
-                                await species_range.fetch_range(bdb, tid)
-                            except Exception:  # noqa: BLE001 — learn without fresh range data
-                                logger.warning("GBIF range update for tag %s failed", tid, exc_info=True)
-                                await bdb.rollback()
                         r = await tag_learning.train_tag(bdb, tid)
                         suggestions += (r or {}).get("suggestions", 0)
                     except Exception:  # noqa: BLE001
@@ -606,7 +544,10 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
                 msg += f" ({failed} failed, see Logs)"
             if check:
                 msg += await _check_after_learning(task_id, tag_ids)
-            await task_manager.update_task(task_id, status="completed", message=msg,
+            t = await task_manager.get_task(task_id)
+            stopped = bool(t and t.status == "cancelled")   # Cancel during the vision check
+            await task_manager.update_task(task_id, status="cancelled" if stopped else "completed",
+                                           message=msg + (" (cancelled)" if stopped else ""),
                                            progress={"done": done, "total": len(tag_ids)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("tag learning task failed")
@@ -616,7 +557,8 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
     return {"task_id": task_id, "tags": len(tag_ids), "message": "running"}
 
 
-CHECK_PER_TAG = 30
+# Learn all → vision check: each tag's best few. Tag Review checks more on request.
+CHECK_PER_TAG = 10
 
 
 async def _check_after_learning(task_id: str, tag_ids: list[int]) -> str:
@@ -628,10 +570,13 @@ async def _check_after_learning(task_id: str, tag_ids: list[int]) -> str:
         st = await vision_check.status(bdb)
         if not st["reachable"] or not st["model"]:
             return "; vision check skipped (no vision model reachable)"
+        async def is_cancelled() -> bool:   # asked after every photo, not only between tags
+            t = await task_manager.get_task(task_id)
+            return bool(t and t.status == "cancelled")
+
         checked = 0
         for i, tid in enumerate(tag_ids):
-            t = await task_manager.get_task(task_id)
-            if t and t.status == "cancelled":
+            if await is_cancelled():
                 break
             ids = await vision_check.photos_to_check(bdb, tid, "suggested", CHECK_PER_TAG, st["model"])
             if not ids:
@@ -639,7 +584,7 @@ async def _check_after_learning(task_id: str, tag_ids: list[int]) -> str:
             await task_manager.update_task(
                 task_id, message=f"Double-checking with {st['model']}… tag {i + 1}/{len(tag_ids)}")
             try:
-                checked += (await vision_check.check_photos(bdb, tid, ids))["checked"]
+                checked += (await vision_check.check_photos(bdb, tid, ids, is_cancelled=is_cancelled))["checked"]
             except Exception:  # noqa: BLE001
                 logger.exception("vision check after learning failed")
                 return f"; vision check stopped after {checked} photos (see Logs)"

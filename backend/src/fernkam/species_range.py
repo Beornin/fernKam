@@ -5,8 +5,8 @@ they cannot tell that a heron in Norway in January is unlikely if the user has
 never been to Norway. GBIF, the Global Biodiversity Information Facility, holds
 billions of dated, located records (eBird, iNaturalist, museum collections).
 
-A species tag is linked to a GBIF taxon once (Tag Review, "Link species").
-Then, for every 1° cell the library has photos in, fernKam asks GBIF how many
+A species tag named with its Latin name is linked to its GBIF taxon when it
+is first looked up (species_status). Before it learns, for every 1° cell the library has photos in, fernKam asks GBIF how many
 records of the species fall in a 3° × 3° box around it, per month, and the
 same for its whole class (all birds, all mammals...). The ratio is the
 species' share of what gets recorded there and then, which corrects for
@@ -33,7 +33,6 @@ from fernkam.photo_context import ContextSpace
 
 logger = logging.getLogger(__name__)
 
-BACKBONE = "d7dddbf4-2cf0-4f39-9b2a-bb099caae36c"   # GBIF backbone taxonomy dataset
 LINKABLE_RANKS = {"SPECIES", "SUBSPECIES", "VARIETY", "GENUS", "FAMILY"}
 MAX_CELLS = 800          # most-photographed 1° cells (home, trips)
 BOX_MARGIN = 1           # degrees around a cell: 3° × 3° boxes
@@ -53,42 +52,17 @@ def _client(timeout: float = 30) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, headers={"User-Agent": "fernKam (photo organiser)"})
 
 
-def _result(r: dict) -> Optional[dict]:
-    rank = (r.get("rank") or "").upper()
-    if rank not in LINKABLE_RANKS or not r.get("classKey"):
-        return None
-    common = next((v["vernacularName"] for v in r.get("vernacularNames") or []
-                   if (v.get("language") or "").lower() in ("eng", "en")), None)
-    return {
-        "taxon_key": int(r.get("acceptedKey") or r.get("nubKey") or r.get("key") or r.get("usageKey")),
-        "scientific_name": r.get("canonicalName") or r.get("scientificName"),
-        "common_name": common,
-        "rank": rank,
-        "class_key": int(r["classKey"]),
-        "class_name": r.get("class"),
-        "family": r.get("family"),
-        "synonym": (r.get("taxonomicStatus") or r.get("status") or "").upper() not in ("ACCEPTED", "DOUBTFUL", ""),
-    }
-
-
-async def search(q: str) -> list[dict]:
-    """GBIF taxa matching a common or scientific name, best first."""
-    q = q.strip()
-    out: list[dict] = []
-    async with _client(15) as c:
-        m = await c.get(f"{_base()}/species/match", params={"name": q})
-        if m.status_code == 200 and m.json().get("matchType") not in (None, "NONE", "HIGHERRANK"):
-            hit = _result(m.json())
-            if hit:
-                out.append(hit)
-        r = await c.get(f"{_base()}/species/search",
-                        params={"q": q, "datasetKey": BACKBONE, "limit": 20})
-        r.raise_for_status()
-        for item in r.json().get("results", []):
-            hit = _result(item)
-            if hit and all(hit["taxon_key"] != o["taxon_key"] for o in out):
-                out.append(hit)
-    return out[:12]
+async def get(client: httpx.AsyncClient, url: str, params: Optional[dict] = None) -> httpx.Response:
+    """GET from GBIF, waiting out its rate limit (429) and brief outages.
+    A 429 read as an answer would pass for "no match" or "not listed"."""
+    for attempt in range(6):
+        r = await client.get(url, params=params)
+        if r.status_code != 429 and r.status_code < 500:
+            return r
+        wait = r.headers.get("Retry-After", "")
+        await asyncio.sleep(float(wait) if wait.isdigit() else 2 ** attempt)
+    r.raise_for_status()
+    return r
 
 
 def cell_of(lat: float, lon: float) -> str:
@@ -110,7 +84,7 @@ async def fetch_box(client: httpx.AsyncClient, taxon_key: int, cell: str) -> dic
     la, lo = (int(v) for v in cell.split(","))
     lat = f"{max(-90, la - BOX_MARGIN)},{min(90, la + 1 + BOX_MARGIN)}"
     lon = f"{max(-180, lo - BOX_MARGIN)},{min(180, lo + 1 + BOX_MARGIN)}"
-    r = await client.get(f"{_base()}/occurrence/search", params={
+    r = await get(client, f"{_base()}/occurrence/search", {
         "taxonKey": taxon_key, "decimalLatitude": lat, "decimalLongitude": lon,
         "occurrenceStatus": "PRESENT", "hasCoordinate": "true", "hasGeospatialIssue": "false",
         "limit": 0, "facet": "month", "facetLimit": 12, "month.facetLimit": 12,
@@ -131,13 +105,23 @@ async def _missing_cells(db, taxon_key: int, cells: list[str]) -> list[str]:
     return [c for c in cells if c not in have]
 
 
+async def ensure_range(db, tag_id: int) -> None:
+    """Before a linked tag learns: fetch its range for places not cached yet.
+    Offline, it learns with what is cached."""
+    try:
+        await fetch_range(db, tag_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("GBIF range update for tag %s failed", tag_id, exc_info=True)
+        await db.rollback()
+
+
 async def fetch_range(db, tag_id: int, progress: Optional[Callable] = None) -> dict:
     """Fetch the linked species' and its class's counts for every library cell
-    not cached yet. Commits as it goes."""
+    not cached yet. Commits as it goes. Nothing for an unlinked tag."""
     link = (await db.execute(text(
         "SELECT taxon_key, class_key FROM tag_species WHERE tag_id = :t"), {"t": tag_id})).first()
     if not link:
-        raise ValueError("tag is not linked to a species")
+        return {"fetched": 0, "cells": 0}
     cells = await library_cells(db)
     todo = [(link.taxon_key, c) for c in await _missing_cells(db, link.taxon_key, cells)]
     todo += [(link.class_key, c) for c in await _missing_cells(db, link.class_key, cells)]
@@ -150,7 +134,11 @@ async def fetch_range(db, tag_id: int, progress: Optional[Callable] = None) -> d
                 return taxon, cell, await fetch_box(client, taxon, cell)
 
         for coro in asyncio.as_completed([one(t, c) for t, c in todo]):
-            taxon, cell, counts = await coro
+            try:
+                taxon, cell, counts = await coro
+            except Exception as exc:  # noqa: BLE001 — that place is asked again next time
+                logger.warning("GBIF range box failed: %s", exc)
+                continue
             await db.execute(text("DELETE FROM gbif_cell_counts WHERE taxon_key = :k AND cell = :c"),
                              {"k": taxon, "c": cell})
             await db.execute(text("""

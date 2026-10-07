@@ -33,6 +33,14 @@
 	function pct(n: number, d: number) { return d ? Math.round((n / d) * 100) : 0; }
 	function gb(mb?: number) { return mb ? (mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`) : ''; }
 
+	// When the only photos left are files no model can read, say so instead of
+	// offering an "Index the rest" that can only ever index 0.
+	function restLabel(m: ImageModelInfo) {
+		const left = (info?.photos ?? 0) - m.indexed;
+		if (!m.indexed) return 'Index library';
+		return info?.left.length && left <= info.left.length ? `Try the ${left} again` : 'Index the rest';
+	}
+
 	async function install(m: ImageModelInfo) {
 		try {
 			// CLIP is built in: its indexer is Discover's.
@@ -99,6 +107,16 @@
 				{#if !info && loading}
 					<p class="text-zinc-500">Loading…</p>
 				{/if}
+				{#if info?.left.length}
+					<div class="rounded-lg border border-amber-900/50 bg-amber-950/20 p-3 mb-3">
+						<p class="text-amber-300 flex items-center gap-1"><AlertTriangle size={11} />
+							{info.left.length} file{info.left.length === 1 ? '' : 's'} no model can read, so they stay unindexed:</p>
+						{#each info.left as f (f.id)}
+							<p class="text-zinc-400 truncate" title={f.path}>{f.path.split('/').slice(-2).join('/')}{f.empty ? ' (0 bytes, empty file)' : ' (damaged?)'}</p>
+						{/each}
+						<p class="text-zinc-500 mt-1">Indexing again won't help: replace them from the original, or delete them.</p>
+					</div>
+				{/if}
 				{#each info?.models ?? [] as m (m.key)}
 					{@const covered = pct(m.indexed, info?.photos ?? 0)}
 					<div class="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 mb-2">
@@ -133,7 +151,7 @@
 							{#if !m.installed}<p class="mt-1 text-zinc-500">Index it on <a href="/discover" class="underline">Discover</a>.</p>
 							{:else if m.indexed < (info?.photos ?? 0)}
 								<button onclick={() => install(m)} class="mt-2 px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 flex items-center gap-1">
-									<RefreshCw size={11} /> Index the rest
+									<RefreshCw size={11} /> {restLabel(m)}
 								</button>
 							{/if}
 						{:else}
@@ -151,7 +169,7 @@
 									{/if}
 								{:else if m.indexed < (info?.photos ?? 0)}
 									<button onclick={() => install(m)} class="px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 flex items-center gap-1">
-										<RefreshCw size={11} /> {m.indexed ? 'Index the rest' : 'Index library'}
+										<RefreshCw size={11} /> {restLabel(m)}
 									</button>
 								{/if}
 								{#if m.source === 'download' && m.installed && !m.text_installed}

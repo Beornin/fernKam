@@ -194,7 +194,7 @@ optional, runs locally, and is managed from **Tag Review → Models**. With a 24
    The Models panel finds it at `http://127.0.0.1:11434` and picks the best one pulled.
 5. **Review**: pick a tag, click the wrong photos, press Enter to approve the rest. After 8
    approvals the tag learns; the learning panel shows how much it trusts each model. For a
-   species, **Link species…** fetches its GBIF range for the places you photograph.
+   species named with its Latin name, GBIF's range for the places you photograph comes in by itself.
    **Learn all tags** (with *+ vision check*) relearns everything in the background.
 
 Model files live in `backend/data/models/`: about 4 GB for the recommended set, 6 GB with
@@ -382,7 +382,7 @@ fernKam/
 - **Vision model not reachable**: start Ollama (`ollama serve`), check `VISION_URL`, and pull a
   vision model (`ollama list` should show one). Any OpenAI-compatible server works with a URL
   ending in `/v1`.
-- **Link species… fails**: fernKam could not reach `api.gbif.org` (firewall or offline).
-  Species priors are optional; everything else keeps working.
+- **No range prior or Status tags**: fernKam could not reach `api.gbif.org` (firewall or offline).
+  They are optional; tags learn without them, and the next Learn all tries again.
 - **403 "Cross-site request blocked"**: you're reaching the UI through an address the server
   doesn't recognise (a reverse proxy, a custom hostname). Add that origin to `CORS_ORIGINS`.

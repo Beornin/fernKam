@@ -120,5 +120,14 @@ hidden_egrets = (small.weak_scores[kk[45:] == "egret"] >= THRESHOLD).mean()
 print(f"small library: hidden herons found {hidden_found:.2f}, hidden egrets {hidden_egrets:.2f}")
 assert hidden_found >= 0.85 and hidden_egrets <= 0.15
 
+# Second pair of eyes: an egret mis-filed as a heron (approved) is the approved
+# photo the held-out models doubt most.
+mk, mx = sample([("heron", 39), ("egret", 1), ("egret", 20), ("other", 600)])
+my = np.array([1] * 40 + [0] * 620)
+mw = np.array([False] * 60 + [True] * 600)
+mis = fit_ensemble(mx, {k: np.ones(len(mk), bool) for k in mx}, my, mw, 0.05)
+assert mis.pos_scores is not None and len(mis.pos_scores) == 40
+assert int(np.argmin(mis.pos_scores)) == 39, mis.pos_scores.round(2)
+
 print(f"ok - tag ensemble (species model weighted {w['bio']:.2f} vs general {w['general']:.2f}; "
       f"egrets accepted {general_egret_fa:.0%} -> {egret_fa:.0%})")

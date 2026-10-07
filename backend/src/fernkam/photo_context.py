@@ -109,14 +109,25 @@ async def library_centers(db) -> Optional[np.ndarray]:
 
 
 async def photo_meta(db, ids: list[int]) -> dict[int, tuple]:
-    """id -> (lat, lon, day of year, hour); None where unknown."""
+    """id -> (lat, lon, day of year, hour, month); None where unknown.
+
+    A film or slide scan's date is the day it was scanned (570 slides on one
+    day in July 2015), and 1969-12-31 is an empty date read as the Unix epoch:
+    neither says when the photo was taken, so both count as undated."""
     out: dict[int, tuple] = {}
     for start in range(0, len(ids), 5000):
         rows = (await db.execute(text("""
+            WITH p AS (
+                SELECT p.id, p.latitude, p.longitude,
+                       CASE WHEN c.model ILIKE '%scan%' OR p.taken_at < '1970-01-02'
+                            THEN NULL ELSE p.taken_at END AS taken_at
+                FROM photos p LEFT JOIN cameras c ON c.id = p.camera_id
+                WHERE p.id = ANY(:ids)
+            )
             SELECT id, latitude, longitude,
                    extract(doy FROM taken_at)::int, extract(hour FROM taken_at)::int,
                    extract(month FROM taken_at)::int
-            FROM photos WHERE id = ANY(:ids)
+            FROM p
         """), {"ids": ids[start:start + 5000]})).all()
         for r in rows:
             gps = r[1] is not None and r[2] is not None and not (float(r[1]) == 0 and float(r[2]) == 0)

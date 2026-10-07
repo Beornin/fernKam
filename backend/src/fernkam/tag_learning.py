@@ -206,6 +206,8 @@ class Ensemble:
     fold_count: int = field(default=0)
     oof_z: Optional[np.ndarray] = field(default=None, repr=False)      # experts' held-out logits
     oof_avail: Optional[np.ndarray] = field(default=None, repr=False)
+    # Held-out: how right each approved photo looks to models that never saw it.
+    pos_scores: Optional[np.ndarray] = field(default=None, repr=False)
 
     def logits(self, vecs: dict[str, np.ndarray], masks: Optional[dict[str, np.ndarray]] = None) -> np.ndarray:
         """Balanced logits for n photos. vecs[space] is (n, dim); masks[space]
@@ -366,6 +368,7 @@ def _fit_once(xs: dict[str, np.ndarray], masks: dict[str, np.ndarray], y: np.nda
                                           z[te], avail[te])
     library = _sigmoid(ens_oof + shift)
     ens.weak_scores = library[is_weak]
+    ens.pos_scores = _sigmoid(ens_oof[y == 1])
     ens.cv_recall = float((library[y == 1] >= THRESHOLD).mean())
     ens.cv_agreement = float(((_sigmoid(ens_oof[judged]) >= THRESHOLD) == (y[judged] == 1)).mean())
     return ens
@@ -504,6 +507,7 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
     image_spaces = await ei.active_spaces(db)
     if not image_spaces:
         return None
+    await sr.ensure_range(db, tag_id)
     context_spaces, ctx = await _context_spaces(db, tag_id)
     spaces = image_spaces + context_spaces
     path = tag.path
@@ -548,6 +552,15 @@ async def train_tag(db, tag_id: int) -> Optional[dict]:
     if not used_images:
         return None   # context alone cannot find or judge photos
     n_pos, n_neg = await label_counts(db, path)
+
+    # Approved links, judged by the fold models that didn't train on them: a
+    # second pair of eyes on approvals (Approved tab, Most doubtful first).
+    if ens.pos_scores is not None:
+        await db.execute(text("""
+            UPDATE photo_tags pt SET model_score = s.score
+            FROM unnest(CAST(:ids AS bigint[]), CAST(:scores AS real[])) AS s(pid, score)
+            WHERE pt.photo_id = s.pid AND pt.tag_id = :tid AND pt.verified_at IS NOT NULL
+        """), {"ids": pos_ids, "scores": [float(v) for v in ens.pos_scores], "tid": tag_id})
 
     # Unverified links: how much the ensemble believes each one.
     linked = await _ids(db, """
@@ -725,6 +738,7 @@ async def find_by_name(db, tag_id: int) -> dict:
     if not fused:
         return {"suggestions": 0, "models": used}
     # A linked species is not suggested where and when GBIF has no record of it.
+    await sr.ensure_range(db, tag_id)
     table = await sr.RangeTable.load(db, tag_id)
     if table is not None:
         meta = await pc.photo_meta(db, list(fused))

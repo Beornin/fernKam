@@ -293,6 +293,8 @@ export interface TagModelsInfo {
   gpu: boolean;
   uv_available: boolean;
   vision: VisionStatus & { agreement: VisionAgreement };
+  /** Photos no model has a vector for, when 20 or fewer: unreadable (empty or damaged) files. */
+  left: { id: number; path: string; empty: boolean }[];
 }
 
 export interface TagReviewDetail {
@@ -319,17 +321,6 @@ export interface TagSpecies {
   range_fetched_at: string | null;
   places: number;
   places_with_data: number;
-}
-
-export interface GbifTaxon {
-  taxon_key: number;
-  scientific_name: string;
-  common_name: string | null;
-  rank: string;
-  class_key: number;
-  class_name: string | null;
-  family: string | null;
-  synonym: boolean;
 }
 
 /** GBIF says the linked species is not (or hardly) recorded here and then. */
@@ -411,6 +402,15 @@ export interface OutsideChange {
   media_type: string;
 }
 
+export const api = {
+  albums: {
+    list: () => get<AlbumNode[]>('/api/albums'),
+  },
+  map: {
+    points: (params?: { album_path?: string; tag_id?: number; limit?: number }, signal?: AbortSignal) =>
+      get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params, signal),
+  },
+  photos: {
     // Rights, credit and usage notes written straight into the file (blank fields never clear).
     fileFields: (id: number) => get<FileFields>(`/api/photos/${id}/file-fields`),
     editFileFields: (body: { photo_ids: number[]; fields: Partial<Record<FileFieldKey, string>>;
@@ -423,15 +423,6 @@ export interface OutsideChange {
     orient: (photo_ids: number[], op: 'left' | 'right' | '180' | 'flip_h' | 'flip_v') =>
       fetch('/api/photos/orient', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids, op }) })
         .then(r => okJson<{ turned: number; ids: number[]; errors: string[] }>(r)),
-export const api = {
-  albums: {
-    list: () => get<AlbumNode[]>('/api/albums'),
-  },
-  map: {
-    points: (params?: { album_path?: string; tag_id?: number; limit?: number }, signal?: AbortSignal) =>
-      get<Array<{ id: number; lat: number; lon: number; filename: string; taken_at: string | null }>>('/api/photos/map/points', params, signal),
-  },
-  photos: {
     // Bursts among these photos, each ranked sharpest-first (fernkam/bursts.py).
     bursts: (ids: number[]) =>
       fetch('/api/photos/bursts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) })
@@ -623,16 +614,10 @@ export const api = {
     findByName: (id: number) =>
       fetch(`/api/tag-review/tags/${id}/find-by-name`, { method: 'POST' })
         .then(r => okJson<{ suggestions: number; models: string[] }>(r)),
-    check: (id: number, body: { state: 'suggested' | 'unverified'; limit?: number }) =>
+    check: (id: number, body: { state: 'suggested' | 'unverified' | 'approved'; limit?: number }) =>
       fetch(`/api/tag-review/tags/${id}/check`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(r => okJson<{ task_id: string | null; queued: number; message: string }>(r)),
     models: () => get<TagModelsInfo>('/api/tag-review/models'),
-    speciesSearch: (q: string) => get<GbifTaxon[]>('/api/tag-review/species-search', { q }),
-    linkSpecies: (id: number, t: GbifTaxon) =>
-      fetch(`/api/tag-review/tags/${id}/species`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) })
-        .then(r => okJson<{ task_id: string }>(r)),
-    refreshSpecies: (id: number) =>
-      fetch(`/api/tag-review/tags/${id}/species/refresh`, { method: 'POST' }).then(r => okJson<{ task_id: string }>(r)),
     unlinkSpecies: (id: number) =>
       fetch(`/api/tag-review/tags/${id}/species`, { method: 'DELETE' }).then(r => okJson<{ unlinked: number }>(r)),
     installModel: (key: string) =>

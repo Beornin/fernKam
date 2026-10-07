@@ -187,7 +187,7 @@ x, m = sr.range_vectors(table, meta, [1, 2, 3])
 assert m.tolist() == [True, True, False] and x[1, 3] == 1.0 and x[0, 0] > x[1, 0]
 
 
-# 4. GBIF client: exact query parameters, facet parsing, name search merging.
+# 4. GBIF client: exact query parameters, facet parsing.
 seen = []
 
 
@@ -199,21 +199,7 @@ class FakeGBIF(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         seen.append((u.path, q))
-        if u.path == "/v1/species/match":
-            body = {"usageKey": 2480446, "scientificName": "Ardea herodias Linnaeus, 1758",
-                    "canonicalName": "Ardea herodias", "rank": "SPECIES", "status": "ACCEPTED",
-                    "matchType": "EXACT", "classKey": 212, "class": "Aves", "family": "Ardeidae"} \
-                if q["name"] == "Ardea herodias" else {"matchType": "NONE"}
-        elif u.path == "/v1/species/search":
-            body = {"results": [
-                {"key": 2480446, "nubKey": 2480446, "canonicalName": "Ardea herodias", "rank": "SPECIES",
-                 "taxonomicStatus": "ACCEPTED", "classKey": 212, "class": "Aves", "family": "Ardeidae",
-                 "vernacularNames": [{"vernacularName": "Garza azulada", "language": "spa"},
-                                     {"vernacularName": "Great Blue Heron", "language": "eng"}]},
-                {"key": 212, "canonicalName": "Aves", "rank": "CLASS", "classKey": 212},
-                {"key": 2480445, "canonicalName": "Ardea", "rank": "GENUS", "taxonomicStatus": "ACCEPTED",
-                 "classKey": 212, "class": "Aves"}]}
-        elif u.path == "/v1/occurrence/search":
+        if u.path == "/v1/occurrence/search":
             body = {"count": 1500, "results": [], "facets": [
                 {"field": "MONTH", "counts": [{"name": "1", "count": 400}, {"name": "12", "count": 380}]}]}
         else:
@@ -236,11 +222,6 @@ get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
 
 
 async def gbif():
-    hits = await sr.search("great blue heron")
-    assert [h["rank"] for h in hits] == ["SPECIES", "GENUS"], hits          # the class is not linkable
-    assert hits[0]["common_name"] == "Great Blue Heron" and hits[0]["class_key"] == 212
-    exact = await sr.search("Ardea herodias")
-    assert exact[0]["taxon_key"] == 2480446 and len([h for h in exact if h["taxon_key"] == 2480446]) == 1
     async with sr._client() as c:
         counts = await sr.fetch_box(c, 2480446, "27,-81")
     assert counts == {0: 1500, 1: 400, 12: 380}

@@ -10,6 +10,7 @@
 	import PersonPicker from '$lib/components/PersonPicker.svelte';
 	import FaceCloseup from '$lib/components/FaceCloseup.svelte';
 	import { scoreBadgeClass } from '$lib/faceConfidence';
+	import { thumbSizeStore } from '$lib/stores';
 
 	// ---------------------------------------------------------------------
 	// Global maintenance state (top bar)
@@ -776,7 +777,7 @@
 							{/if}
 
 							<!-- Representative faces (bounded — clusters can run into the thousands) -->
-							<div class="grid gap-2 mb-1" style="grid-template-columns: repeat(auto-fill, minmax(110px, 1fr))">
+							<div class="grid gap-2 mb-1" style="grid-template-columns: repeat(auto-fill, minmax({$thumbSizeStore}px, 1fr))">
 								{#each displayedFaces as f (f.id)}
 									{@const isOut = deselected.has(f.id)}
 									<div class="relative group">
@@ -843,7 +844,7 @@
 							<p class="text-sm">Nothing auto-confirmed yet</p>
 						</div>
 					{:else}
-						<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(130px, 1fr))">
+						<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax({$thumbSizeStore}px, 1fr))">
 							{#each autoConfirmedFaces as f (f.id)}
 								<div class="relative group rounded-lg overflow-hidden border border-zinc-800">
 									<div class="aspect-square bg-zinc-800">
@@ -923,7 +924,7 @@
 								<p class="text-sm">No candidate faces for this person</p>
 							</div>
 						{:else}
-							<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr))">
+							<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax({$thumbSizeStore}px, 1fr))">
 								{#each candidates as c, i (c.face_id)}
 									{@const eligible = c.score >= confidenceThreshold && !c.conflict && !excludedFaceIds.has(c.face_id)}
 									<div
@@ -969,7 +970,7 @@
 								<p class="text-sm">No confirmed faces for this person yet</p>
 							</div>
 						{:else}
-							<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr))">
+							<div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax({$thumbSizeStore}px, 1fr))">
 								{#each confirmedFaces as f, i (f.id)}
 									<button
 										onclick={() => closeupStartIndex = i}
