@@ -4,6 +4,10 @@ export const thumbSizeStore = writable<number>(180);
 
 export const statusCountStore = writable<string>('');
 
+/** Bumped per photo when it is rotated or flipped, and added to its thumbnail
+ * URL, so the grid fetches the redrawn thumbnail instead of reusing the old one. */
+export const thumbVersion = writable<Record<number, number>>({});
+
 /** The server's library version (see sync/library.py), updated by the status
  * bar's task poll. It changes when a scan adds, removes, moves or refreshes
  * photos, and views that list photos reload then. null until the first poll. */

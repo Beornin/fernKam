@@ -111,8 +111,8 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                     face_tasks.append(t)
 
                 async def on_progress(stats: dict) -> None:
-                    # Called during the walk and after every committed batch —
-                    # the safe points to honour Cancel. The final call (after
+                    # Called during the walk, while matching moved files, and
+                    # after every committed batch — the safe points to honour Cancel. The final call (after
                     # removals, carrying added_ids) is too late to stop anything.
                     if "added_ids" not in stats:
                         current = await task_manager.get_task(task_id)
@@ -121,6 +121,12 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                     if stats.get("phase") == "scanning":
                         await task_manager.update_task(task_id,
                             message=f"Scanning… {stats['scanned']:,} files checked | {stats['current_dir']}")
+                        return
+                    if stats.get("phase") == "matching":
+                        await task_manager.update_task(task_id,
+                            message=f"Matching moved or renamed files by content… "
+                                    f"{stats['hashed']:,} of {stats['to_hash']:,} new files read",
+                            progress={"done": stats["hashed"], "total": stats["to_hash"]})
                         return
                     queued = len(face_tasks)
                     done   = sum(1 for t in face_tasks if t.done())

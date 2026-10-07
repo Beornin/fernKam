@@ -334,7 +334,13 @@ async def scan_library(
 
     # ── Phase 1b: moved / renamed files keep their row ─────────────────────
     thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
-    moves, removed, new_files, known_hashes = await _match_moves(db, removed, new_files, loop, thumb_sem)
+
+    async def report_matching(done: int, total: int) -> None:
+        if progress_callback:
+            await progress_callback({**stats, "phase": "matching", "hashed": done, "to_hash": total})
+
+    moves, removed, new_files, known_hashes = await _match_moves(
+        db, removed, new_files, loop, thumb_sem, report_matching)
     left_prep: list[int] = []
     for photo_id, (_rid, old_album, old_name), (_path, album, fname, mtime) in moves:
         res = await db.execute(
@@ -362,6 +368,8 @@ async def scan_library(
 
     stats["total"] = len(existing_to_update) + len(new_files)
     log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
+    if progress_callback and stats["total"]:
+        await progress_callback(stats)   # replaces the walk's last folder, which would read as stuck
 
     # ── Phase 2: import in batches with concurrent metadata reads ──────────
     added_ids: list[int] = []
@@ -538,7 +546,7 @@ def _display_path(album_path: str, filename: str) -> str:
     return f"{album}/{filename}" if album else filename
 
 
-async def _match_moves(db: AsyncSession, removed: list, new_files: list, loop, sem):
+async def _match_moves(db: AsyncSession, removed: list, new_files: list, loop, sem, report=None):
     """Pair catalogue rows whose file vanished with new files of identical
     content (SHA-256), as digiKam does — a file moved or renamed outside
     fernKam keeps its row, and with it its tags, faces, rating, thumbnails and
@@ -561,11 +569,27 @@ async def _match_moves(db: AsyncSession, removed: list, new_files: list, loop, s
     for r in rows:
         by_hash.setdefault(r.sha256, []).append(r.id)
 
-    async def _hash(path: Path) -> Optional[str]:
-        async with sem:
-            return await loop.run_in_executor(None, _sha256_path, path)
+    # Hashing every new file can take hours (hundreds of GB on a hard drive):
+    # say how far it is, and stop the queued hashes when the scan is cancelled.
+    done, last = 0, 0.0
 
-    hashes = await asyncio.gather(*[_hash(nf[0]) for nf in new_files])
+    async def _hash(path: Path) -> Optional[str]:
+        nonlocal done, last
+        async with sem:
+            digest = await loop.run_in_executor(None, _sha256_path, path)
+        done += 1
+        if report and time.monotonic() - last > 0.75:
+            last = time.monotonic()
+            await report(done, len(new_files))
+        return digest
+
+    tasks = [asyncio.ensure_future(_hash(nf[0])) for nf in new_files]
+    try:
+        hashes = await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            t.cancel()
+        raise
     removed_by_id = {r[0]: r for r in removed}
     moves, matched = [], set()
     for i, (nf, digest) in enumerate(zip(new_files, hashes)):
@@ -581,7 +605,7 @@ async def _match_moves(db: AsyncSession, removed: list, new_files: list, loop, s
     return moves, list(removed_by_id.values()), still_new, known
 
 
-async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> None:
+async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int], outside: bool = True) -> None:
     """The image changed: drop what was computed from its old pixels.
 
     The CLIP embedding is cleared (re-embedded by the scan or the Discover
@@ -591,7 +615,8 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
     reviewed (unconfirmed/suggested) are deleted and the photo is re-queued for
     detection; confirmed and ignored faces stay, with their crops cleared so
     they are re-cut from the new pixels. Recorded in "Changed outside
-    fernKam". Does not commit.
+    fernKam" unless the change was made in fernKam (outside=False: a rotate).
+    Does not commit.
     """
     from sqlalchemy import text as _text
     from fernkam.sync_merge import record_outside_change
@@ -607,7 +632,7 @@ async def _forget_pixel_derived_data(db: AsyncSession, photo_ids: list[int]) -> 
     await db.execute(_text("DELETE FROM tag_suggestions WHERE photo_id = ANY(:ids)"), {"ids": photo_ids})
     await db.execute(_text("UPDATE photo_tags SET model_score = NULL WHERE photo_id = ANY(:ids)"),
                      {"ids": photo_ids})
-    for pid in photo_ids:
+    for pid in photo_ids if outside else []:
         await record_outside_change(db, pid, "pixels", {})
 
 

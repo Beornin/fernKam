@@ -24,6 +24,13 @@ onNext?: () => void;
 } = $props();
 
 let detail = $state<PhotoDetail | null>(null);
+// Everything exiftool reads from the file, loaded on request; cleared per photo.
+let allMeta = $state<Record<string, Record<string, string>> | null>(null);
+let metaFilter = $state('');
+$effect(() => { void photoId; allMeta = null; });
+async function toggleAllMeta() {
+	allMeta = allMeta ? null : (await api.photos.allMetadata(photoId)).groups;
+}
 let loading = $state(true);
 let liveTags = $state<TagOut[]>([]);
 let liveUnverified = $state<number[]>([]);
@@ -631,6 +638,24 @@ onclick={() => { selectedFace = selectedFace?.id === face.id ? null : face; }}
 <p class="text-sm text-zinc-200">{detail.caption}</p>
 </div>
 {/if}
+
+<!-- Everything exiftool reads from the file -->
+<div class="px-4 py-3 border-t border-zinc-800">
+<button onclick={toggleAllMeta} class="text-xs text-zinc-400 hover:text-zinc-200">{allMeta ? 'Hide' : 'Show'} all file metadata</button>
+{#if allMeta}
+<input bind:value={metaFilter} placeholder="Filter tags or values…"
+class="mt-2 w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none" />
+{#each Object.entries(allMeta) as [group, tags] (group)}
+{@const rows = Object.entries(tags).filter(([k, v]) => !metaFilter || `${group} ${k} ${v}`.toLowerCase().includes(metaFilter.toLowerCase()))}
+{#if rows.length}
+<p class="mt-2 text-[10px] uppercase tracking-wider text-zinc-500">{group}</p>
+{#each rows as [k, v] (k)}
+<div class="flex gap-2 text-[11px] leading-snug"><span class="w-32 shrink-0 truncate text-zinc-500" title={k}>{k}</span><span class="text-zinc-300 break-all">{v}</span></div>
+{/each}
+{/if}
+{/each}
+{/if}
+</div>
 {/if}
 </aside>
 <PersonPicker

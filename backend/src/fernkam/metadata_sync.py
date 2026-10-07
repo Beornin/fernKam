@@ -710,10 +710,26 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[list[str], dict[str, str
             for src in sources:
                 afh.write(f"{src}\n")
 
-        result = subprocess.run(
-            [et, "-@", argfile_path],
-            capture_output=True, stdin=subprocess.DEVNULL, timeout=300,
-        )
+        # Rewriting a big TIFF on a hard drive takes seconds and a batch holds
+        # up to 200 files: allow 1 s per 10 MB, at least 5 min. A flat 5 min
+        # killed exiftool mid-file on batches of film scans, leaving
+        # "<file>_exiftool_tmp" behind, after which every write to it failed.
+        size = sum(os.path.getsize(s) for s in sources if os.path.exists(s))
+        try:
+            result = subprocess.run(
+                [et, "-@", argfile_path],
+                capture_output=True, stdin=subprocess.DEVNULL, timeout=max(300, size / 10e6),
+            )
+        except subprocess.TimeoutExpired:
+            # Killed mid-file: its partial copy would block the next pass.
+            for src in sources:
+                if os.path.exists(src):   # the original is replaced only after a full write
+                    try:
+                        os.remove(src + "_exiftool_tmp")
+                    except OSError:
+                        pass
+            logger.warning("exiftool batch write timed out (%d files, %.1f GB)", len(sources), size / 1e9)
+            return [], {src: "timed out; will retry" for src in sources}
         stderr = result.stderr.decode(errors="replace")
         if result.returncode == 0:
             return sources, {}

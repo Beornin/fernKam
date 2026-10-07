@@ -869,3 +869,260 @@ async def reveal_in_file_manager(photo_id: int, db: DB) -> dict:
     except OSError as exc:
         raise HTTPException(500, f"Could not open file manager: {exc}")
     return {"ok": True, "path": str(path)}
+
+
+# ── Rotate / flip ────────────────────────────────────────────────────────────
+
+# Pillow's reading of each EXIF Orientation (ImageOps.exif_transpose): what it
+# does to the stored pixels to show them. Thumbnails are drawn the same way.
+_EXIF_SHOWN = {1: (), 2: ("FLIP_LEFT_RIGHT",), 3: ("ROTATE_180",), 4: ("FLIP_TOP_BOTTOM",),
+               5: ("TRANSPOSE",), 6: ("ROTATE_270",), 7: ("TRANSVERSE",), 8: ("ROTATE_90",)}
+ORIENT_OPS = {"left": "ROTATE_90", "right": "ROTATE_270", "180": "ROTATE_180",
+              "flip_h": "FLIP_LEFT_RIGHT", "flip_v": "FLIP_TOP_BOTTOM"}
+VIDEO_DEGREES = {"left": 270, "right": 90, "180": 180}   # QuickTime Rotation turns clockwise
+
+
+def orientation_after(current: Optional[int], op: str) -> int:
+    """The EXIF Orientation that shows the picture turned or flipped by op
+    from how it shows now. Found on a 3x2 probe rather than a hand-made table,
+    so it cannot disagree with how thumbnails are drawn."""
+    from PIL import Image
+    T = Image.Transpose
+    probe = Image.frombytes("L", (3, 2), bytes(range(6)))
+
+    def shown(o: int):
+        im = probe
+        for t in _EXIF_SHOWN[o]:
+            im = im.transpose(T[t])
+        return im
+    want = shown(current if current in _EXIF_SHOWN else 1).transpose(T[ORIENT_OPS[op]])
+    return next(n for n in _EXIF_SHOWN if shown(n).size == want.size and shown(n).tobytes() == want.tobytes())
+
+
+class OrientRequest(BaseModel):
+    photo_ids: list[int]
+    op: str   # left | right | 180 | flip_h | flip_v
+
+
+@router.post("/orient", response_model=dict)
+async def orient(req: OrientRequest, db: DB) -> dict:
+    """Rotate or flip without touching pixels: the EXIF Orientation tag for
+    images (lossless, even for RAW and TIFF), the QuickTime Rotation tag for
+    videos (which cannot be flipped). The thumbnail is redrawn at once; faces
+    and image-model vectors, taken from the old view, are redone in the
+    background."""
+    from fernkam.importers.filesystem import _forget_pixel_derived_data
+    from fernkam.metadata_sync import _get_et_session
+    from fernkam.task_manager import task_manager
+    from fernkam.thumbnails import photo_disk_path, refresh_thumbnail
+
+    if req.op not in ORIENT_OPS:
+        raise HTTPException(400, f"op must be one of: {', '.join(ORIENT_OPS)}")
+    task_manager.ensure_no_file_task()   # a scan reading these files mid-write would see a half-written file
+    et = _get_et_session()
+    if et is None:
+        raise HTTPException(500, "exiftool is not available")
+    rows = (await db.execute(select(Photo.id, Photo.album_path, Photo.filename, Photo.media_type, Photo.orientation)
+                             .where(Photo.id.in_(req.photo_ids), Photo.status == 1))).all()
+    loop = asyncio.get_running_loop()
+    done, redo, errors = [], [], []
+    for r in rows:
+        path = photo_disk_path(r.album_path, r.filename)
+        new_orient = r.orientation
+        if r.media_type == "video":
+            if req.op not in VIDEO_DEGREES:
+                errors.append(f"{r.filename}: a video can be rotated but not flipped")
+                continue
+            cur = (await loop.run_in_executor(None, et.execute, ["-n", "-s3", "-Rotation", str(path)]) or "").strip()
+            args = [f"-Rotation={(int(float(cur or 0)) + VIDEO_DEGREES[req.op]) % 360}"]
+        else:
+            new_orient = orientation_after(r.orientation, req.op)
+            args = ["-n", f"-Orientation={new_orient}"]
+        out = await loop.run_in_executor(None, et.execute, [*args, "-overwrite_original", str(path)])
+        if not out or "1 image files updated" not in out:
+            errors.append(f"{r.filename}: {(out or 'exiftool failed').strip()[:200]}")
+            continue
+        await _record_file_write(db, r.id, path, orientation=new_orient)
+        if await loop.run_in_executor(None, refresh_thumbnail, r.id, path) == "changed":
+            redo.append(r.id)
+        done.append(r.id)
+    if redo:
+        await _forget_pixel_derived_data(db, redo, outside=False)
+    await db.commit()
+    if redo:
+        asyncio.create_task(_redo_after_turn(redo), name="fernkam-reorient")
+    return {"turned": len(done), "ids": done, "errors": errors}
+
+
+async def _redo_after_turn(ids: list[int]) -> None:
+    """Search vectors and faces for turned photos, from the new view."""
+    import logging
+    from fernkam import clip_embed, embed_index
+    from fernkam.api.routers.semantic import embed_rows
+    from fernkam.config import get_settings
+    from fernkam.db.session import async_session_factory
+    try:
+        async with async_session_factory() as bdb:
+            rows = (await bdb.execute(text(
+                "SELECT id, album_path, filename, media_type FROM photos WHERE id = ANY(:ids)"), {"ids": ids})).all()
+            if clip_embed.models_downloaded():
+                await embed_rows(bdb, [(r.id, r.album_path, r.filename) for r in rows])
+            await embed_index.refresh_photos(bdb, ids)
+            for r in rows:
+                if r.media_type == "image" and not get_settings().is_prep(r.album_path):
+                    await _detect_and_suggest(r.id, bdb)
+    except Exception:  # noqa: BLE001 — the scan and Discover indexer catch up later
+        logging.getLogger(__name__).warning("redoing turned photos failed", exc_info=True)
+
+
+async def _record_file_write(db, photo_id: int, path, **values) -> None:
+    """fernKam just rewrote this file's metadata: keep its hash (move
+    matching, duplicates), size and sync time current, so the next scan
+    doesn't take it for an edit made in another program. Does not commit."""
+    import os
+    from fernkam.importers.filesystem import _sha256_path
+    loop = asyncio.get_running_loop()
+    st = await loop.run_in_executor(None, os.stat, path)
+    sha = await loop.run_in_executor(None, _sha256_path, path)
+    await db.execute(update(Photo).where(Photo.id == photo_id).values(
+        file_size=st.st_size, sha256=sha,
+        file_modified_at_sync=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc), **values))
+
+
+# ── File metadata: rights, credit, usage notes, and everything exiftool sees ──
+# Written straight into the file (Lightroom, digiKam and Photoshop read these),
+# never clearing a field: only fields given a new non-empty value are written.
+# Usage notes are lines in XMP Rights "Usage Terms", only ever appended to, and
+# a fact tag Usage › <who> makes them findable. Title, caption, rating and tags
+# are fernKam's own (edited in the app, written at write-back), so not here.
+
+FILE_FIELDS = {   # field -> tags written (the first is the one read back)
+    "creator": ["XMP-dc:Creator", "EXIF:Artist"],
+    "copyright": ["XMP-dc:Rights", "EXIF:Copyright"],
+    "credit": ["XMP-photoshop:Credit"],
+    "source": ["XMP-photoshop:Source"],
+    "web_statement": ["XMP-xmpRights:WebStatement"],
+    "instructions": ["XMP-photoshop:Instructions"],
+}
+
+
+def _first(v):
+    return ", ".join(map(str, v)) if isinstance(v, list) else (str(v) if v is not None else "")
+
+
+def read_file_fields(et, path) -> dict:
+    """The FILE_FIELDS' current values and the usage notes (as lines).
+    JSON, because exiftool's plain output turns line breaks into "."."""
+    import json
+    tags = [t for ts in FILE_FIELDS.values() for t in ts] + ["XMP-xmpRights:UsageTerms"]
+    out = et.execute(["-j", "-G1", *[f"-{t}" for t in tags], str(path)])
+    d = json.loads(out)[0] if out and out.strip().startswith("[") else {}
+    vals = {f: next((_first(d[t]) for t in ts if d.get(t) not in (None, "")), "") for f, ts in FILE_FIELDS.items()}
+    vals["usage"] = [x for x in _first(d.get("XMP-xmpRights:UsageTerms")).splitlines() if x.strip()]
+    return vals
+
+
+def write_file_fields(et, path, fields: dict, usage_line: Optional[str] = None) -> Optional[str]:
+    """Write the given non-empty fields and append one usage line, in one
+    exiftool call; the error, if any. -E carries line breaks as &#xa;
+    (exiftool's session reads one argument per line), so every value is
+    entity-escaped."""
+    def esc(x: str) -> str:
+        return x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    args = ["-E"]
+    for f, v in fields.items():
+        if f in FILE_FIELDS and (v := " ".join(str(v).split())):
+            args += [f"-{t}={esc(v)}" for t in FILE_FIELDS[f]]
+    if usage_line:
+        lines = [*read_file_fields(et, path)["usage"], usage_line]
+        args.append("-XMP-xmpRights:UsageTerms=" + "&#xa;".join(esc(x) for x in lines))
+    if len(args) == 1:
+        return None
+    out = et.execute([*args, "-overwrite_original", str(path)])
+    return None if out and "1 image files updated" in out else (out or "exiftool failed").strip()[:200]
+
+
+async def _photo_path(db, photo_id: int):
+    from fernkam.thumbnails import photo_disk_path
+    row = (await db.execute(select(Photo.album_path, Photo.filename).where(Photo.id == photo_id))).first()
+    if not row:
+        raise HTTPException(404, "Photo not found")
+    return photo_disk_path(row.album_path, row.filename)
+
+
+@router.get("/{photo_id}/file-fields", response_model=dict)
+async def file_fields(photo_id: int, db: DB) -> dict:
+    from fernkam.metadata_sync import _get_et_session
+    path, et = await _photo_path(db, photo_id), _get_et_session()
+    return await asyncio.get_running_loop().run_in_executor(None, read_file_fields, et, path) if et else {}
+
+
+@router.get("/{photo_id}/all-metadata", response_model=dict)
+async def all_metadata(photo_id: int, db: DB) -> dict:
+    """Everything exiftool reads from the file, by group ("EXIF:IFD0", "XMP-dc"…)."""
+    import json
+    from fernkam.metadata_sync import _get_et_session
+    path, et = await _photo_path(db, photo_id), _get_et_session()
+    out = await asyncio.get_running_loop().run_in_executor(None, et.execute, ["-j", "-G1", "-a", "-s", str(path)]) if et else None
+    d = json.loads(out)[0] if out and out.strip().startswith("[") else {}
+    groups: dict = {}
+    for key, v in d.items():
+        g, _, tag = key.rpartition(":")
+        groups.setdefault(g or "File", {})[tag] = _first(v)
+    return {"groups": groups}
+
+
+class UsageNote(BaseModel):
+    when: date
+    who: str
+    usage: str
+
+
+class FileFieldsEdit(BaseModel):
+    photo_ids: list[int]
+    fields: dict[str, str] = {}
+    usage: Optional[UsageNote] = None
+
+
+@router.post("/file-fields", response_model=dict)
+async def edit_file_fields(req: FileFieldsEdit, db: DB) -> dict:
+    """Write rights/credit fields and/or append a usage note to each photo's file."""
+    from fernkam.metadata_sync import _get_et_session
+    from fernkam.sync_merge import ensure_tag_path
+    from fernkam.task_manager import task_manager
+    from fernkam.thumbnails import photo_disk_path
+
+    unknown = set(req.fields) - set(FILE_FIELDS)
+    if unknown:
+        raise HTTPException(400, f"Unknown field(s): {', '.join(sorted(unknown))}")
+    line = who = None
+    if req.usage:
+        who, what = (" ".join(x.split()) for x in (req.usage.who, req.usage.usage))
+        if not who or not what:
+            raise HTTPException(400, "A usage note needs who it was for and what use was approved")
+        line = f"{req.usage.when.isoformat()} — {who}: {what}"
+    task_manager.ensure_no_file_task()
+    et = _get_et_session()
+    if et is None:
+        raise HTTPException(500, "exiftool is not available")
+    rows = (await db.execute(select(Photo.id, Photo.album_path, Photo.filename)
+                             .where(Photo.id.in_(req.photo_ids), Photo.status == 1))).all()
+    loop = asyncio.get_running_loop()
+    done, errors = [], []
+    for r in rows:
+        path = photo_disk_path(r.album_path, r.filename)
+        if err := await loop.run_in_executor(None, write_file_fields, et, path, req.fields, line):
+            errors.append(f"{r.filename}: {err}")
+            continue
+        await _record_file_write(db, r.id, path)
+        done.append(r.id)
+    if done and who:
+        tag = await ensure_tag_path(db, ["Usage", who], {})
+        await db.execute(text("UPDATE tags SET is_fact = true WHERE path @> CAST(:p AS ltree)"), {"p": str(tag.path)})
+        await db.execute(text("""
+            INSERT INTO photo_tags (photo_id, tag_id, verified_at) SELECT unnest(CAST(:ids AS bigint[])), :t, now()
+            ON CONFLICT (photo_id, tag_id) DO UPDATE SET verified_at = COALESCE(photo_tags.verified_at, now())
+        """), {"ids": done, "t": tag.id})
+        await db.execute(text("UPDATE photos SET file_sync_dirty = true WHERE id = ANY(:ids)"), {"ids": done})
+    await db.commit()
+    return {"written": len(done), "usage_line": line, "errors": errors}

@@ -6,6 +6,7 @@
 	import { api, type BurstInfo, type PhotoSummary } from '$lib/api';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
+	import FileMetadataDialog from '$lib/components/FileMetadataDialog.svelte';
 	import PhotoLightbox from '$lib/components/PhotoLightbox.svelte';
 	import AlbumsTab from '$lib/components/sidebar/AlbumsTab.svelte';
 	import TagsTab from '$lib/components/sidebar/TagsTab.svelte';
@@ -16,7 +17,7 @@
 	import MapView from '$lib/components/MapView.svelte';
 	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star, Loader } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
-	import { statusCountStore, libraryVersionStore } from '$lib/stores';
+	import { statusCountStore, libraryVersionStore, thumbVersion } from '$lib/stores';
 	import { createLightboxNav } from '$lib/lightboxNav.svelte';
 	import { inferTab, readListFilterParams, buildFilterUrl, type ShellTab } from '$lib/shellFilters';
 
@@ -469,6 +470,28 @@
 		} catch (e) {
 			notify(`Could not reveal file: ${e}`);
 		}
+	}
+
+	// Rotate or flip the selection (or the photo right-clicked): written as the
+	// orientation tag, so the pixels are never re-encoded.
+	async function menuOrient(op: 'left' | 'right' | '180' | 'flip_h' | 'flip_v') {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		try {
+			const r = await api.photos.orient(ids, op);
+			thumbVersion.update(v => { for (const id of r.ids) v[id] = (v[id] ?? 0) + 1; return v; });
+			if (r.errors.length) notify(`${r.turned} turned; ${r.errors.length} could not be: ${r.errors[0]}`);
+			else flashGridMsg(`${r.turned} ${op.startsWith('flip') ? 'flipped' : 'rotated'}`);
+		} catch (e) {
+			notify(`Could not rotate: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	let fileMetaIds = $state<number[] | null>(null);
+	function menuFileMeta() {
+		const m = menu; menu = null;
+		if (m) fileMetaIds = selectedIds.size ? [...selectedIds] : [m.photo.id];
 	}
 
 	function menuOpen() {
@@ -1127,6 +1150,10 @@
 </div>
 {/if}
 
+{#if fileMetaIds}
+	<FileMetadataDialog photoIds={fileMetaIds} onClose={() => fileMetaIds = null} onSaved={flashGridMsg} />
+{/if}
+
 {#if menu}
 	<ContextMenu x={menu.x} y={menu.y} onClose={() => menu = null}>
 		<div class="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500">
@@ -1147,6 +1174,13 @@
 		</div>
 		<button class={menuItem} onclick={menuReject}>Reject (red label)</button>
 		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={() => menuOrient('left')}>Rotate left</button>
+		<button class={menuItem} onclick={() => menuOrient('right')}>Rotate right</button>
+		<button class={menuItem} onclick={() => menuOrient('180')}>Rotate 180°</button>
+		<button class={menuItem} onclick={() => menuOrient('flip_h')}>Flip horizontal</button>
+		<button class={menuItem} onclick={() => menuOrient('flip_v')}>Flip vertical</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={menuFileMeta}>Edit file metadata (rights, usage)…</button>
 		<button class={menuItem} onclick={menuReveal}>Reveal in File Explorer</button>
 		<div class="my-1 border-t border-zinc-800"></div>
 		<button class={menuItem} onclick={() => menuFileSync('reread')}>Reread metadata from file</button>

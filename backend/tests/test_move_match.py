@@ -66,7 +66,32 @@ async def main() -> None:
         # nothing vanished -> nothing hashed, nothing matched
         assert await _match_moves(db, [], new_files, loop, asyncio.Semaphore(4)) == ([], [], new_files, {})
 
-    print("ok - moved/renamed files keep their row")
+        # It says how far it is, and a Cancel (raised by the report) stops the
+        # hashes still queued instead of letting them run on for hours.
+        many = [(root / f"f{i}.jpg", "Trip", f"f{i}.jpg", now) for i in range(40)]
+        for p, *_ in many:
+            p.write_bytes(p.name.encode())
+        import fernkam.importers.filesystem as fs
+        seen = []
+
+        async def report(done, total):
+            seen.append((done, total))
+            raise fs.ScanCancelled()
+        started = []
+        real = fs._sha256_path
+        fs._sha256_path = lambda p: (started.append(p), real(p))[1]
+        try:
+            await _match_moves(db, removed, many, loop, asyncio.Semaphore(1), report)
+            raise AssertionError("cancel did not stop the match")
+        except fs.ScanCancelled:
+            pass
+        finally:
+            fs._sha256_path = real
+        await asyncio.sleep(0.05)
+        assert seen and seen[0][1] == 40, seen
+        assert len(started) < 40, f"{len(started)} of 40 hashed after cancel"
+
+    print("ok - moved/renamed files keep their row; matching reports progress and stops on cancel")
 
 
 if __name__ == "__main__":

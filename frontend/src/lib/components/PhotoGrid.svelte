@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { PhotoSummary } from '$lib/api';
 	import { Star, Video, Check } from '@lucide/svelte';
-	import { thumbSizeStore } from '$lib/stores';
+	import { thumbSizeStore, thumbVersion } from '$lib/stores';
 	import { getThumbSize } from '$lib/thumbUtils';
 	import { formatBytes, formatDuration } from '$lib/format';
 	import { COLOR_LABEL_CLASS } from '$lib/colorLabels';
@@ -153,7 +153,7 @@
 					<!-- Thumbnail -->
 					<div class="relative overflow-hidden shrink-0" style="height:{imgHeight}px">
 						<img
-							src="/media/thumbnail/{photo.id}?size={getThumbSize(debouncedThumbSize)}"
+							src="/media/thumbnail/{photo.id}?size={getThumbSize(debouncedThumbSize)}{$thumbVersion[photo.id] ? `&v=${$thumbVersion[photo.id]}` : ''}"
 							alt={photo.filename}
 							class="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
 							loading="lazy"

@@ -37,6 +37,9 @@ export interface PhotoDetail extends PhotoSummary {
   faces: FaceOut[];
 }
 
+export type FileFieldKey = 'creator' | 'copyright' | 'credit' | 'source' | 'web_statement' | 'instructions';
+export type FileFields = Record<FileFieldKey, string> & { usage: string[] };
+
 export interface TagOut {
   id: number;
   name: string;
@@ -408,6 +411,18 @@ export interface OutsideChange {
   media_type: string;
 }
 
+    // Rights, credit and usage notes written straight into the file (blank fields never clear).
+    fileFields: (id: number) => get<FileFields>(`/api/photos/${id}/file-fields`),
+    editFileFields: (body: { photo_ids: number[]; fields: Partial<Record<FileFieldKey, string>>;
+                             usage?: { when: string; who: string; usage: string } }) =>
+      fetch('/api/photos/file-fields', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<{ written: number; usage_line: string | null; errors: string[] }>(r)),
+    // Everything exiftool reads from the file, by group.
+    allMetadata: (id: number) => get<{ groups: Record<string, Record<string, string>> }>(`/api/photos/${id}/all-metadata`),
+    // Rotate or flip without touching pixels (EXIF Orientation; QuickTime Rotation for videos).
+    orient: (photo_ids: number[], op: 'left' | 'right' | '180' | 'flip_h' | 'flip_v') =>
+      fetch('/api/photos/orient', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids, op }) })
+        .then(r => okJson<{ turned: number; ids: number[]; errors: string[] }>(r)),
 export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
