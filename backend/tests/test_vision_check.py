@@ -128,6 +128,9 @@ assert vc._parse("Yes.", None).verdict == 1
 assert vc._parse("  NO", None).verdict == 0
 assert vc._parse("<think>hmm</think> yes", None).verdict == 1
 assert vc._parse("maybe", None).verdict is None
+# A thinking model cut off mid-thought: the first token's yes/no odds decide.
+cut = [{"token": "<think>", "logprob": -0.001}, {"token": "no", "logprob": -6.9}, {"token": "yes", "logprob": -9.5}]
+assert vc._parse("", cut).verdict == 0 and vc._parse("", cut).p_yes < 0.1
 assert vc.question("Beach") == 'Does this photo show "Beach"? Answer yes or no.'
 
 print("ok - vision check client (Ollama and OpenAI-compatible, vision models only, P(yes))")

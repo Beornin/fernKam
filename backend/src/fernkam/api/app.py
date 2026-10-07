@@ -374,6 +374,15 @@ app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 app.include_router(outside_changes.router, prefix="/api/outside-changes", tags=["outside-changes"])
 app.include_router(tag_review.router, prefix="/api/tag-review", tags=["tag-review"])
 
+# One-off tools kept on this machine only (git-ignored routers/local_*.py),
+# served at /api/<name without "local_">, e.g. local_foo_bar -> /api/foo-bar.
+import importlib as _importlib, pkgutil as _pkgutil
+from fernkam.api import routers as _routers
+for _m in _pkgutil.iter_modules(_routers.__path__):
+    if _m.name.startswith("local_"):
+        app.include_router(_importlib.import_module(f"fernkam.api.routers.{_m.name}").router,
+                           prefix="/api/" + _m.name[len("local_"):].replace("_", "-"), tags=["local"])
+
 
 @app.exception_handler(TaskConflict)
 async def task_conflict_handler(request, exc: TaskConflict):

@@ -75,3 +75,8 @@ data/cache/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# One-off tools kept on this machine only (see api/app.py and routes/+layout.svelte)
+backend/src/fernkam/api/routers/local_*.py
+backend/tests/test_local_*.py
+frontend/src/routes/local-*/

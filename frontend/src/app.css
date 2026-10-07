@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* Machine-local tools (routes/local-*) are git-ignored, and Tailwind skips
+   git-ignored files unless told: without this their classes never exist. */
+@source "./routes/local-*";
 
 :root {
   --sidebar-width: 260px;

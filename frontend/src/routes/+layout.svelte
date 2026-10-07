@@ -55,6 +55,7 @@ const ACTION_LABELS: [RegExp, string][] = [
 	[/^tag-review\/tags\/\d+\/check$/, 'Checking with the vision model…'],
 	[/^tags\/\d+\/merge$/, 'Merging tags…'],
 	[/^photos\/batch-edit$/, 'Saving edits…'],
+	[/^photos\/orient$/, 'Rotating…'],
 	[/^photos\/\d+\/trash$/, 'Moving to the Recycle Bin…'],
 	[/^people\/\d+\/merge$/, 'Merging people…'],
 ];
@@ -122,6 +123,11 @@ const toolsItems = [
 	{ href: '/outside-changes', label: 'Changed Outside fernKam', icon: FileDiff },
 	{ href: '/tasks', label: 'Tasks', icon: RefreshCw },
 	{ href: '/logs', label: 'Logs', icon: Bug },
+	// One-off tools kept on this machine only (git-ignored routes/local-*).
+	...Object.keys(import.meta.glob('./local-*/+page.svelte')).map(p => {
+		const href = p.slice(1, -'/+page.svelte'.length), name = href.slice('/local-'.length).replace(/-/g, ' ');
+		return { href, label: name[0].toUpperCase() + name.slice(1), icon: Wrench };
+	}),
 ];
 
 let toolsOpen = $state(false);

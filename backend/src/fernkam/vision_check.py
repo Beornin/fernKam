@@ -133,6 +133,12 @@ def _parse(content: str, top: Optional[list]) -> Verdict:
         no = sum(math.exp(t["logprob"]) for t in top if t.get("token", "").strip().lower() == "no")
         if yes + no > 0:
             p_yes = yes / (yes + no)
+    # qwen3-vl thinks even when told not to, so a short answer is cut off at
+    # "<think>\nSo,". Its yes/no odds at the first token still hold the
+    # answer: 79% right on look-alike species pairs, as good as letting it
+    # reason (78%) and five times faster.
+    if verdict is None and p_yes is not None:
+        verdict = int(p_yes >= 0.5)
     return Verdict(verdict, p_yes)
 
 
@@ -141,7 +147,7 @@ async def ask(client: httpx.AsyncClient, url: str, model: str, img, path: str,
     q, b64 = question(path), _jpeg_b64(img)
     if _openai(url):
         r = await client.post(f"{url}/chat/completions", json={
-            "model": model, "temperature": 0, "max_tokens": 4, "logprobs": True, "top_logprobs": 5,
+            "model": model, "temperature": 0, "max_tokens": 4, "logprobs": True, "top_logprobs": 20,
             "messages": [{"role": "system", "content": _SYSTEM},
                          {"role": "user", "content": [
                              {"type": "text", "text": q},
@@ -150,8 +156,12 @@ async def ask(client: httpx.AsyncClient, url: str, model: str, img, path: str,
         choice = r.json()["choices"][0]
         lp = (choice.get("logprobs") or {}).get("content") or []
         return _parse(choice["message"]["content"] or "", lp[0].get("top_logprobs") if lp else None)
-    body = {"model": model, "stream": False, "logprobs": True, "top_logprobs": 5,
-            "options": {"temperature": 0, "num_predict": 4},
+    # One photo (960 px) and one question measure ~1,100 tokens. Left at Ollama's
+    # 32k default, the cache pushed qwen3-vl:32b a quarter onto the CPU on a 24 GB
+    # card: 3.5 photos a minute. 4k still spilled ~0.9 GB into shared memory with
+    # a browser open (a photo took minutes); 2k halves the cache again.
+    body = {"model": model, "stream": False, "logprobs": True, "top_logprobs": 20,
+            "options": {"temperature": 0, "num_predict": 4, "num_ctx": 2048},
             "messages": [{"role": "system", "content": _SYSTEM},
                          {"role": "user", "content": q, "images": [b64]}]}
     if thinking:
@@ -177,8 +187,19 @@ def _load(pid: int, album: str, fname: str):
         return None
 
 
+def _free_gpu() -> None:
+    """fernKam's own image and face models give their GPU memory back first. With
+    them resident, a 21 GB vision model on a 24 GB card spills into shared memory
+    and each photo takes minutes, not seconds. Both reload when next needed."""
+    from fernkam import embed_models, face_processor
+    for key in list(embed_models._runtimes):
+        embed_models.release(key)
+    face_processor._app = None
+
+
 async def check_photos(db, tag_id: int, photo_ids: list[int], on_progress=None, is_cancelled=None) -> dict:
     """Ask the vision model about each photo for one tag; store the answers."""
+    _free_gpu()
     st = await status(db)
     if not st["reachable"]:
         raise RuntimeError(f"No vision model server at {st['url']}: {st.get('error', '')}")
@@ -243,11 +264,12 @@ async def agreement(db, tag_id: Optional[int] = None) -> dict:
 
 async def photos_to_check(db, tag_id: int, state: str, limit: int, model: str) -> list[int]:
     """Photos of one tab not yet checked by this model: suggestions best first,
-    unverified tags most doubtful first."""
+    unverified and approved tags most doubtful first."""
     if state == "suggested":
         src = "tag_suggestions x", "x.tag_id = :t", "x.score DESC"
     else:
-        src = "photo_tags x", "x.tag_id = :t AND x.verified_at IS NULL", "x.model_score ASC NULLS LAST"
+        done = "NOT NULL" if state == "approved" else "NULL"
+        src = "photo_tags x", f"x.tag_id = :t AND x.verified_at IS {done}", "x.model_score ASC NULLS LAST"
     table, where, order = src
     return [r[0] for r in (await db.execute(text(f"""
         SELECT x.photo_id FROM {table} JOIN photos p ON p.id = x.photo_id

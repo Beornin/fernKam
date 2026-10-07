@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
 	import { Activity, CheckCircle, XCircle, Clock } from '@lucide/svelte';
 	import { onMount } from 'svelte';
 
@@ -26,6 +26,14 @@
 			if (interval) clearInterval(interval);
 		};
 	});
+
+	// Running jobs check for this between steps (a photo, a tag, a file) and stop there.
+	let cancelling = $state(new Set<string>());
+	async function cancel(id: string) {
+		cancelling = new Set(cancelling).add(id);
+		await fetch(`/api/sync/tasks/${id}/cancel`, { method: 'POST' });
+		await loadTasks();
+	}
 
 	function getStatusIcon(status: string) {
 		switch (status) {
@@ -95,6 +103,13 @@
 							</div>
 						</div>
 						<div class="text-right text-sm text-gray-500">
+							{#if task.status === 'running'}
+								<button onclick={() => cancel(task.id)} disabled={cancelling.has(task.id)}
+									title="Stops at its next step; work already done is kept"
+									class="mb-1 text-xs px-2.5 py-1 rounded border border-red-300 text-red-700 hover:bg-red-50 disabled:opacity-50">
+									{cancelling.has(task.id) ? 'Stopping…' : 'Cancel'}
+								</button>
+							{/if}
 							<div>Started: {formatTime(task.started_at)}</div>
 							{#if task.completed_at}
 								<div>Completed: {formatTime(task.completed_at)}</div>
