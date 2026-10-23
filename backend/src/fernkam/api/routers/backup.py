@@ -72,6 +72,9 @@ def _docker_cmd(tool: str, parsed, *args: str, stdin: bool = False) -> list[str]
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+BACKUP_TIMEOUT = 3600   # the library dump takes over 5 minutes now
+
+
 @router.post("/create")
 async def create_backup() -> dict:
     """Run pg_dump and save a custom-format .dump file in a datestamped subfolder."""
@@ -116,12 +119,10 @@ async def create_backup() -> dict:
         try:
             if dump_to_stdout:
                 with open(backup_file, "wb") as out:
-                    result = subprocess.run(cmd, env=env, stdout=out, stderr=subprocess.PIPE, timeout=300)
+                    result = subprocess.run(cmd, env=env, stdout=out, stderr=subprocess.PIPE, timeout=BACKUP_TIMEOUT)
                 result.stderr = result.stderr.decode(errors="replace")
-                if result.returncode != 0:
-                    backup_file.unlink(missing_ok=True)
             else:
-                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=BACKUP_TIMEOUT)
             if result.returncode == 0:
                 size_kb = backup_file.stat().st_size // 1024
                 return {
@@ -130,10 +131,13 @@ async def create_backup() -> dict:
                     "file": str(backup_file),
                     "size_kb": size_kb,
                 }
+            backup_file.unlink(missing_ok=True)   # a cut-off dump must never be listed as a backup
             return {"ok": False, "message": f"pg_dump failed: {result.stderr.strip()}"}
         except subprocess.TimeoutExpired:
-            return {"ok": False, "message": "Backup timed out after 5 minutes."}
+            backup_file.unlink(missing_ok=True)
+            return {"ok": False, "message": "Backup timed out after an hour."}
         except Exception as exc:
+            backup_file.unlink(missing_ok=True)
             return {"ok": False, "message": f"Backup error: {exc}"}
 
     return await asyncio.to_thread(_run)
@@ -213,7 +217,7 @@ async def restore_backup(body: RestoreRequest) -> dict:
         try:
             if restore_from_stdin:
                 with open(body.backup_path, "rb") as src:
-                    result = subprocess.run(cmd, env=env, stdin=src, capture_output=True, timeout=300)
+                    result = subprocess.run(cmd, env=env, stdin=src, capture_output=True)
                 result.stderr = result.stderr.decode(errors="replace")
             else:
                 # Leave extensions out of the restore. They belong to the
@@ -231,12 +235,11 @@ async def restore_backup(body: RestoreRequest) -> dict:
                     with os.fdopen(fd, "w", encoding="utf-8") as fh:
                         fh.write("\n".join(keep) + "\n")
                     cmd.insert(-1, f"--use-list={list_path}")
-                result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+                # no timeout: killing a --clean restore halfway leaves a half-dropped database
+                result = subprocess.run(cmd, env=env, capture_output=True, text=True)
             if result.returncode == 0:
                 return {"ok": True, "message": "Restored successfully. Restart the server to reload fresh data."}
             return {"ok": False, "message": f"pg_restore failed: {result.stderr.strip()}"}
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "message": "Restore timed out after 5 minutes."}
         except Exception as exc:
             return {"ok": False, "message": f"Restore error: {exc}"}
         finally:

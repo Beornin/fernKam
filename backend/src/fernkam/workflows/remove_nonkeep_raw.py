@@ -4,7 +4,7 @@ Port of RemoveNonKeepRAWWorkflow.java
 Walks a folder tree and moves any RAW file to the Trash when no matching
 picture (JPG/TIF/etc.) exists where fernKam keeps them: the same directory,
 its jpg/ subfolder, or, for a RAW inside a RAW/ folder (the Portfolio
-convention, see promote_destination), the parent directory and its jpg/.
+convention, see move_raws_to_folders), the parent directory and its jpg/.
 Matching is a substring check: the RAW stem must appear inside a picture stem.
 """
 
@@ -75,13 +75,17 @@ def run(starting_folder: str = DEFAULT_STARTING_FOLDER, dry_run: bool = True) ->
 
 
 def select_orphans(raw_files: list, pictures_by_dir: dict) -> list:
-    """RAWs with no matching picture in any folder a picture may live in."""
+    """RAWs with no matching picture in any folder a picture may live in. A folder with no
+    pictures at all (a shoot culled in Cull mode, or not through PureRAW yet) is left alone:
+    there "no picture" means "not converted", not "not kept"."""
     orphans = []
     for f in raw_files:
         d = f.parent
         dirs = [d, d / "jpg"]
         if d.name.upper() == "RAW":   # Portfolio: Album/RAW/x.NEF beside Album/x.jpg
             dirs += [d.parent, d.parent / "jpg"]
+        if not any(pictures_by_dir.get(x) for x in dirs):
+            continue
         stem = _base_name(f.name)
         if not any(stem in pic for x in dirs for pic in pictures_by_dir.get(x, ())):
             orphans.append(f)

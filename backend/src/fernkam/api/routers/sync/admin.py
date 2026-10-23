@@ -54,9 +54,11 @@ async def reset_db(db: DB) -> dict:
 @router.get("/status")
 async def sync_status(db: DB) -> dict:
     """Summary of sync state — pure DB, no disk access."""
+    from fernkam.api.routers.sync.metadata import WRITABLE
+
     dirty = (await db.execute(
         select(func.count()).select_from(Photo)
-        .where(Photo.file_sync_dirty == True)  # noqa: E712
+        .where(Photo.file_sync_dirty == True, *WRITABLE)  # noqa: E712
     )).scalar_one()
     never_synced = (await db.execute(
         select(func.count()).select_from(Photo)

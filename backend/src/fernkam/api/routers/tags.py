@@ -40,6 +40,9 @@ async def list_tags(
     q = select(Tag).order_by(Tag.path)
     if search:
         q = q.where(Tag.name.ilike(f"%{search}%"))
+    else:
+        # A Reference tag per public photo (tens of thousands, reference_tags): found by search, not listed.
+        q = q.where(text("NOT (tags.path <@ 'Reference' AND nlevel(tags.path) > 1)"))
 
     tags = (await db.execute(q)).scalars().all()
     if flat or search:

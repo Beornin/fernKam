@@ -241,7 +241,8 @@
 						title={tag.path}
 					>{tag.name}</button>
 
-					<div class="flex items-center gap-0 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+					<!-- hidden, not just invisible: otherwise every name is cut short for buttons that aren't showing -->
+					<div class="items-center gap-0 shrink-0 {selectedTagIds.has(tag.id) ? 'flex' : 'hidden group-hover:flex'}">
 						<input type="checkbox" checked={selectedTagIds.has(tag.id)} onchange={() => toggleSelect(tag.id)}
 							class="w-3 h-3 rounded border-zinc-600 bg-zinc-800 accent-amber-500 mr-0.5" />
 						<button onclick={() => startEdit(tag)} class="p-0.5 text-zinc-600 hover:text-zinc-300 rounded" title="Rename"><Edit2 size={11} /></button>

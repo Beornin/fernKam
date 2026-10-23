@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from fernkam.api.deps import DB
 from fernkam.api.schemas import AlbumNode
 from fernkam.db.models.photos import Face, Photo, PhotoStack, PhotoTag, Tag
+from fernkam.services.photo_query import in_album
 
 router = APIRouter()
 
@@ -24,8 +25,7 @@ async def list_stacks(
 ) -> dict:
     q = select(PhotoStack)
     if album_path:
-        album_path = album_path.lstrip("/")
-        q = q.where(PhotoStack.album_path.like(f"{album_path}%"))
+        q = q.where(in_album(PhotoStack.album_path, album_path))
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows = (
         await db.execute(

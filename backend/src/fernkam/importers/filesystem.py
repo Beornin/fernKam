@@ -366,6 +366,15 @@ async def scan_library(
             except Exception as cbe:
                 log.warning("photo_added_callback error for %d: %s", photo_id, cbe)
 
+    # A photo waiting for write-back is fernKam's to write, not to re-read: a write-back that is
+    # running may have rewritten the file but not yet recorded it, which looked like an edit by
+    # another program. The write-back itself re-reads files changed outside before writing.
+    if existing_to_update:
+        from sqlalchemy import text as _text
+        pending = set((await db.execute(_text(
+            "SELECT id FROM photos WHERE file_sync_dirty AND id = ANY(:ids)"),
+            {"ids": [e[4] for e in existing_to_update]})).scalars())
+        existing_to_update = [e for e in existing_to_update if e[4] not in pending]
     stats["total"] = len(existing_to_update) + len(new_files)
     log.info("[SCAN] %d new files to import, %d existing to refresh", len(new_files), len(existing_to_update))
     if progress_callback and stats["total"]:
@@ -513,7 +522,7 @@ async def scan_library(
     # ── Phase 3: delete removed files ─────────────────────────────────────
     gone_ids: list[int] = []
     # Match on the path as well as the id: a row moved during the scan (e.g.
-    # promote-to-portfolio) keeps its id but not its old path, and must not be
+    # Cull mode filing it into a species folder) keeps its id but not its old path, and must not be
     # deleted just because its old path is now empty. Chunked because asyncpg
     # caps a statement at 32,767 bind parameters.
     for i in range(0, len(removed), 5000):

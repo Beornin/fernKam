@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -551,6 +552,7 @@ def write_file_metadata(
             "RegionList": region_list,
         }
 
+    _clear_stale_tmp([str(file_path)])
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
@@ -620,6 +622,15 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
     elif in_file.get("tags"):
         payload["Subject"] = payload["Keywords"] = payload["HierarchicalSubject"] = []
 
+    # Research keywords (Latin name, family, "herps", state ...) go in the flat keyword fields only.
+    # Tags are read back from HierarchicalSubject, so they never return as tags; without it they would.
+    research = getattr(photo, "research", None) or {}
+    if tag_names and research.get("keywords"):
+        have = {n.lower() for n in tag_names}
+        payload["Subject"] = payload["Keywords"] = tag_names + [k for k in research["keywords"] if k.lower() not in have]
+    for field, value in (research.get("dwc") or {}).items():   # Darwin Core: scientific name, family, county ...
+        payload[f"XMP-dwc:{field}"] = value
+
     if photo.rating is not None and photo.rating >= 0:
         payload["Rating"] = max(0, min(5, photo.rating))
         payload["RatingPercent"] = max(0, min(5, photo.rating)) * 20
@@ -670,6 +681,21 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
     return payload
 
 
+def _clear_stale_tmp(sources: list[str], min_age_s: float = 600) -> None:
+    """Remove "<file>_exiftool_tmp" left by a write that was cut off (fernKam closed mid-file):
+    exiftool refuses to write a file while one exists. Only beside an intact original, and only
+    an old one, so a write still running is never touched."""
+    now = time.time()
+    for src in sources:
+        tmp = src + "_exiftool_tmp"
+        try:
+            if os.path.exists(src) and now - os.path.getmtime(tmp) > min_age_s:
+                os.remove(tmp)
+                logger.info("removed a leftover %s", tmp)
+        except OSError:   # none there (the usual case), or in use
+            pass
+
+
 def write_metadata_batch(payloads: list[dict]) -> tuple[list[str], dict[str, str]]:
     """Write metadata for a batch of photos in a single exiftool call.
 
@@ -688,6 +714,7 @@ def write_metadata_batch(payloads: list[dict]) -> tuple[list[str], dict[str, str
         return [], {src: "exiftool not found" for src in sources}
     if not payloads:
         return [], {}
+    _clear_stale_tmp(sources)
 
     # `-json=FILE` alone only supplies tag values — exiftool still needs the
     # target files as arguments (matched back to each JSON entry by its

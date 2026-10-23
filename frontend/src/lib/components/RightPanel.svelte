@@ -146,12 +146,43 @@
 					{/each}
 				</div>
 
+				<!-- Title and description (caption) -->
+				{#if detail.title || detail.caption}
+					<div class="px-3 py-2 border-b border-zinc-800">
+						<p class="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">Description</p>
+						{#if detail.title}<p class="text-xs font-semibold text-zinc-200 mb-1">{detail.title}</p>{/if}
+						{#if detail.caption}<p class="text-xs text-zinc-300 whitespace-pre-wrap break-words">{detail.caption}</p>{/if}
+					</div>
+				{/if}
+
+				<!-- Research words and Darwin Core (Workflows > Portfolio keywords and tags) -->
+				{#if detail.research?.keywords?.length || Object.keys(detail.research?.dwc ?? {}).length}
+					<div class="px-3 py-2 border-b border-zinc-800">
+						<p class="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">Research</p>
+						{#if Object.keys(detail.research?.dwc ?? {}).length}
+							<table class="w-full text-xs text-zinc-400 mb-1.5">
+								<tbody>
+									{#each Object.entries(detail.research?.dwc ?? {}) as [k, v] (k)}
+										<tr><td class="text-zinc-600 py-0.5 pr-3 w-1/2">{k.replace(/^(Taxon|DC)/, '').replace(/([a-z])([A-Z])/g, '$1 $2')}</td><td class="text-zinc-300 break-words">{v}</td></tr>
+									{/each}
+								</tbody>
+							</table>
+						{/if}
+						<div class="flex flex-wrap gap-1">
+							{#each detail.research?.keywords ?? [] as k (k)}
+								<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">{k}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
 				<!-- File info -->
 				<div class="px-3 py-2 border-b border-zinc-800">
 					<p class="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">File</p>
 					<table class="w-full text-xs text-zinc-400">
 						<tbody>
 							<tr><td class="text-zinc-600 py-0.5 pr-3 w-1/2">Name</td><td class="truncate text-zinc-300 max-w-0 w-1/2" title={detail.filename}>{detail.filename}</td></tr>
+							<tr><td class="text-zinc-600 py-0.5 pr-3">Folder</td><td class="truncate text-zinc-300 max-w-0" title={detail.album_path}>{detail.album_path.split('/').pop()}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Size</td><td class="text-zinc-300">{formatBytes(detail.file_size)}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Dimensions</td><td class="text-zinc-300">{detail.width && detail.height ? `${detail.width} × ${detail.height}` : '—'}</td></tr>
 							<tr><td class="text-zinc-600 py-0.5 pr-3">Type</td><td class="text-zinc-300 uppercase">{detail.filename.split('.').pop()}</td></tr>

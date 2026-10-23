@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from fernkam.db.models.photos import Photo
-from fernkam.services.photo_query import SORT_OPTIONS, apply_sort
+from fernkam.services.photo_query import SORT_OPTIONS, apply_sort, type_rank
 
 # Direction the keyset predicate in apply_cursor() walks ids for each sort.
 CURSOR_ID_DIRECTION = {
@@ -27,6 +27,7 @@ CURSOR_ID_DIRECTION = {
     "rating_desc": "DESC",
     "filename_asc": "ASC",
     "imported_at_desc": "DESC",
+    "type_asc": "ASC",
 }
 
 
@@ -44,6 +45,10 @@ def main() -> None:
     # Unknown sort strings fall back to the default, which also has a tiebreaker.
     assert order_by("nonsense") == order_by("taken_at_desc")
     assert order_by("taken_at_desc") == "photos.taken_at DESC NULLS LAST, photos.id DESC"
+
+    # File type: JPG, TIFF, other pictures, RAW, then the rest (video, no extension).
+    names = ["clip.MP4", "a.NEF", "b.png", "c.tif", "d.JPG", "noext", "e.jpeg", "f.cr3"]
+    assert [type_rank(n) for n in sorted(names, key=type_rank)] == [0, 0, 1, 2, 3, 3, 4, 4]
 
     print("ok - every sort has an id tiebreaker")
 

@@ -445,7 +445,7 @@ Phase 2.
 | 3.2 | Dry-run preview on every workflow | all four, defaulting to preview | DONE |
 | 3.3 | Auto-suggest subject tags for a folder via Phase 2 kNN | `/semantic/suggest-tags-bulk` | DONE |
 | 3.4 | RAW/JPEG pair health check | **1,063 orphan RAWs found** | DONE |
-| 3.5 | Promote to portfolio: rate + tag + move + keep stacks intact | `/workflows/promote-to-portfolio` | DONE |
+| 3.5 | Promote to portfolio: rate + tag + move + keep stacks intact | `/workflows/promote-to-portfolio` | DONE, later removed (2026-10-19): Cull mode's *File into species folders* replaced it |
 
 ### 3.2 — dry run is the default, not a flag you remember
 
@@ -1172,9 +1172,138 @@ Tasks page is light-themed with no Cancel; Move → Root does nothing.
 - **The size slider scales every photo grid**: Tag Review (was 150 px, `md`) and the four Face
   Review grids (110–140 px) now follow it like Photos, Stacks, Smart albums and People.
 
+### Done · Export for web, and Camera tags
+
+- **Workflows › Export for web (Flickr).** Point it at a picture or folder; it writes 2048 px
+  JPEG copies outside the library with title, caption, research keywords (common/Latin/current
+  name, genus, family, order, group, status, state), camera, model and lens, rights and "data
+  mining prohibited", and a `Ref:` line back to the original. Edited copies borrow their
+  original's tags. Keywords are flat names; people and excluded tags stay off. First run: an
+  edited Z9 macro of a juvenile Wingtail Crayfish, 2048×1310, 537 kB, 11 keywords, in 5.6 s.
+- **Camera fact tags** (Camera › Nikon › Z9, Camera › Canon › 40D) from each photo's EXIF:
+  96 camera records → 81 tags, 106,141 photos tagged. Kept in step at Learn all tags. Not
+  flagged for write-back (the file already records its camera; flagging would rewrite every
+  original).
+
+### Done · Research keywords in the files (2026-10-12)
+
+- **Export for web keywords grew** (one builder for web copies, Flickr and files): class, plain
+  words (reptile, amphibian, herps), Flickr machine tags, plain threat words, state / county /
+  country only where written, older Latin names from captions, cave, "film" for scans, and a GBIF
+  lookup by Latin name for species tags not yet linked (19 tags, e.g. Florida Longbeak Crayfish).
+  Flickr draft: 3,395 of 3,397 photos gain tags, about 10 each, at most 28 in all.
+- **Workflows › Portfolio keywords and tags** (one pass to keep wildlife folders in step): species
+  folders → approved species tags (merged names found through GBIF, no duplicates made), GBIF links +
+  IUCN / introduced Status + Camera tags (as Learn all), and research words + Darwin Core stored in
+  `photos.research` (migration 0036) for DB → Files to write into the flat keywords and `XMP-dwc`.
+  GBIF's respelt names are accepted (*Heterodon platirhinos*). Preview on Portfolio + his Level 2:
+  1,257 species folders, 4 pictures to tag; 72 tags to check with GBIF. No "USA" keyword (states and
+  counties only).
+- **Backup** timeout 5 min → 1 h (the dump outgrew it; two cut-off dumps had been listed as
+  backups); a failed dump is deleted; restore has no timeout (a killed `--clean` restore leaves a
+  half-dropped database).
+
+### Done · Reference tags: a licensing Ref that survives renames (2026-10-14)
+
+- **Reference fact tags** (`reference_tags.py`): `Reference › ARC-<n>` for the archive's photos
+  (`ARCHIVE_FOLDER`), `REF-<n>` for the user's (both prefixes set in `.env`). `<n>` starts as the photo's id, but the tag is the record: it is written into
+  the file (DB → Files), never recomputed, and a new Ref skips numbers already taken (a rebuilt
+  database). The NEF, TIF and JPG of one image may share a Ref.
+- **Export for web** puts the Ref in the `Ref:` line instead of the folder path. A preview shows an
+  existing Ref or `REF-(new)`, and a real export gives one. The Reference branch stays out of keywords.
+- Given to all of Portfolio and his Level 2: 45,280 pictures, 41,654 Refs (the 3,387 on Flickr keep
+  their own id). A RAW and its JPG share a Ref: stacks first (1,832 new Portfolio stacks, 1,798 pairs
+  merged), then 44 same-name JPG/TIF pairs outside stacks. 2 stacks keep two Refs, because both edits
+  are on Flickr. All Refs are flagged for write-back. On Flickr, all 3,398 `Ref:` lines now show the
+  Ref instead of a path (2026-10-15). They were checked by reading every photo back.
+- **Portfolio keywords and tags** step 4 keeps this up: stack, then give Refs to new pictures.
+- **`/api/tags`** leaves the Ref tags out of the full list (1,461 tags listed, not 43k); search finds them.
+- **DB → Files uses 1 worker, not 4.** The test: copies of his 68 MB TIF scans on the library hard
+  drive. One worker took 0.77 s a file (88 MB/s); four took 2.78 s (25 MB/s), because parallel full-file
+  rewrites fight over the disk head. Staging through the SSD (0.81 s) gained nothing. Pixels stay
+  byte-identical; files grow by about 500 bytes. That's 54k files and 3.5 TB queued: about 11 h instead
+  of about 40 h.
+
+### Done · Cull mode: species first, then file, edit and export (2026-10-18)
+
+The species tag now decides the folder, so a shoot can be culled and tagged while it is still in
+AA_RAW, and filed in one step (`api/routers/cull.py`). Before, Export for Web only knew the species
+once a photo had been sorted by hand into its folder, and edits saved loose in AA_RAW lost their tags.
+
+- **Review is now Cull.** New keys: **T** To do (fact tag), **S** species search, **A** last species
+  again, **E** edit. A species panel shows what the photo looks like: the species of its 40 nearest
+  approved photos by BioCLIP 2 (else CLIP). On a 13 Oct crayfish shoot it names the Florida
+  Longbeak at 100%; about 1 s a photo (5 s for the first). Browse Wildlife's groups or search by name;
+  a pick applies to the photo, its burst or every kept photo, and to every version of the shot (NEF,
+  PureRAW `jpg/`, `dng/`, `edited_`).
+- **File into species folders** (Cull button, right-click): preview, then move each shot with its
+  versions and sidecars to `Portfolio/<group>/<Common (Latin)>/`, RAWs in `RAW/`, DNGs in `dng/`. The
+  folder already holding most of the species wins; a new one is named after the tag ("Snakes" files into
+  the existing `Snake`). It replaces *Promote to portfolio*, which had no UI; that endpoint,
+  `promote_destination()` and `test_promote_destination.py` are removed (2026-10-19).
+- **Right-click › Edit in Affinity Photo** opens exactly the file clicked (the Store app's
+  `AffinityPhoto2.exe` alias; `EDITOR_EXE` overrides). The first version looked for a DNG first; the user
+  wanted no hidden swaps.
+- **Right-click › Export for Flickr** makes the Export for Web copy of exactly the pictures clicked
+  (JPEG, TIFF or PNG; a NEF or DNG is skipped) in the export folder, to upload by hand. The user chose
+  no automatic upload; the first version's upload code (`flickr.py`) was removed the same day.
+- **PureRAW's DNGs leave the library** (2026-10-19): 1,623 DNGs (271 GB) under Portfolio, only 502 of
+  them catalogued, moved to another drive with the same folder structure. They were working files:
+  each a second copy of its NEF for thumbnails, model vectors and DB → Files to rewrite. Editing them
+  happens in Affinity, outside fernKam.
+- **His captions vs his Level 2 folders, rerun** (2026-10-20): of 35,902 photos, 3,351 carry typed text
+  that names a species; 18 named another one, 4 of them real (the rest typos or older names). Fixes it
+  turned up, in the shared code:
+  - A caption's Latin becomes an "older name" keyword only when GBIF says it is the photo's own species
+    (`same_species`): *Bufo terrestris* stays, *Calocitta formosa* on a Black-throated Magpie-Jay goes.
+    On Flickr, 25 of his photos carried such a tag; 2 wrong ones removed, 2 wait on the user, the rest
+    are a second species in the frame or an older lumped name.
+  - GBIF's English name is capitalised per word, not by `.title()` ("Davy's Naked-backed Bat").
+  - Portfolio keywords and tags: a new species folder's tag is found (or filed) among species tags
+    only; a group tag ("Birds") on its pictures had been taken for the folder's species. Run on one
+    new folder, it now asks the catalogue for neighbouring species to file the new tag beside (the
+    new Eastern Whip-poor-will landed under Birds, linked to GBIF, IUCN Near Threatened).
+  - The rerun on his Level 2 took 38 min: 2,229 of 35,924 pictures got corrected research words.
+  - The user's calls settled the whole review list (0 rows left): 5 photos moved to the right species
+    folder, 2 folders and tags renamed, 14 isopods and 12 treefrogs refiled, a hybrid given both tags,
+    and 8 Flickr copies retitled or retagged, each backed up first and checked after. Then the moved
+    files took their folder's name (14 isopods, 23 treefrogs) and Cope Gray became Cope's Gray
+    Treefrog (folder, tag and files); his own non-numbered filenames were left as he named them.
+- **Albums tree right-click** (2026-10-19): *Refresh this album* scans just that folder and its
+  subfolders (102 files checked for a shoot, against 121,333 for the whole library); *Reread metadata
+  from files*, *Write metadata to files* (changes not yet written only) and *Show in File Explorer*.
+- **A folder filter no longer takes look-alike siblings** (`in_album`, 9 call sites: grid, map, stacks,
+  write-back, reread, face scan). It matched by name prefix, so a `People/<name>` folder showed 25
+  photos, including `<name> at Beach` and seven more folders; now 16. `Holidays/2022/New Years` 50 → 45.
+- **Remove non-keep RAW** leaves folders with no pictures at all alone: with culling on NEFs, a shoot
+  without PureRAW JPGs would otherwise have been binned whole.
+- **Vertical RAWs open upright** (2026-10-21): the full view re-encoded a NEF/CR3's embedded preview
+  and dropped its rotation flag, so the 210 vertical NEFs and 105 CR3s showed sideways while their
+  thumbnails were right. The shared RAW reader now returns upright pixels.
+- **Sort by File type**: JPG first, then TIFF, other pictures, RAW and video, by filename within a
+  type; keyset paging checked across the type boundaries (119 photos in pages of 7 = one page).
+- **Right-click: Mark as on Flickr / Clear on Flickr** (2026-10-22): the user's or the archive's
+  Flickr fact tag on exactly the clicked pictures; the archive folder and both tag names now come
+  from `.env` (`ARCHIVE_FOLDER`, `FLICKR_TAG`, `ARCHIVE_FLICKR_TAG`), which also sets the Ref prefix.
+  Backfill: 4 of the 6 uploads since the last Flickr map matched by their Ref line and are tagged.
+- **Right-click: Smaller copy for sharing**: full-resolution JPEG at quality 85 in the export
+  folder's `Share/`; a 130-photo PureRAW shoot went 1.88 GB → 0.74 GB.
+- **DB → Files no longer sticks on a cut-off write**: 5 of his TIFFs had a `_exiftool_tmp` left
+  from writes interrupted on Oct 13–14, and exiftool refused them every pass. The write-back now
+  removes such a leftover (10+ min old, original intact) first. 3 more TIFFs had a damaged EXIF
+  block from an old Windows tool; rebuilt with exiftool (pixels identical). All 8 then written.
+- **Maintenance's "Write N pending" counts only what DB → Files writes** (live still images): it
+  showed 48 when all 48 were tagged videos, which the write-back never touches, and the run said
+  "No photos to process". One shared filter now (`WRITABLE`); the count reads 0.
+- **Viewer shows a suggested face's match %** on its box and its chip ("<name> 41%"): the photo
+  endpoint built faces with its own copy of the converter, which dropped the score the viewer was
+  already built to show; it uses the shared one now. Auto-confirm (strictness 0.95) already takes
+  every face at 66–71%+; the most-tagged person's 3,507 remaining suggestions are all under 65%.
+
 ### Planned, agreed with the user
 
-- **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders.
+- **Portfolio suggestion with BioCLIP** instead of CLIP, for species-level folders. (Cull mode's
+  species panel already does this per photo.)
 - **Event suggestions for `Ordered by Dates`**, learned from the 24,608 filed event photos
   with the Tag Review ensemble. The season expert would catch birthdays.
 - **Ideas strip in the cull** (suggested crops from qwen3-vl, a few looks), as previews only

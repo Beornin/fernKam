@@ -625,6 +625,9 @@ onclick={() => { selectedFace = selectedFace?.id === face.id ? null : face; }}
 >
 <User size={10} />
 {face.person_name ?? '?'}
+{#if face.status === 'suggested' && face.score != null}
+<span class="text-[10px] opacity-70" title="Suggested: how closely this face matches {face.person_name ?? 'them'}">{Math.round(face.score * 100)}%</span>
+{/if}
 </button>
 {/each}
 </div>

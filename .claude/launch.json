@@ -12,6 +12,12 @@
       "runtimeExecutable": "backend/.venv/Scripts/fernkam.exe",
       "runtimeArgs": ["serve"],
       "port": 8000
+    },
+    {
+      "name": "fernkam-side-check",
+      "runtimeExecutable": "backend/.venv/Scripts/granian.exe",
+      "runtimeArgs": ["--interface", "asginl", "--host", "127.0.0.1", "--port", "8001", "fernkam.api.app:app"],
+      "port": 8001
     }
   ]
 }

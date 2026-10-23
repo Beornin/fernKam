@@ -142,6 +142,8 @@ class Photo(Base):
     # Rating, label, title, caption and tag keys as the file held them the last
     # time fernKam read or wrote it — the common ancestor for sync_merge.
     synced_meta: Mapped[Optional[dict]] = mapped_column(JSONB)
+    # {"keywords": [...], "dwc": {...}} from workflows/portfolio_keywords.py; write-back adds them to the file.
+    research: Mapped[Optional[dict]] = mapped_column(JSONB)
     faces_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Status flags (mirrors DigiKam ImageInformation.status)

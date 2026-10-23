@@ -10,9 +10,14 @@ from sqlalchemy.orm import selectinload
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo, PhotoTag
+from fernkam.services.photo_query import in_album
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# What DB → Files writes: live still images. A tagged video is flagged too, but its tags stay in
+# the database; the Maintenance count uses this same filter so it matches what a run will do.
+WRITABLE = (Photo.status == 1, Photo.media_type == "image")
 
 
 @router.post("/refresh-metadata")
@@ -35,7 +40,7 @@ async def refresh_metadata_from_files(
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif album_path:
-        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
+        q = q.where(in_album(Photo.album_path, album_path))
     q = q.order_by(Photo.id.asc())
 
     rows = (await db.execute(q)).fetchall()
@@ -141,7 +146,7 @@ async def write_metadata_all(
     album_path: Optional[str] = Body(None),
     photo_ids: Optional[list[int]] = Body(None),
     batch_size: int = Body(200),
-    concurrency: int = Body(4),
+    concurrency: int = Body(1),
 ) -> dict:
     """Write tags, rating, label, title, caption and named face regions into
     the image files (XMP).
@@ -157,25 +162,23 @@ async def write_metadata_all(
       metadata to file); overrides dirty_only
     - album_path: restrict to one album subtree
     - batch_size: photos per exiftool call (default 200; tune up for speed)
-    - concurrency: parallel exiftool workers (default 4)
+    - concurrency: parallel exiftool workers (default 1). Every write rewrites the whole file, and on a
+      hard drive parallel rewrites fight over the disk head: 75 MB TIFFs took 0.77 s each with 1 worker,
+      2.78 s with 4 (2026-10-14).
     """
     import asyncio
     from fernkam.task_manager import fmt_eta, task_manager
 
-    q = (
-        select(Photo.id)
-        .where(Photo.status == 1)
-        .where(Photo.media_type == "image")
-        .order_by(Photo.id.asc())
-    )
+    q = select(Photo.id, Photo.file_size).where(*WRITABLE).order_by(Photo.id.asc())
     if photo_ids:
         q = q.where(Photo.id.in_(photo_ids))
     elif dirty_only:
         q = q.where(Photo.file_sync_dirty == True)  # noqa: E712
     if album_path:
-        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
+        q = q.where(in_album(Photo.album_path, album_path))
 
-    photo_ids = [r[0] for r in (await db.execute(q)).fetchall()]
+    rows = (await db.execute(q)).fetchall()
+    photo_ids = [r[0] for r in rows]
     if not photo_ids:
         return {"task_id": None, "queued": 0, "message": "No photos to process"}
 
@@ -247,10 +250,21 @@ async def write_metadata_all(
 
                     return len(written), failed, n_reread
 
-        batches = [
-            photo_ids[i : i + batch_size]
-            for i in range(0, total, batch_size)
-        ]
+        # A batch is at most batch_size photos and about BATCH_BYTES of files, so the files it just
+        # wrote are still in the OS cache when they are read back and re-hashed. With 200 large TIFFs
+        # a batch (~15 GB) they weren't, and every file was read from disk twice more.
+        BATCH_BYTES = 2 * 1024 ** 3   # ponytail: fixed budget; tie it to free RAM if batches ever thrash
+        batches: list[list[int]] = []
+        cur: list[int] = []
+        cur_bytes = 0
+        for pid, size in rows:
+            if cur and (len(cur) >= batch_size or cur_bytes + (size or 0) > BATCH_BYTES):
+                batches.append(cur)
+                cur, cur_bytes = [], 0
+            cur.append(pid)
+            cur_bytes += size or 0
+        if cur:
+            batches.append(cur)
 
         for wave_start in range(0, len(batches), concurrency * 2):
             task = await task_manager.get_task(task_id)
@@ -275,8 +289,7 @@ async def write_metadata_all(
                         failures.append({"file": src, "error": why})
 
             elapsed = _time.time() - t_start
-            done = min(wave_start + len(wave), len(batches)) * batch_size
-            done = min(done, total)
+            done = sum(len(b) for b in batches[: wave_start + len(wave)])
             rate = done / elapsed if elapsed > 0 else 0
             eta = int((total - done) / rate) if rate > 0 else 0
             await task_manager.update_task(

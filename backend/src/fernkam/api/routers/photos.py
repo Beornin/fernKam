@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from fernkam.api.deps import DB
 from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate
 from fernkam.db.models.photos import Face, Photo, PhotoTag
+from fernkam.services.photo_query import in_album
 from fernkam.services.photo_query import PhotoFilters, apply_cursor, apply_sort, build_photo_query, count_photos, encode_cursor
 
 router = APIRouter()
@@ -214,32 +215,9 @@ async def get_photo(photo_id: int, db: DB) -> PhotoDetail:
     detail.tags = [pt.tag for pt in row.photo_tags if pt.tag]
     detail.unverified_tag_ids = [pt.tag_id for pt in row.photo_tags
                                  if pt.tag and pt.verified_at is None and not pt.tag.is_person and not pt.tag.is_fact]
-    detail.faces = _enrich_faces(list(row.faces))
+    from fernkam.api.routers.faces._helpers import _make_face_out
+    detail.faces = [_make_face_out(f) for f in row.faces]   # with the suggestion's match score
     return detail
-
-
-def _enrich_faces(faces: list[Face]) -> list[FaceOut]:
-    """Convert Face ORM objects to FaceOut, resolving person name."""
-    out = []
-    for f in faces:
-        name: Optional[str] = None
-        if f.person_tag:
-            name = f.person_tag.name
-        elif hasattr(f, "person") and f.person:
-            name = f.person.name
-        out.append(FaceOut(
-            id=f.id,
-            photo_id=f.photo_id,
-            person_tag_id=f.person_tag_id,
-            person_name=name,
-            x=f.x,
-            y=f.y,
-            w=f.w,
-            h=f.h,
-            status=f.status,
-            region_name=f.region_name,
-        ))
-    return out
 
 
 async def _get_photo_for_write(db: DB, photo_id: int) -> Optional[Photo]:
@@ -484,7 +462,7 @@ async def map_points(
         .where(Photo.longitude.is_not(None))
     )
     if album_path:
-        q = q.where(Photo.album_path.like(f"{album_path.lstrip('/')}%"))
+        q = q.where(in_album(Photo.album_path, album_path))
     if tag_id is not None:
         q = q.where(Photo.id.in_(select(PhotoTag.photo_id).where(PhotoTag.tag_id == tag_id)))
     q = q.limit(limit)

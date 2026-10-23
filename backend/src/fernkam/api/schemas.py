@@ -91,6 +91,7 @@ class PhotoDetail(PhotoSummary):
     city: Optional[str] = None
     orientation: Optional[int]
     exif: Optional[dict[str, Any]]
+    research: Optional[dict[str, Any]] = None   # research words + Darwin Core (Portfolio keywords and tags)
     camera: Optional[CameraOut]
     lens: Optional[LensOut]
     tags: list[TagOut] = []

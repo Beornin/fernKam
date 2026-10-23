@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Photo
+from fernkam.services.photo_query import in_album
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -336,7 +337,7 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
         .where(outside_prep())
     )
     if request.album_path:
-        q = q.where(Photo.album_path.like(f"{request.album_path.lstrip('/')}%"))
+        q = q.where(in_album(Photo.album_path, request.album_path))
     q = q.order_by(Photo.id.asc())
     if request.limit and request.limit > 0:
         q = q.limit(request.limit)

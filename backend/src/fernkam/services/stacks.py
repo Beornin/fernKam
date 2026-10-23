@@ -16,6 +16,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.db.models.photos import Photo, PhotoStack
+from fernkam.services.photo_query import in_album
 from fernkam.media_types import is_raw
 
 # Separator characters allowed right after the RAW stem in a derivative's
@@ -78,7 +79,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     ).where(Photo.status == 1)
     if album_path:
         clean_album_path = album_path.lstrip("/")
-        photo_q = photo_q.where(Photo.album_path.like(f"{clean_album_path}%"))
+        photo_q = photo_q.where(in_album(Photo.album_path, clean_album_path))
     all_photos = (await db.execute(photo_q)).all()
 
     # Index photos by album_path for fast derivative lookup.
@@ -104,7 +105,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     # (previously fetched twice: once per RAW photo, once again at cleanup).
     all_stacks_q = select(PhotoStack)
     if album_path:
-        all_stacks_q = all_stacks_q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
+        all_stacks_q = all_stacks_q.where(in_album(PhotoStack.album_path, clean_album_path))
     all_stacks = (await db.execute(all_stacks_q)).scalars().all()
     stacks_by_key: dict[tuple[str, str], PhotoStack] = {
         (s.album_path, s.stem_key): s for s in all_stacks

@@ -19,12 +19,32 @@ export interface PhotoSummary {
   duration_secs: number | null;
 }
 
+/** Cull mode: a Wildlife group or species tag. */
+export interface CullTag { id: number; name: string; group?: string; kids?: number; n?: number }
+export interface CullPhoto {
+  todo_tag_id: number;
+  todo: boolean;
+  species: { id: number; name: string; approved: boolean }[];
+  suggestions: { id: number; name: string; group: string; share: number }[];
+}
+export interface CullFileResult {
+  to_file: number;
+  skipped: { id: number; file: string; why: string }[];
+  folders: Record<string, number>;
+  new_folders: string[];
+  filed?: number[];
+  moved_ids?: number[];
+  errors?: string[];
+}
+export interface CullExportResult { folder: string; saved: string[]; skipped: string[]; on_flickr: string[] }
+
 export interface PhotoDetail extends PhotoSummary {
   sha256: string | null;
   imported_at: string | null;
   modified_at: string | null;
   title: string | null;
   caption: string | null;
+  research?: { keywords?: string[]; dwc?: Record<string, string> } | null;
   latitude: number | null;
   longitude: number | null;
   altitude: number | null;
@@ -405,6 +425,9 @@ export interface OutsideChange {
 export const api = {
   albums: {
     list: () => get<AlbumNode[]>('/api/albums'),
+    reveal: (album_path: string) =>
+      fetch('/api/albums/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ album_path }) })
+        .then(r => okJson<{ opened: string }>(r)),
   },
   map: {
     points: (params?: { album_path?: string; tag_id?: number; limit?: number }, signal?: AbortSignal) =>
@@ -502,6 +525,33 @@ export const api = {
     delete: (id: number) => fetch(`/api/tags/${id}`, { method: 'DELETE' }).then(okVoid),
     removeFromPhotos: (id: number) =>
       fetch(`/api/tags/${id}/from-photos`, { method: 'DELETE' }).then(r => okJson<{ removed: number }>(r)),
+  },
+  cull: {
+    groups: () => get<CullTag[]>('/api/cull/groups'),
+    species: (params: { group_id?: number; q?: string }, signal?: AbortSignal) =>
+      get<CullTag[]>('/api/cull/species', params, signal),
+    photo: (id: number, signal?: AbortSignal) => get<CullPhoto>(`/api/cull/photo/${id}`, undefined, signal),
+    /** No tag_id: the To do tag. Applies to every version of each shot (NEF, PureRAW JPG, DNG). */
+    tag: (body: { photo_ids: number[]; tag_id?: number; on: boolean }) =>
+      fetch('/api/cull/tag', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => okJson<{ photos: number[] }>(r)),
+    file: (photo_ids: number[], dry_run: boolean) =>
+      fetch('/api/cull/file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids, dry_run }) })
+        .then(r => okJson<CullFileResult>(r)),
+    edit: (id: number) =>
+      fetch(`/api/cull/edit/${id}`, { method: 'POST' }).then(r => okJson<{ opened: string }>(r)),
+    /** Export for Web on exactly these pictures, into the export folder. Nothing is uploaded. */
+    export: (photo_ids: number[]) =>
+      fetch('/api/cull/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids }) })
+        .then(r => okJson<CullExportResult>(r)),
+    /** My Flickr / the archive's Flickr tag on exactly these pictures (on: false clears it). */
+    flickrMark: (photo_ids: number[], on: boolean) =>
+      fetch('/api/cull/flickr-mark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids, on }) })
+        .then(r => okJson<{ photos: number[]; tags: string[] }>(r)),
+    /** Smaller full-resolution JPEG copies, for sharing, in the export folder's Share/. */
+    share: (photo_ids: number[]) =>
+      fetch('/api/cull/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids }) })
+        .then(r => okJson<{ folder: string; saved: string[]; skipped: string[]; before: number; after: number }>(r)),
   },
   photoTags: {
     add: (photoId: number, tagId: number) =>

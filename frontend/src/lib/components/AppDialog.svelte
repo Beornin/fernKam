@@ -40,7 +40,7 @@
 						<Info size={18} class="text-zinc-400" />
 					{/if}
 				</div>
-				<p class="text-sm text-zinc-200 leading-relaxed whitespace-pre-line">{current.message}</p>
+				<p class="text-sm text-zinc-200 leading-relaxed whitespace-pre-line break-words min-w-0">{current.message}</p>
 			</div>
 			<div class="px-5 py-3 bg-zinc-950/60 border-t border-zinc-800 flex justify-end gap-2">
 				{#if current.kind === 'ask'}

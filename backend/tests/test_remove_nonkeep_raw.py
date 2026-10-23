@@ -2,7 +2,7 @@
 
 It used to look for a RAW's picture only in the RAW's own folder and its jpg/
 subfolder. Portfolio keeps RAWs in Album/RAW/ beside Album/x.jpg (see
-promote_destination), so pointed at Portfolio it would have trashed every
+move_raws_to_folders), so pointed at Portfolio it would have trashed every
 Portfolio RAW: 2,666 of the live library's 3,560.
 
 Run directly: python backend/tests/test_remove_nonkeep_raw.py
@@ -30,7 +30,8 @@ def main() -> None:
         "Trip/RAW/far.NEF": False,                 # RAW/jpg/: keep
         "AA_RAW/shoot1/DSC_0003.NEF": True,        # no picture anywhere: trash
         "Portfolio/Owls/RAW/snowy.NEF": True,      # no picture in RAW/ or parent: trash
-        "Portfolio/Owls/Other/RAW/barred.NEF": True,  # a different album's picture doesn't count
+        "Portfolio/Owls/Other/RAW/barred.NEF": False,  # a different album's picture doesn't count, and this one has none
+        "AA_RAW/shoot2/DSC_0100.NEF": False,       # a shoot with no pictures at all (culled in Cull mode): keep
     }
     got = {str(p).replace("\\", "/") for p in select_orphans([Path(r) for r in raws], by_dir)}
     want = {r for r, trash in raws.items() if trash}

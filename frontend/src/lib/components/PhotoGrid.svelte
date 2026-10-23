@@ -91,9 +91,11 @@
 			if (a !== -1 && b !== -1) {
 				for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(photos[i].id);
 			}
-		} else if (next.has(photo.id)) {
-			next.delete(photo.id);
+		} else if (e.ctrlKey || e.metaKey || (e.target as Element).closest('[data-check]')) {
+			// the checkbox (or Ctrl-click) adds to / takes from the selection
+			if (next.has(photo.id)) next.delete(photo.id); else next.add(photo.id);
 		} else {
+			next.clear();                // a plain click selects just this photo
 			next.add(photo.id);
 		}
 		selectedIds = next;
@@ -166,10 +168,12 @@
 						{/if}
 
 						<!-- Selection checkbox -->
-						<div class="absolute top-1 left-1 w-4 h-4 rounded bg-black/60 border border-white/30 flex items-center justify-center pointer-events-none">
-							{#if selected}
-								<Check size={10} class="text-amber-400" />
-							{/if}
+						<div data-check title="Add to / take from the selection" class="absolute top-0 left-0 p-1 cursor-pointer">
+							<div class="w-4 h-4 rounded bg-black/60 border border-white/30 hover:border-amber-400 flex items-center justify-center">
+								{#if selected}
+									<Check size={10} class="text-amber-400" />
+								{/if}
+							</div>
 						</div>
 
 						<!-- Ext badge -->

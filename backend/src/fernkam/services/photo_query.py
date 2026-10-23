@@ -22,10 +22,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import Select, and_, bindparam, exists, func, or_, select, text, union
+from pathlib import PurePath
+
+from sqlalchemy import Select, and_, bindparam, case, exists, func, or_, select, text, true, tuple_, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.db.models.photos import Camera, Face, Lens, Photo, PhotoTag, Tag
+from fernkam.media_types import PICTURE_EXTENSIONS, RAW_EXTENSIONS
 
 # ── Count cache: short-TTL in-process cache keyed by filter signature ──
 _COUNT_CACHE: dict[str, tuple[int, float]] = {}
@@ -93,7 +96,21 @@ class PhotoFilters:
 # and cursor pages skip or repeat photos — measured on 3,000 rows, the
 # rating_desc cursor missed 2,074 of them. It also lets taken_at_desc use the
 # (taken_at DESC NULLS LAST, id DESC) index built for exactly this.
+# "File type" sort: finished pictures first (JPG, TIFF, other pictures), then RAW, then video.
+_TYPE_GROUPS = ({".jpg", ".jpeg"}, {".tif", ".tiff"}, PICTURE_EXTENSIONS, RAW_EXTENSIONS)
+
+
+def type_rank(filename: str) -> int:
+    """A file's place in the File type sort (the same order as _TYPE_RANK_SQL)."""
+    ext = PurePath(filename).suffix.lower()
+    return next((i for i, g in enumerate(_TYPE_GROUPS) if ext in g), len(_TYPE_GROUPS))
+
+
+_EXT_SQL = func.lower(func.substring(Photo.filename, r"(\.[^.]+)$"))
+_TYPE_RANK_SQL = case(*((_EXT_SQL.in_(sorted(g)), i) for i, g in enumerate(_TYPE_GROUPS)), else_=len(_TYPE_GROUPS))
+
 SORT_OPTIONS = {
+    "type_asc": (_TYPE_RANK_SQL, Photo.filename.asc(), Photo.id.asc()),
     "taken_at_desc": (Photo.taken_at.desc().nulls_last(), Photo.id.desc()),
     "taken_at_asc": (Photo.taken_at.asc().nulls_last(), Photo.id.asc()),
     "rating_desc": (Photo.rating.desc(), Photo.id.desc()),
@@ -144,13 +161,19 @@ def _search_clause(search: str):
     )
 
 
+def in_album(column, album_path: str):
+    """Rows in a folder and the folders inside it. Not a sibling whose name merely starts the
+    same: "People/Sam" is not "People/Sam at Beach". "" or "/" is the whole library."""
+    p = album_path.strip("/")
+    return or_(column == p, column.startswith(p + "/", autoescape=True)) if p else true()
+
+
 async def build_photo_query(f: PhotoFilters, db: AsyncSession) -> Select:
     """Build a SELECT(Photo) with all active filters applied (no sort/limit)."""
     q = select(Photo).where(Photo.status == 1)
 
     if f.album_path:
-        clean = f.album_path.lstrip("/")
-        q = q.where(Photo.album_path.like(f"{clean}%"))
+        q = q.where(in_album(Photo.album_path, f.album_path))
 
     if f.tag_id is not None:
         ids = await _tag_subtree_ids(db, f.tag_id)
@@ -311,5 +334,9 @@ def apply_cursor(q: Select, cursor: str) -> Select:
             Photo.filename > fn,
             and_(Photo.filename == fn, Photo.id > cid),
         ))
+
+    elif sort == "type_asc":
+        fn = d.get("fn", "")
+        return q.where(tuple_(_TYPE_RANK_SQL, Photo.filename, Photo.id) > tuple_(type_rank(fn), fn, cid))
 
     return q

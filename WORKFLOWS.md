@@ -11,7 +11,7 @@ The short version:
 - **Writing to files is explicit.** Metadata is written into the files (embedded XMP; never
   sidecars) only by **Maintenance → DB → Files**, right-click → *Write metadata to file*, or a
   stack's *Sync tags*. Files are moved or deleted only by
-  the Workflows page, Duplicates auto-clean, promote-to-portfolio and Trash. All of these
+  the Workflows page, Duplicates auto-clean, Cull mode's *File into species folders* and Trash. All of these
   preview first or ask for confirmation.
 - **Deleting means the Recycle Bin.** Trash and duplicate auto-clean use the system trash, and
   the catalogue row is kept but hidden (`status = 0`).
@@ -32,7 +32,9 @@ jobs can be cancelled between batches.
 ## Quick Scan / Import Photos
 
 **User action:** Home → **Quick Scan** (whole library), or **Import Photos** with a folder path.
-Also Maintenance → **Rescan Library**. It also runs by itself: in the background at every start
+Also Maintenance → **Rescan Library**, and right-click a folder in the Albums tree → **Refresh this
+album** (that folder and the folders inside it). The same menu has *Reread metadata from files*,
+*Write metadata to files* (that folder's photos with changes not yet written) and *Show in File Explorer*. It also runs by itself: in the background at every start
 (`SCAN_ON_STARTUP`), and when the library watcher has seen changes while fernKam is running
 (`WATCH_LIBRARY`). Changes are collected as they happen and scanned at most once per interval,
 **Settings → Scan for outside changes every N minutes** (default 10, 0 = off), counted from the
@@ -81,7 +83,7 @@ removed.
 ## Edit tags, rating, colour label, title, caption, date
 
 **User action:** lightbox, right panel, batch edit bar, keyboard shortcuts (`1`–`5`, `0`, `X`),
-Review Mode, *Discover → apply suggested tags*, *Date Inference → apply*.
+Cull mode, *Discover → apply suggested tags*, *Date Inference → apply*.
 
 **What happens:** updates the catalogue and sets `file_sync_dirty` on the photo. Renaming,
 moving or deleting a tag, or removing it from all photos, flags every affected photo the same
@@ -326,10 +328,10 @@ copies go to the Recycle Bin and are hidden from the catalogue.
 
 ## Trash a photo
 
-**User action:** lightbox / Review Mode delete.
+**User action:** lightbox / Cull mode delete.
 
-**Review Mode and bursts.** Frames within a second of each other in one folder are a moment.
-Review Mode groups them and shows the sharpest first, scored as the Laplacian variance of the
+**Cull mode and bursts.** Frames within a second of each other in one folder are a moment.
+Cull mode groups them and shows the sharpest first, scored as the Laplacian variance of the
 sharpest tile of the thumbnail. **B** keeps the frame on screen, rejects the rest of the burst
 and moves to the next moment. **Shift+←/→** jumps between moments. Frames shot with Nikon focus
 shift (`FocusShiftShooting`, read from the NEF, because PureRAW's JPGs drop it) are a *focus
@@ -348,27 +350,142 @@ Sort and Move count as file jobs, so only one runs at a time.
 
 | Workflow | Does |
 |---|---|
-| Remove non-keep RAW | Sends RAW files with no matching JPEG/derivative (the shot was culled) to the Recycle Bin |
+| Remove non-keep RAW | Sends RAW files with no matching JPEG/derivative (the shot was culled) to the Recycle Bin. A folder with no pictures at all (culled in Cull mode, or not through PureRAW yet) is left alone |
 | Sort by Date | Pulls everything in AA_RAW into SORT ME, then moves SORT ME into `AC_SORTED/YYYY/MM`. The date comes from Pixel file names, else the camera date via exiftool (videos included). A shoot folder moves whole, `jpg/` and all, to `AC_SORTED/YYYY/MM/<shoot>/`, dated by the month most of it was taken in, so shoots headed for different places stay apart. Loose files go to `YYYY/MM/` each by its own date. A loose file with **no camera date**, or a shoot with none at all, **waits in SORT ME** and is listed. A file already there with the same name and size is left in place. Shoot folders the moves empty are removed |
 | Move RAWs to folders | Moves RAW files into a `RAW/` subfolder next to their JPEGs |
 | Sync stack tags | Detects RAW+JPEG stacks, then (on Apply) writes merged tags/rating/label into every member's file |
+| Export for web (Flickr) | Writes web-sized JPEG **copies** of a picture or a folder (originals untouched) to the export folder, which must be outside the library. See below |
+| Portfolio keywords and tags | Species folders → approved species tags, GBIF / IUCN / introduced / camera tags, and research words + Darwin Core for **DB → Files** to write into the originals. See below |
+
+### Export for web (Flickr)
+
+Each copy is at most `EXPORT_MAX_EDGE` (2048) px on its long side and carries what a researcher
+searches for, as plain keywords (never tag paths):
+
+- **Title and caption** from the photo's catalogue row. An edited copy that isn't catalogued
+  (`edited_DSC6748.jpg`, `…-DxO_DeepPRIME.jpg`, `… - Copy.jpg`) borrows them from its original
+  in the same folder or its `RAW/`. Not tagged yet? A species folder named "Common - note (Latin)"
+  names it.
+- **Species**: common and Latin name, GBIF's current and English names, an older Latin name the
+  caption uses, genus, family, order, class, plain words (reptile, amphibian, herps, bird ...),
+  Flickr machine tags (`taxonomy:binomial="..."`), the subject's group, and conservation status
+  in IUCN and plain words ("endangered species"). A species tag not yet linked to GBIF is looked
+  up by its Latin name. Only names go to GBIF.
+- **Place**: state, county and country, only where the GPS, caption or a trip folder says so;
+  never guessed from a range, and species names ("Virginia Opossum") don't count.
+- **Darwin Core** (XMP-dwc): scientific and common name, genus to class, country, state, county.
+- **Camera**: maker, model and lens from the file ("Nikon", "Z9", the lens name). A film scan
+  gets "film" and "slide film" instead of its scanner.
+- **Rights**: `EXPORT_NOTICE` (description), `EXPORT_COPYRIGHT`, `EXPORT_CREATOR`, IPTC Data
+  Mining "prohibited", and a `Ref:` line naming the original so a copy leads back to its file.
+- **Kept off**: people, branch roots (Camera, Status, Wildlife…), and anything in
+  `EXPORT_EXCLUDE_TAGS` (with its branch). GPS is kept unless *Remove GPS* is set.
+
+Flickr and most sites read the title, description and keywords when the copy is uploaded.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| none (reads the catalogue) | **new copies** in the export folder | the picked pictures |
+
+### Portfolio keywords and tags
+
+Keeps wildlife folders and their pictures in step, in one pass over the folders picked (separated by `;`;
+left blank, the `PORTFOLIO_FOLDERS` setting's folders):
+
+1. **Species folders are the record.** A folder named "Common (Latin)", "Common - note (Latin)" or a
+   genus / family "(Tantilla)", "(Taxodium sp.)" gives every picture in it, and in its subfolders without
+   a Latin name of their own (`RAW/`, `dng/`), that species tag, approved. With no tag of that Latin name:
+   a tag GBIF knows under the same accepted name is used (a merged or older name), or the one species the
+   folder's pictures are already approved as; failing both, a tag named like the folder is made next to
+   the tags its neighbouring folders use (only if GBIF knows the name).
+2. **GBIF, status and camera**, as Learn all does: unlinked species tags are looked up, the Status tags
+   (IUCN category, introduced to the US) put on, and Camera › maker › model tags synced.
+3. **Research words and Darwin Core**: the Export for web keywords (minus Flickr machine tags) and
+   `XMP-dwc` fields are stored in `photos.research`; a photo whose words changed is marked for
+   write-back, and **Maintenance › DB → Files** writes them into the file's flat keywords (`Subject`,
+   `Keywords`) and Darwin Core fields. Tags are read back from `HierarchicalSubject`, so research words
+   never return as tags. GBIF's spelling of a name (*Heterodon platirhinos* for *platyrhinos*) is added
+   alongside the folder's.
+
+Listed, not changed: Latin names GBIF spells differently or has no single match for, folders with
+pictures but no Latin name, and pictures in a species folder already approved as another species.
+Only what's missing changes, so it's cheap to run after new shoots or folder moves.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| `photo_tags`, `tags` (new species tags), `species_status`, `photos.research`, `file_sync_dirty` | none until DB → Files | none |
 
 The page also shows the pipeline stages (intake → staging → archive → portfolio) with live
 counts, and a RAW/JPEG pair health check. Both are read-only.
 
-## Promote to portfolio
+## Cull mode: species, To do, filing
 
-**User action:** select keepers → *Promote to portfolio* (optional subfolder, rating, tags).
-Preview first.
+**User action:** open a shoot folder (an `AA_RAW/<shoot>` straight from the camera works) and
+press **Cull**. Besides trash, reject, rate and the burst keys:
 
-**What happens:** moves each selected photo **and the rest of its stack** into the portfolio
-folder. RAWs land in a `RAW/` subfolder there. The catalogue path, stack location, rating and
-tags are updated. Files already at the destination are skipped. Refused while a scan or file
-workflow is running.
+- **T** marks the photo **To do** (a fact tag): something to come back to, an edit in Affinity Photo
+  say. Right-click › *Mark To do* / *Clear To do* does it in the grid.
+- The **Species** panel shows what the photo looks like: the species of its 40 nearest photos that
+  already carry an approved species tag, by BioCLIP 2 (else CLIP), as a share of their votes. **S**
+  searches every species by name; or browse Wildlife's groups (Birds › … › species). A pick applies
+  to *this photo*, *its burst* or *all kept* (not rejected) photos here, and goes on **every version
+  of the shot**: the NEF, its PureRAW `jpg/` copy, its `dng/`, an `edited_` copy. **A** repeats the
+  last species.
+- **File into species folders…** (or right-click › *File into species folder…*) previews, then
+  moves each species-tagged photo with all its versions and sidecars to
+  `PORTFOLIO_FOLDER/<group>/<Common (Latin)>/`: pictures in the folder, RAWs in `RAW/`, DNGs in
+  `dng/`. The folder is the one already holding most of that species, else one named with its Latin
+  name, else a new one named after the tag in its group's folder ("Snakes" → an existing `Snake`).
+  Photos with no species tag or two, and any whose file is already at the destination, stay put and
+  are listed. Shoot folders left empty are removed (top-level folders like AA_RAW never). Refused
+  while a scan or file workflow runs.
 
 | Database | Files | Disk reads |
 |---|---|---|
-| Paths, stacks, rating, tags updated | **originals moved** | yes |
+| Species and To do tags (approved), paths and stacks updated on filing | **originals moved** when filing | yes, when filing |
+
+## Edit in Affinity Photo
+
+**User action:** right-click › *Edit in Affinity Photo*, or **E** in Cull mode. Opens exactly that
+file in `EDITOR_EXE` (blank = the `AffinityPhoto2.exe` command, else the file's own app). PureRAW's
+DNGs are kept outside the library (on another drive) and opened from Affinity directly. Save the
+edit into the photo's folder named like its NEF (`_DSC7763.jpg`) or `edited_DSC7763.jpg` and it files,
+tags and exports with that shot.
+
+## Export for Flickr (right-click)
+
+**User action:** right-click › *Export for Flickr (2048 px copy)* on the pictures to export (the
+one clicked, or the selection): exactly those files, each a JPEG, TIFF or PNG (the PureRAW JPG or
+your edit; a NEF or DNG is skipped and listed). Each gets the Workflows › Export for Web copy in the
+export folder, with its title, tags, rights and Ref, ready to upload to Flickr by hand. **Nothing is
+uploaded.** The result lists the copies, and any picture whose shot is already in
+`data/flickr_map.csv` (on Flickr).
+
+| Database | Files | Disk reads |
+|---|---|---|
+| Ref tag given on first export | a new web copy in the export folder | yes |
+
+## Mark as on Flickr / Clear on Flickr (right-click)
+
+**User action:** after uploading, right-click › *Mark as on Flickr* on exactly the pictures you
+uploaded (the one clicked, or the selection). Each gets the `FLICKR_TAG` fact tag, or
+`ARCHIVE_FLICKR_TAG` when it lives under `ARCHIVE_FOLDER`; *Clear on Flickr* takes either off.
+Export for Flickr doesn't do it, since it uploads nothing.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| the Flickr fact tag; flagged for DB → Files | no | no |
+
+## Smaller copy for sharing (right-click)
+
+**User action:** right-click › *Smaller copy for sharing (full size)*: exactly those JPEG, TIFF or
+PNG files become full-resolution JPEGs (quality 85) in the export folder's `Share/`, with camera
+info, colour profile and keywords; a NEF or DNG is skipped. A 45 MP PureRAW JPEG comes out at
+about 40% of its size. Never overwrites: a second copy is "name (2).jpg".
+
+| Database | Files | Disk reads |
+|---|---|---|
+| no | a new copy in `Share/` | yes |
 
 ---
 

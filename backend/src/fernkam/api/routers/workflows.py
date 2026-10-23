@@ -54,6 +54,22 @@ class SyncStackTagsRequest(BaseModel):
     album_path: Optional[str] = None
 
 
+class ExportWebRequest(BaseModel):
+    """Workflows card fields arrive as text; blank = the setting's default."""
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
+    path: str
+    out_dir: Optional[str] = None
+    max_edge: Optional[str] = None
+    remove_gps: Optional[str] = None     # anything non-blank = strip GPS
+
+
+class PortfolioKeywordsRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    dry_run: bool = True
+    paths: str = ""                      # library folders, separated by ";"; blank = PORTFOLIO_FOLDERS
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -231,6 +247,51 @@ async def run_sync_stack_tags(req: SyncStackTagsRequest) -> dict:
     return {"task_id": task_id, "status": "started"}
 
 
+@router.post("/run/export-web")
+async def run_export_web(req: ExportWebRequest) -> dict:
+    """Web-sized copies with research keywords and rights (workflows/export_web.py). Originals untouched."""
+    from pathlib import Path
+    from fastapi import HTTPException
+    from fernkam.task_manager import task_manager
+    from fernkam.workflows import export_web
+
+    src = Path(req.path.strip().strip('"'))
+    if not src.exists():
+        raise HTTPException(400, f"Not found: {src}")
+    edge = (req.max_edge or "").strip()
+    if edge and not edge.isdigit():
+        raise HTTPException(400, "Longest side must be a number of pixels")
+    task_id = await task_manager.create_task(
+        "workflow_export_web", f"{'Preview: ' if req.dry_run else ''}Export for web: {src}")
+    asyncio.create_task(
+        _run_in_thread(task_id, export_web.run, path=str(src), out_dir=(req.out_dir or "").strip() or None,
+                       max_edge=int(edge) if edge else None, remove_gps=bool((req.remove_gps or "").strip()),
+                       dry_run=req.dry_run),
+        name=f"fernkam-workflow-{task_id}",
+    )
+    return {"task_id": task_id, "status": "started"}
+
+
+@router.post("/run/portfolio-keywords")
+async def run_portfolio_keywords(req: PortfolioKeywordsRequest) -> dict:
+    """Species folders, GBIF / status / camera tags and research words in step (workflows/portfolio_keywords.py)."""
+    from fernkam.task_manager import task_manager
+    from fernkam.workflows import portfolio_keywords
+
+    from fastapi import HTTPException
+    from fernkam.config import get_settings
+    paths = [p.strip().strip('"') for p in (req.paths.strip() or get_settings().portfolio_folders).split(";") if p.strip()]
+    if not paths:
+        raise HTTPException(400, "Pick one or more folders, or set PORTFOLIO_FOLDERS for the usual ones")
+    task_id = await task_manager.create_task(
+        "workflow_portfolio_keywords", f"{'Preview: ' if req.dry_run else ''}Portfolio keywords and tags: {'; '.join(paths)}")
+    asyncio.create_task(
+        _run_in_thread(task_id, portfolio_keywords.run, paths=paths, dry_run=req.dry_run),
+        name=f"fernkam-workflow-{task_id}",
+    )
+    return {"task_id": task_id, "status": "started"}
+
+
 @router.get("/task/{task_id}")
 async def get_workflow_task(task_id: str) -> dict:
     from fernkam.task_manager import task_manager
@@ -366,134 +427,3 @@ async def raw_health(db: DB, album_path: Optional[str] = None) -> dict:
 
 def row_or(row, idx: int, default: int = 0) -> int:
     return default if row is None or row[idx] is None else row[idx]
-
-
-
-def promote_destination(src_album: str, dest_album: str, filename: str) -> tuple[str, str]:
-    """Where one file lands when promoted. Returns (album_path, relative_path).
-
-    RAWs live in <album>/RAW/ by convention (see move_raws_to_folders), so a
-    file coming from a RAW/ subfolder must land in one — flattening it into the
-    destination root would break the pairing the stack depends on.
-    """
-    in_raw = src_album.rstrip("/").upper().endswith("/RAW")
-    album = f"{dest_album}/RAW" if in_raw else dest_album
-    return album, f"{album}/{filename}"
-
-
-class PromoteRequest(BaseModel):
-    """Roadmap 3.5 — rate, tag, move and re-stack in one action."""
-    photo_ids: list[int]
-    subfolder: Optional[str] = None      # under the portfolio root, e.g. "Snakes"
-    rating: Optional[int] = None         # 1-5, or None to leave alone
-    tag_ids: list[int] = []
-    dry_run: bool = True
-
-
-@router.post("/promote-to-portfolio")
-async def promote_to_portfolio(req: PromoteRequest, db: DB) -> dict:
-    """Move keepers into the portfolio, carrying their whole stack.
-
-    Moving a JPEG without its RAW would silently break the pair, so every
-    member of a selected photo's stack moves with it. `photo_stacks.album_path`
-    is part of a unique key with stem_key, so it is rewritten too — otherwise
-    the next stack rebuild would create a duplicate stack at the old location.
-
-    dry_run defaults to True: this relocates originals on disk.
-    """
-    from pathlib import Path
-    from fernkam.config import get_settings
-
-    if not req.photo_ids:
-        return {"moved": 0, "plan": [], "dry_run": req.dry_run}
-    if req.rating is not None and not (0 <= req.rating <= 5):
-        from fastapi import HTTPException
-        raise HTTPException(400, "rating must be 0-5")
-
-    s = get_settings()
-    library_root = Path(s.library_root)
-    dest_album = s.portfolio_folder + (f"/{req.subfolder.strip('/')}" if req.subfolder else "")
-    dest_dir = library_root / dest_album
-    portfolio_dir = (library_root / s.portfolio_folder).resolve()
-    if not dest_dir.resolve().is_relative_to(portfolio_dir):
-        from fastapi import HTTPException
-        raise HTTPException(400, "subfolder must stay inside the portfolio folder")
-
-    # Expand the selection to whole stacks.
-    rows = (await db.execute(_sql("""
-        SELECT p.id, p.album_path, p.filename, p.stack_id
-        FROM photos p
-        WHERE p.status = 1 AND (
-            p.id = ANY(CAST(:ids AS int[]))
-            OR p.stack_id IN (SELECT stack_id FROM photos
-                              WHERE id = ANY(CAST(:ids AS int[])) AND stack_id IS NOT NULL)
-        )
-        ORDER BY p.album_path, p.filename
-    """), {"ids": req.photo_ids})).fetchall()
-
-    plan, conflicts = [], []
-    for pid, album, fname, stack_id in rows:
-        src = library_root / album.strip("/") / fname if album.strip("/") else library_root / fname
-        # RAWs live in <album>/RAW/ by convention (see move_raws_to_folders).
-        # Flattening them into the destination root would break that pairing,
-        # so a file that came from a RAW/ subfolder lands in one.
-        item_album, rel = promote_destination(album, dest_album, fname)
-        dst = library_root / rel
-        item = {"photo_id": pid, "from": str(src), "to": str(dst),
-                "album": item_album,
-                "stacked": stack_id is not None,
-                "carried": pid not in req.photo_ids}
-        if album.strip("/") == item_album.strip("/"):
-            item["skip"] = "already in destination"
-        elif dst.exists():
-            item["skip"] = "destination file exists"
-            conflicts.append(item)
-        plan.append(item)
-
-    movable = [p for p in plan if "skip" not in p]
-    if req.dry_run:
-        return {"dry_run": True, "dest_album": dest_album, "would_move": len(movable),
-                "conflicts": len(conflicts), "carried_with_stack": sum(1 for p in movable if p["carried"]),
-                "plan": plan[:200]}
-
-    # Moving files while a scan walks the library is the race the task guard
-    # exists for: the scan can see the old path empty and delete the row.
-    from fernkam.task_manager import task_manager
-    task_manager.ensure_no_file_task()
-
-    import shutil
-    moved, errors = 0, []
-    for item in movable:
-        try:
-            Path(item["to"]).parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(item["from"], item["to"])
-        except OSError as exc:
-            errors.append({"photo_id": item["photo_id"], "error": str(exc)})
-            continue
-        await db.execute(_sql("UPDATE photos SET album_path = :a, file_sync_dirty = true WHERE id = :pid"),
-                         {"a": item["album"], "pid": item["photo_id"]})
-        moved += 1
-
-    if moved:
-        # Keep stacks pointing at where their members now live.
-        await db.execute(_sql("""
-            UPDATE photo_stacks SET album_path = :a, updated_at = now()
-            WHERE id IN (SELECT DISTINCT stack_id FROM photos
-                         WHERE id = ANY(CAST(:ids AS int[])) AND stack_id IS NOT NULL)
-        """), {"a": dest_album, "ids": [i["photo_id"] for i in movable]})
-        if req.rating is not None:
-            await db.execute(_sql("UPDATE photos SET rating = :r WHERE id = ANY(CAST(:ids AS int[]))"),
-                             {"r": req.rating, "ids": [i["photo_id"] for i in movable]})
-        if req.tag_ids:
-            # Tags picked in the promote dialog are the user's own: approved.
-            await db.execute(_sql("""
-                INSERT INTO photo_tags (photo_id, tag_id, verified_at)
-                SELECT p, t, now() FROM unnest(CAST(:pids AS int[])) p
-                CROSS JOIN unnest(CAST(:tids AS int[])) t
-                ON CONFLICT (photo_id, tag_id)
-                    DO UPDATE SET verified_at = COALESCE(photo_tags.verified_at, now())
-            """), {"pids": [i["photo_id"] for i in movable], "tids": req.tag_ids})
-        await db.commit()
-
-    return {"dry_run": False, "dest_album": dest_album, "moved": moved,
-            "skipped": len(plan) - len(movable), "errors": errors}

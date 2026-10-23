@@ -86,6 +86,37 @@
 			lines: [],
 			expanded: false,
 		},
+		{
+			id: 'export-web',
+			label: 'Export for Web (Flickr)',
+			description: "Makes web-sized JPEG copies of one picture or a folder of pictures; originals are never touched. Each copy is at most 2048 px on its long side and carries what a researcher searches for: title and caption from fernKam (an edited copy like edited_DSC6748.jpg borrows its original's), common and Latin name, genus, family, order, group, conservation status and state, plus the camera, model and lens. Your rights notice, copyright and 'no AI data mining' come from Settings (EXPORT_*), with a Ref: line naming the original. Tags go out as plain names, never paths; people and EXPORT_EXCLUDE_TAGS stay off. GPS is kept unless you ask. Flickr reads the title, description and tags when you upload the copy.",
+			color: 'rose',
+			fields: [
+				{ key: 'path',       label: 'Picture or folder', placeholder: 'D:\\Photos\\…\\edited_DSC6748.jpg' },
+				{ key: 'out_dir',    label: 'Save copies to',    placeholder: 'blank = Pictures\\fernKam export (must be outside the library)' },
+				{ key: 'max_edge',   label: 'Longest side (px)', placeholder: 'blank = 2048' },
+				{ key: 'remove_gps', label: 'Remove GPS',        placeholder: 'blank = keep location; type yes to strip it' },
+			],
+			values: { path: '', out_dir: '', max_edge: '', remove_gps: '' },
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
+		{
+			id: 'portfolio-keywords',
+			label: 'Portfolio Keywords and Tags',
+			description: "Keeps wildlife folders and their pictures in step, in one pass. 1) Species folders named 'Common (Latin)' are the record: every picture in one (and in its RAW/dng subfolders) gets that species tag, approved; a missing tag is found through GBIF (merged or older names) or made next to its neighbours. 2) Species tags are linked to GBIF with their IUCN status and whether they were introduced to the US, and every picture gets its camera tag, as Learn all does. 3) Research words (common and Latin name, genus to class, reptile / herps ..., threat level, state and county, camera and lens or 'film') and Darwin Core fields are refreshed for write-back; Maintenance > DB -> Files puts them in the files, as plain keywords that never come back as tags. Latin names GBIF doesn't know, folders without a Latin name and pictures approved as another species are listed, not changed. Only what's missing changes, so run it after new shoots or folder moves.",
+			color: 'rose',
+			fields: [
+				{ key: 'paths', label: 'Folders', placeholder: 'blank = your usual folders (PORTFOLIO_FOLDERS); or D:\\Photos\\Portfolio; another' },
+			],
+			values: { paths: '' },
+			status: 'idle',
+			taskId: null,
+			lines: [],
+			expanded: false,
+		},
 	]);
 
 	// ---------------------------------------------------------------------------
@@ -121,6 +152,13 @@
 				btn:     'bg-sky-600 hover:bg-sky-500',
 				badge:   'bg-sky-500/20 text-sky-300',
 			},
+			rose: {
+				border:  'border-rose-500/50',
+				'icon-bg': 'bg-rose-500/10',
+				icon:    'text-rose-400',
+				btn:     'bg-rose-600 hover:bg-rose-500',
+				badge:   'bg-rose-500/20 text-rose-300',
+			},
 		};
 		return map[color]?.[part] ?? '';
 	}
@@ -155,7 +193,8 @@
 	async function runWorkflow(wf: WorkflowCard, dryRun = true) {
 		// These workflows trash and relocate originals, so Apply is a separate,
 		// explicit action and Preview is what the plain button does.
-		if (!dryRun && !(await ask(`${wf.label}: this modifies files on disk. Run for real?`))) return;
+		// Export only writes new copies outside the library, so it needs no warning.
+		if (!dryRun && wf.id !== 'export-web' && !(await ask(`${wf.label}: this modifies files on disk. Run for real?`))) return;
 		wf.status = 'running';
 		wf.lines = [];
 		wf.taskId = null;

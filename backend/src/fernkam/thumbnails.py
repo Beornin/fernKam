@@ -25,14 +25,15 @@ SIZES: dict[str, tuple[int, int]] = {
 
 
 def _open_raw_as_pil(src: Path) -> "Image.Image":
-    """Open a RAW camera file as PIL Image via embedded JPEG preview (fast)."""
+    """Open a RAW camera file as PIL Image via embedded JPEG preview (fast), upright:
+    the preview carries the camera's rotation in its own EXIF, which a re-encode drops."""
     import rawpy
     from io import BytesIO
     with rawpy.imread(str(src)) as raw:
         try:
             thumb = raw.extract_thumb()
             if thumb.format == rawpy.ThumbFormat.JPEG:
-                return Image.open(BytesIO(bytes(thumb.data))).copy()
+                return ImageOps.exif_transpose(Image.open(BytesIO(bytes(thumb.data))))
             else:
                 import numpy as np
                 return Image.fromarray(np.asarray(thumb.data, dtype="uint8"))

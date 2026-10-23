@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { notify } from '$lib/dialog.svelte';
+	import { ask, notify } from '$lib/dialog.svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { api, type BurstInfo, type PhotoSummary } from '$lib/api';
+	import { api, type BurstInfo, type CullFileResult, type CullPhoto, type PhotoSummary } from '$lib/api';
+	import CullSpeciesPanel from '$lib/components/CullSpeciesPanel.svelte';
 	import PhotoGrid from '$lib/components/PhotoGrid.svelte';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import FileMetadataDialog from '$lib/components/FileMetadataDialog.svelte';
@@ -62,6 +63,8 @@
 	let treeOpen = $state(true);
 	let rightPanelOpen = $state(false);
 	let rightPanelPhotoId = $state<number | null>(null);
+	// The right panel follows the photo you click (one selected); ticking more keeps the last one shown.
+	$effect(() => { if (selectedIds.size === 1) rightPanelPhotoId = [...selectedIds][0]; });
 
 	const lightbox = createLightboxNav();
 
@@ -354,6 +357,131 @@
 	}
 
 
+	// ── Cull: species, To do, filing (api.cull) ──
+	// The species tag decides the folder a photo files into, so it is picked here,
+	// while the shoot is still in AA_RAW. Tags go on every version of the shot.
+	let cullInfo = $state.raw<CullPhoto | null>(null);   // replaced whole, never mutated
+	let cullInfoLoading = $state(false);
+	const cullCache = new Map<number, CullPhoto>();
+	let cullScope = $state<'photo' | 'burst' | 'kept'>('photo');
+	let cullLast = $state<{ id: number; name: string } | null>(null);
+	let cullSearchEl = $state<HTMLInputElement | undefined>(undefined);
+	let cullPanel = $state(true);
+	let cullFiling = $state(false);
+
+	let cullTimer: ReturnType<typeof setTimeout>;
+	$effect(() => {
+		const id = reviewCurId;
+		if (!reviewMode || id === undefined) { cullInfo = null; return; }
+		const hit = cullCache.get(id);   // not cullInfo: reading what this effect writes would loop
+		cullInfo = hit ?? null;
+		clearTimeout(cullTimer);
+		if (!hit) cullTimer = setTimeout(() => loadCullInfo(id), 150);   // arrowing fast fetches only where you stop
+	});
+
+	async function loadCullInfo(id: number) {
+		cullInfoLoading = true;
+		try {
+			const r = await api.cull.photo(id);
+			cullCache.set(id, r);
+			if (reviewCurId === id) cullInfo = r;
+		} catch { /* the panel just shows nothing for this photo */ }
+		finally { cullInfoLoading = false; }
+	}
+
+	function forget(ids: number[]) { for (const id of ids) cullCache.delete(id); }
+
+	/** The photos a species pick applies to: this one, its burst, or everything not rejected. */
+	function cullScopeIds(): number[] {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur) return [];
+		const kept = (p: PhotoSummary) => p.color_label !== 1;
+		if (cullScope === 'kept') return reviewPhotos.filter(kept).map(p => p.id);
+		const b = burstInfo[cur.id];
+		if (cullScope === 'burst' && b) return reviewPhotos.filter(p => burstInfo[p.id]?.burst === b.burst && kept(p)).map(p => p.id);
+		return [cur.id];
+	}
+
+	async function cullApplySpecies(tag: { id: number; name: string }) {
+		const ids = cullScopeIds();
+		if (!ids.length) return;
+		if (ids.length > 1 && cullScope === 'kept'
+			&& !(await ask(`Tag all ${ids.length} kept photos here as ${tag.name}?`, 'default'))) return;
+		try {
+			forget((await api.cull.tag({ photo_ids: ids, tag_id: tag.id, on: true })).photos);
+			cullLast = tag;
+			flashGridMsg(`${tag.name} — ${ids.length} photo${ids.length === 1 ? '' : 's'}`);
+			const cur = reviewCurId;
+			if (cur !== undefined) await loadCullInfo(cur);
+			if (cullScope === 'photo' && reviewAdvance) reviewNext();
+		} catch (e) {
+			notify(`Could not tag: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function cullRemoveSpecies(tagId: number) {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur) return;
+		try {
+			forget((await api.cull.tag({ photo_ids: [cur.id], tag_id: tagId, on: false })).photos);
+			await loadCullInfo(cur.id);
+		} catch (e) {
+			notify(`Could not remove the tag: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function cullToggleTodo() {
+		const cur = reviewPhotos[reviewIdx];
+		if (!cur) return;
+		const on = !(cullInfo?.todo ?? false);
+		try {
+			forget((await api.cull.tag({ photo_ids: [cur.id], on })).photos);
+			if (cullInfo && reviewCurId === cur.id) { cullInfo = { ...cullInfo, todo: on }; cullCache.set(cur.id, cullInfo); }
+			flashGridMsg(on ? 'To do — come back to it' : 'To do cleared');
+		} catch (e) {
+			notify(`Could not set To do: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	function skippedText(plan: CullFileResult) {
+		const n = plan.skipped.length;
+		return n ? `\n\n${n} not filed: ${[...new Set(plan.skipped.map(s => s.why))].join('; ')}.` : '';
+	}
+
+	/** Preview, confirm, then move photos (with their RAW, DNG and JPG) into their species folders. */
+	async function fileToSpecies(ids: number[]) {
+		if (!ids.length || cullFiling) return;
+		cullFiling = true;
+		try {
+			const plan = await api.cull.file(ids, true);
+			if (!plan.to_file) { notify(`Nothing to file.${skippedText(plan)}`); return; }
+			const where = Object.entries(plan.folders).map(([f, n]) => `${n} → ${f}`).join('\n');
+			const fresh = plan.new_folders.length ? `\n\nNew folder${plan.new_folders.length === 1 ? '' : 's'}: ${plan.new_folders.join(', ')}` : '';
+			if (!(await ask(`File ${plan.to_file} photo${plan.to_file === 1 ? '' : 's'}, each with its RAW, DNG and JPG?\n\n${where}${fresh}${skippedText(plan)}`, 'default'))) return;
+			const done = await api.cull.file(ids, false);
+			const gone = new Set(done.moved_ids ?? []);
+			reviewPhotos = reviewPhotos.filter(p => !gone.has(p.id));
+			photos = photos.filter(p => !gone.has(p.id));
+			reviewIdx = Math.min(reviewIdx, Math.max(0, reviewPhotos.length - 1));
+			selectedIds = new Set([...selectedIds].filter(id => !gone.has(id)));
+			if (done.errors?.length) notify(`${done.filed?.length ?? 0} filed; ${done.errors.length} could not be moved:\n${done.errors.slice(0, 5).join('\n')}`);
+			else flashGridMsg(`${done.filed?.length ?? 0} filed into species folders`);
+		} catch (e) {
+			notify(`Could not file: ${e instanceof Error ? e.message : e}`);
+		} finally {
+			cullFiling = false;
+		}
+	}
+
+	async function openInEditor(id: number) {
+		try {
+			const r = await api.cull.edit(id);
+			flashGridMsg(`Opening ${r.opened.split(/[\\/]/).pop()}`);
+		} catch (e) {
+			notify(`Could not open the editor: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
 	function reviewRate(n: number) {
 		const cur = reviewPhotos[reviewIdx];
 		if (!cur || reviewLoading) return;
@@ -372,6 +500,12 @@
 
 	function onReviewKey(e: KeyboardEvent) {
 		if (!reviewMode) return;
+		// Typing a species name must not rate, reject or trash the photo.
+		const t = e.target as HTMLElement | null;
+		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+			if (e.key === 'Escape') t.blur();
+			return;
+		}
 		if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); reviewJump(-1); }
 		else if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); reviewJump(1); }
 		else if (e.key === 'ArrowLeft') { e.preventDefault(); reviewPrev(); }
@@ -388,6 +522,10 @@
 			else if (e.key === '0') { e.preventDefault(); reviewRate(0); }
 			else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); reviewToggleReject(); }
 			else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); reviewKeepBest(); }
+			else if (e.key === 't' || e.key === 'T') { e.preventDefault(); cullToggleTodo(); }
+			else if (e.key === 's' || e.key === 'S') { e.preventDefault(); cullPanel = true; tick().then(() => cullSearchEl?.focus()); }
+			else if ((e.key === 'a' || e.key === 'A') && cullLast) { e.preventDefault(); cullApplySpecies(cullLast); }
+			else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); openInEditor(reviewPhotos[reviewIdx].id); }
 		}
 	}
 
@@ -469,6 +607,77 @@
 			if (!r.ok) notify(`Could not reveal file: ${(await r.json()).detail ?? r.status}`);
 		} catch (e) {
 			notify(`Could not reveal file: ${e}`);
+		}
+	}
+
+	async function menuTodo(on: boolean) {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		try {
+			forget((await api.cull.tag({ photo_ids: ids, on })).photos);
+			flashGridMsg(`${on ? 'To do' : 'To do cleared'} — ${ids.length} photo${ids.length === 1 ? '' : 's'}`);
+		} catch (e) {
+			notify(`Could not set To do: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	function menuFile() {
+		const m = menu; menu = null;
+		if (m) fileToSpecies(selectedIds.size ? [...selectedIds] : [m.photo.id]);
+	}
+
+	function menuEdit() {
+		const m = menu; menu = null;
+		if (m) openInEditor(m.photo.id);
+	}
+
+	/** Export for Web on exactly the pictures clicked or selected: copies in the export folder, to
+	 *  upload to Flickr by hand. Nothing is uploaded. */
+	async function menuExport() {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		flashGridMsg(`Exporting ${ids.length} for Flickr…`);
+		try {
+			const r = await api.cull.export(ids);
+			const lines = [];
+			if (r.saved.length) lines.push(`Saved ${r.saved.length} cop${r.saved.length === 1 ? 'y' : 'ies'} to ${r.folder}:\n${r.saved.slice(0, 8).join('\n')}${r.saved.length > 8 ? '\n…' : ''}`);
+			if (r.skipped.length) lines.push(`Not exported:\n${r.skipped.slice(0, 8).join('\n')}`);
+			if (r.on_flickr.length) lines.push(`Already on Flickr: ${r.on_flickr.join(', ')}`);
+			notify(lines.join('\n\n') || 'Nothing to export.');
+		} catch (e) {
+			notify(`Could not export: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function menuFlickrMark(on: boolean) {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		try {
+			const r = await api.cull.flickrMark(ids, on);
+			flashGridMsg(`${on ? r.tags.join(' / ') : 'On Flickr cleared'} — ${r.photos.length} photo${r.photos.length === 1 ? '' : 's'}`);
+		} catch (e) {
+			notify(`Could not mark: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	/** Smaller full-resolution copies of exactly the pictures clicked or selected, for sharing. */
+	async function menuShare() {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		flashGridMsg(`Making ${ids.length} smaller cop${ids.length === 1 ? 'y' : 'ies'}…`);
+		try {
+			const r = await api.cull.share(ids);
+			const mb = (n: number) => `${Math.round(n / 1048576).toLocaleString()} MB`;
+			const lines = [];
+			if (r.saved.length) lines.push(`Saved ${r.saved.length} cop${r.saved.length === 1 ? 'y' : 'ies'} at full size, ${mb(r.before)} → ${mb(r.after)}, to ${r.folder}`);
+			if (r.skipped.length) lines.push(`Not copied:\n${r.skipped.slice(0, 8).join('\n')}`);
+			notify(lines.join('\n\n') || 'Nothing to copy.');
+		} catch (e) {
+			notify(`Could not make copies: ${e instanceof Error ? e.message : e}`);
 		}
 	}
 
@@ -811,14 +1020,14 @@
 				{#if rightPanelOpen}<PanelRightClose size={14} />{:else}<PanelRightOpen size={14} />{/if}
 			</button>
 
-			<!-- Review Mode button -->
+			<!-- Cull mode button -->
 			{#if !mapMode && activeTab === 'albums' && albumPath && photos.length > 0}
 				<button
 					onclick={enterReview}
 					class="text-xs px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white flex items-center gap-1 transition-colors shrink-0"
-					title="Review photos (cull)"
+					title="Cull: trash, reject and rate, mark To do, tag the species, then file into species folders"
 				>
-					<Clapperboard size={12} /> Review
+					<Clapperboard size={12} /> Cull
 				</button>
 			{/if}
 
@@ -860,6 +1069,7 @@
 					<option value="taken_at_asc">Oldest first</option>
 					<option value="rating_desc">Highest rated</option>
 					<option value="filename_asc">Filename A–Z</option>
+					<option value="type_asc">File type (JPG first)</option>
 					<option value="imported_at_desc">Recently imported</option>
 				</select>
 			</div>
@@ -967,6 +1177,19 @@
 						: 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
 			>{reviewPhotos[reviewIdx]?.color_label === 1 ? 'rejected ✕' : 'reject'}</button>
 
+			<button
+				onclick={cullToggleTodo}
+				title="To do: come back to it, an edit in Affinity Photo say  (key T)"
+				class="px-2 py-1 text-[11px] rounded transition-colors
+					{cullInfo?.todo ? 'bg-sky-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+			>{cullInfo?.todo ? 'to do ✓' : 'to do'}</button>
+
+			{#if cullInfo?.species.length}
+				<span class="text-xs text-emerald-300 truncate max-w-[22rem]" title="Species tags on this shot">
+					{cullInfo.species.map(s => s.name).join(' · ')}
+				</span>
+			{/if}
+
 			{#if reviewTrashedCount > 0}
 				<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/30 text-red-300">{reviewTrashedCount} trashed</span>
 			{/if}
@@ -998,9 +1221,15 @@
 				{#if reviewFit}<ZoomIn size={16} />{:else}<Maximize2 size={16} />{/if}
 			</button>
 			<button
+				onclick={() => cullPanel = !cullPanel}
+				class="text-[11px] px-2 py-1 rounded transition-colors
+					{cullPanel ? 'bg-violet-600/40 text-violet-200' : 'text-zinc-500 hover:text-zinc-300'}"
+				title="Show or hide the species picker"
+			>species</button>
+			<button
 				onclick={exitReview}
 				class="p-1.5 rounded hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
-				title="Exit review (Esc)"
+				title="Exit cull (Esc)"
 			>
 				<X size={16} />
 			</button>
@@ -1012,6 +1241,7 @@
 	<div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 bg-zinc-950/90 border-b border-zinc-800 text-[11px] text-zinc-500">
 		{#each [
 			['1–5', 'rate'], ['0', 'clear rating'], ['X', 'reject (toggle)'], ['B', 'keep this, reject rest of burst'],
+			['T', 'to do'], ['S', 'search species'], ['A', 'last species again'], ['E', 'edit in Affinity'],
 			['← →', 'prev / next'], ['⇧← ⇧→', 'prev / next moment'],
 			['Del', 'trash file'], ['dbl-click', '75% / back to fit'], ['click', '100%'], ['wheel', 'zoom'], ['F', 'fit / 1:1'], ['Esc', 'exit'],
 		] as [key, what]}
@@ -1021,18 +1251,19 @@
 			</span>
 		{/each}
 		<span class="ml-auto text-zinc-600">
-			Rating and reject are catalogue-only — nothing is deleted except <kbd class="px-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 font-mono text-[10px]">Del</kbd>
+			Rating, reject, to do and species are catalogue-only — nothing is deleted except <kbd class="px-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 font-mono text-[10px]">Del</kbd>
 		</span>
 	</div>
 
+	<div class="flex-1 flex min-h-0 relative">
 	<!-- Image area. Click/double-click zoom has a keyboard equivalent (F, fit/1:1),
-	     handled window-wide like every Review key. -->
+	     handled window-wide like every Cull key. -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		bind:this={reviewScroll}
 		role="application"
-		aria-label="Photo review area"
-		class="flex-1 overflow-auto relative {panActive ? 'cursor-grabbing' : reviewFit ? 'cursor-default' : 'cursor-grab'}"
+		aria-label="Photo cull area"
+		class="flex-1 min-w-0 overflow-auto relative {panActive ? 'cursor-grabbing' : reviewFit ? 'cursor-default' : 'cursor-grab'}"
 		onmousedown={panStart}
 		onmousemove={panMove}
 		onmouseup={panEnd}
@@ -1095,6 +1326,23 @@
 			<div class="flex items-center justify-center h-full text-zinc-500">No photos left</div>
 		{/if}
 	</div>
+	{#if cullPanel}
+		<CullSpeciesPanel
+			info={cullInfo}
+			loading={cullInfoLoading}
+			bind:scope={cullScope}
+			last={cullLast}
+			bind:searchEl={cullSearchEl}
+			onApply={cullApplySpecies}
+			onRemove={cullRemoveSpecies}
+		/>
+	{/if}
+	{#if gridKeyMsg}
+		<div class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs text-zinc-100 shadow-lg pointer-events-none">
+			{gridKeyMsg}
+		</div>
+	{/if}
+	</div>
 
 	<!-- Filmstrip -->
 	<div
@@ -1145,6 +1393,13 @@
 			class="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-30 transition-colors"
 			title="Next (→)"
 		><ChevronRight size={20} /></button>
+
+		<button
+			onclick={() => fileToSpecies(reviewPhotos.filter(p => p.color_label !== 1).map(p => p.id))}
+			disabled={cullFiling || reviewPhotos.length === 0}
+			class="ml-6 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium disabled:opacity-40 transition-colors"
+			title="Move every species-tagged photo here (not rejected) into its species folder, with its RAW, DNG and JPG. You see the plan first."
+		>{cullFiling ? 'Filing…' : 'File into species folders…'}</button>
 	</div>
 
 </div>
@@ -1173,6 +1428,15 @@
 				class="ml-1 px-1.5 h-6 rounded hover:bg-zinc-800 text-zinc-500 text-[10px]">clear</button>
 		</div>
 		<button class={menuItem} onclick={menuReject}>Reject (red label)</button>
+		<button class={menuItem} onclick={() => menuTodo(true)}>Mark To do</button>
+		<button class={menuItem} onclick={() => menuTodo(false)}>Clear To do</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={menuFile}>File into species folder…</button>
+		<button class={menuItem} onclick={menuEdit}>Edit in Affinity Photo</button>
+		<button class={menuItem} onclick={menuExport}>Export for Flickr (2048 px copy)</button>
+		<button class={menuItem} onclick={() => menuFlickrMark(true)}>Mark as on Flickr</button>
+		<button class={menuItem} onclick={() => menuFlickrMark(false)}>Clear on Flickr</button>
+		<button class={menuItem} onclick={menuShare}>Smaller copy for sharing (full size)</button>
 		<div class="my-1 border-t border-zinc-800"></div>
 		<button class={menuItem} onclick={() => menuOrient('left')}>Rotate left</button>
 		<button class={menuItem} onclick={() => menuOrient('right')}>Rotate right</button>

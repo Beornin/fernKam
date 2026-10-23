@@ -204,7 +204,7 @@ Standalone scripts; each prints `ok - ...` or raises:
 | `test_scan_removals.py`: which rows a scan may delete | no |
 | `test_photo_sort.py`: sort tiebreakers match the cursor | no |
 | `test_task_conflict.py`: file-mutating task guard, incl. double-click and cancel | no |
-| `test_promote_destination.py`: RAW/ convention preserved when promoting | no |
+| `test_cull.py`: Cull mode filing: a shot's versions, RAW/ and dng/, group folders | no |
 | `test_sync_merge.py`: three-way metadata merge rules | no |
 | `test_move_match.py`: moved/renamed files matched by content hash | no |
 | `test_scan_root.py`: scans stay inside `LIBRARY_ROOT` | no |

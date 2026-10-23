@@ -20,7 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
-from fernkam import embed_index, embed_models, photo_context, species_range, species_status, tag_learning, vision_check
+from fernkam import camera_tags, embed_index, embed_models, photo_context, species_range, species_status, tag_learning, vision_check
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -520,6 +520,7 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
                         await task_manager.update_task(task_id, message=f"Species status from GBIF… {n}/{total}")
                     await species_status.fetch(bdb, status_progress)
                     await species_status.apply(bdb)
+                    await camera_tags.apply(bdb)   # Camera › Nikon › Z9 from each photo's EXIF
                     await bdb.commit()
                 except Exception:  # noqa: BLE001 — learn without fresh status
                     logger.warning("species status update failed", exc_info=True)

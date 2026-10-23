@@ -10,6 +10,7 @@ import time
 from typing import Optional
 
 from fernkam.workflows.shared import format_elapsed
+from fernkam.services.photo_query import in_album
 
 
 def run(album_path: Optional[str] = None, dry_run: bool = True) -> None:
@@ -54,7 +55,7 @@ async def _sync(async_session_factory, album_path: Optional[str], dry_run: bool)
         q = select(PhotoStack.id)
         if album_path:
             clean_album_path = album_path.lstrip("/")
-            q = q.where(PhotoStack.album_path.like(f"{clean_album_path}%"))
+            q = q.where(in_album(PhotoStack.album_path, clean_album_path))
         stack_ids = [r[0] for r in (await db.execute(q)).fetchall()]
 
     if dry_run:

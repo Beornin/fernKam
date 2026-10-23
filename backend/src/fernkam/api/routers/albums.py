@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fernkam.api.deps import DB
 from fernkam.api.schemas import AlbumNode
 from fernkam.db.models.photos import Photo
@@ -84,3 +84,23 @@ async def list_albums(db: DB) -> list[AlbumNode]:
     for r in rows:
         print(f"[ALBUMS] Path: '{r.album_path}', Count: {r.cnt}", flush=True)
     return _build_tree([(r.album_path, r.cnt) for r in rows])
+
+
+@router.post("/reveal")
+async def reveal_album(album_path: str = Body(..., embed=True)) -> dict:
+    """Open the folder in the OS file manager. Local desktop app: the server and the person
+    clicking are on the same machine, which is the only reason this is reasonable."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from fastapi import HTTPException
+    from fernkam.config import get_settings
+
+    lib = Path(get_settings().library_root).resolve()
+    folder = (lib / album_path.strip("/")).resolve()
+    if not folder.is_relative_to(lib) or not folder.is_dir():
+        raise HTTPException(404, f"Not a folder in the library: {album_path}")
+    opener = ["explorer"] if sys.platform == "win32" else ["open"] if sys.platform == "darwin" else ["xdg-open"]
+    subprocess.Popen([*opener, str(folder)])
+    return {"opened": str(folder)}

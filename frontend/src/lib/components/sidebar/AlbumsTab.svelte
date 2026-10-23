@@ -5,6 +5,8 @@
 	import { api, type AlbumNode } from '$lib/api';
 	import { buildFilterUrl } from '$lib/shellFilters';
 	import { libraryVersionStore } from '$lib/stores';
+	import { notify } from '$lib/dialog.svelte';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import { ChevronDown, ChevronRight, FolderOpen, Folder, Images } from '@lucide/svelte';
 
 	let albumPath = $derived($page.url.searchParams.get('album_path') ?? '');
@@ -44,6 +46,54 @@
 		else expanded.add(path);
 		expanded = new Set(expanded);
 	}
+
+	// Right-click a folder: a scan or a metadata reread of just that folder (and the
+	// folders inside it). Progress shows in the status bar like any other scan.
+	let menu = $state<{ x: number; y: number; node: AlbumNode } | null>(null);
+	const menuItem = 'w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 transition-colors';
+
+	async function refreshAlbum() {
+		const m = menu; menu = null;
+		if (!m) return;
+		try {
+			await api.sync.scanLibrary({ custom_path: m.node.path.replace(/^\//, '') });
+		} catch (e) {
+			notify(`Could not refresh ${m.node.name}: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	/** Only photos with changes not yet in their files: a whole folder of 70 MB TIFFs would take hours. */
+	async function writeAlbum() {
+		const m = menu; menu = null;
+		if (!m) return;
+		try {
+			const r = await api.sync.writeMetadata({ album_path: m.node.path, dirty_only: true });
+			if (!r.task_id) notify(`Nothing in ${m.node.name} is waiting to be written to its files.`);
+		} catch (e) {
+			notify(`Could not write ${m.node.name}: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function revealAlbum() {
+		const m = menu; menu = null;
+		if (!m) return;
+		try {
+			await api.albums.reveal(m.node.path);
+		} catch (e) {
+			notify(`Could not open ${m.node.name}: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function rereadAlbum() {
+		const m = menu; menu = null;
+		if (!m) return;
+		try {
+			const r = await api.sync.refreshMetadata({ album_path: m.node.path });
+			if (!r.task_id) notify(r.message);
+		} catch (e) {
+			notify(`Could not reread ${m.node.name}: ${e instanceof Error ? e.message : e}`);
+		}
+	}
 </script>
 
 <div class="flex-1 overflow-y-auto py-1">
@@ -60,7 +110,9 @@
 		{@const hasChildren = node.children.length > 0}
 		{@const selected = albumPath === node.path}
 		<div>
-			<div class="flex items-center gap-0.5 hover:bg-zinc-800 transition-colors" style="padding-left:{depth * 12 + 8}px">
+			<div class="flex items-center gap-0.5 hover:bg-zinc-800 transition-colors" style="padding-left:{depth * 12 + 8}px"
+				role="treeitem" aria-selected={selected} tabindex="-1"
+				oncontextmenu={(e) => { e.preventDefault(); menu = { x: e.clientX, y: e.clientY, node }; }}>
 				<button
 					class="w-4 h-4 flex items-center justify-center text-zinc-600 hover:text-zinc-300 shrink-0"
 					onclick={() => hasChildren && toggleFolder(node.path)}
@@ -94,3 +146,17 @@
 		{@render albumRow(album, 0)}
 	{/each}
 </div>
+
+{#if menu}
+	<ContextMenu x={menu.x} y={menu.y} onClose={() => menu = null}>
+		<div class="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500 truncate max-w-[260px]">{menu.node.name}</div>
+		<button class={menuItem} onclick={refreshAlbum}
+			title="Scan this folder and the folders inside it for new, changed, moved and removed files">Refresh this album</button>
+		<button class={menuItem} onclick={rereadAlbum}
+			title="Read tags, ratings and captions back from the files, for photos changed outside fernKam">Reread metadata from files</button>
+		<button class={menuItem} onclick={writeAlbum}
+			title="Write fernKam's tags, ratings and captions into the files, for photos here with changes not yet written (DB → Files for this folder)">Write metadata to files</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class={menuItem} onclick={revealAlbum}>Show in File Explorer</button>
+	</ContextMenu>
+{/if}

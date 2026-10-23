@@ -137,6 +137,24 @@ class Settings(BaseSettings):
     # the stage view and the dedup tier logic cannot drift apart.
     raw_intake_folder: str = "AA_RAW"                    # RAW_INTAKE_FOLDER
     portfolio_folder: str = "Portfolio"                  # PORTFOLIO_FOLDER
+    archive_folder: str = ""          # ARCHIVE_FOLDER — top-level folder of an inherited archive: its own Ref prefix and Flickr tag
+    flickr_tag: str = "On Flickr"     # FLICKR_TAG — fact tag "Mark as on Flickr" gives a photo
+    archive_flickr_tag: str = ""      # ARCHIVE_FLICKR_TAG — the same for the archive's photos (blank = FLICKR_TAG)
+    ref_prefix: str = "REF"           # REF_PREFIX — licensing Ref tags for your photos: "REF-272036"
+    archive_ref_prefix: str = "ARC"   # ARCHIVE_REF_PREFIX — the same for the archive's photos
+
+    # Workflows › Export for web: resized copies for Flickr and the like.
+    export_dir: str = ""              # EXPORT_DIR — blank = <home>/Pictures/fernKam export (keep it outside the library)
+    export_max_edge: int = 2048       # EXPORT_MAX_EDGE — longest side, in pixels
+    export_notice: str = ""           # EXPORT_NOTICE — added to every description ("\n" = new line)
+    export_copyright: str = ""        # EXPORT_COPYRIGHT
+    export_creator: str = ""          # EXPORT_CREATOR
+    export_extra_tags: str = ""       # EXPORT_EXTRA_TAGS — comma-separated, added to every export
+    export_exclude_tags: str = ""     # EXPORT_EXCLUDE_TAGS — comma-separated tags (and their branches) kept off exports
+    portfolio_folders: str = ""       # PORTFOLIO_FOLDERS — ";"-separated folders Portfolio keywords and tags checks when none are picked
+
+    # Cull mode and the photos page right-click: Edit in Affinity Photo.
+    editor_exe: str = ""              # EDITOR_EXE — blank = AffinityPhoto2.exe if installed, else the file's own app
 
     @property
     def prep_folders(self) -> list[str]:
