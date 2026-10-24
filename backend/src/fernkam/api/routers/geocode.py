@@ -29,6 +29,46 @@ def _lookup_batch(coords: list[tuple[float, float]]) -> list[dict]:
     return rg.search(coords, mode=1, verbose=False)
 
 
+async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None) -> int:
+    """Fill country / state / city for live photos with GPS and no city yet (every one with GPS when
+    force): the Geocode button, and each library scan for what it brought in. Offline, so a few
+    thousand take a second. progress(done, total) is awaited after each batch. Returns how many."""
+    q = (
+        select(Photo.id, Photo.latitude, Photo.longitude)
+        .where(Photo.status == 1)
+        .where(Photo.latitude.is_not(None))
+        .order_by(Photo.id)
+    )
+    if not force:
+        q = q.where(Photo.city.is_(None))
+    if limit:
+        q = q.limit(limit)
+
+    rows = (await db.execute(q)).fetchall()
+    total, done = len(rows), 0
+    BATCH = 5000
+    for i in range(0, total, BATCH):
+        batch = rows[i:i + BATCH]
+        coords = [(float(r.latitude), float(r.longitude)) for r in batch]
+        results = await asyncio.get_event_loop().run_in_executor(None, _lookup_batch, coords)
+
+        # Single executemany-style call per batch (was one round-trip
+        # per photo — up to 120k individual UPDATEs).
+        params = [
+            {"cc": geo.get("cc", ""), "state": geo.get("admin1", ""),
+             "city": geo.get("name", ""), "id": row.id}
+            for row, geo in zip(batch, results)
+        ]
+        await db.execute(text(
+            "UPDATE photos SET country_code=:cc, state=:state, city=:city WHERE id=:id"
+        ), params)
+        done += len(batch)
+        await db.commit()
+        if progress:
+            await progress(done, total)
+    return done
+
+
 @router.get("/stats", response_model=dict)
 async def geocode_stats(db: DB) -> dict:
     row = (await db.execute(text("""
@@ -53,51 +93,16 @@ async def run_geocoding(
     task_id = await task_manager.create_task("geocode", "Reverse geocoding GPS coordinates…")
 
     async def _run() -> None:
-        done = 0
         try:
             async with _factory() as bg_db:
-                q = (
-                    select(Photo.id, Photo.latitude, Photo.longitude)
-                    .where(Photo.status == 1)
-                    .where(Photo.latitude.is_not(None))
-                    .order_by(Photo.id)
-                )
-                if not force:
-                    q = q.where(Photo.city.is_(None))
-                if limit:
-                    q = q.limit(limit)
-
-                rows = (await bg_db.execute(q)).fetchall()
-                total = len(rows)
-                BATCH = 5000
-
-                for i in range(0, total, BATCH):
-                    batch = rows[i:i + BATCH]
-                    coords = [(float(r.latitude), float(r.longitude)) for r in batch]
-                    results = await asyncio.get_event_loop().run_in_executor(None, _lookup_batch, coords)
-
-                    # Single executemany-style call per batch (was one round-trip
-                    # per photo — up to 120k individual UPDATEs).
-                    params = [
-                        {"cc": geo.get("cc", ""), "state": geo.get("admin1", ""),
-                         "city": geo.get("name", ""), "id": row.id}
-                        for row, geo in zip(batch, results)
-                    ]
-                    await bg_db.execute(text(
-                        "UPDATE photos SET country_code=:cc, state=:state, city=:city WHERE id=:id"
-                    ), params)
-                    done += len(batch)
-
-                    await bg_db.commit()
-                    await task_manager.update_task(
-                        task_id, message=f"Geocoded {done}/{total}…",
-                        progress={"done": done, "total": total},
-                    )
-
+                async def progress(done: int, total: int) -> None:
+                    await task_manager.update_task(task_id, message=f"Geocoded {done}/{total}…",
+                                                   progress={"done": done, "total": total})
+                done = await geocode_pending(bg_db, force, limit, progress)
                 await task_manager.update_task(
                     task_id, status="completed",
                     message=f"Done: {done} photos geocoded",
-                    progress={"done": done, "total": total},
+                    progress={"done": done, "total": done},
                 )
         except Exception as exc:
             logger.exception("geocode task failed")

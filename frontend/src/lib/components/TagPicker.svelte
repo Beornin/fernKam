@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, type TagOut } from '$lib/api';
+	import { photosChanged } from '$lib/stores';
 	import { X, Plus, Tag, ChevronRight, Search, Check } from '@lucide/svelte';
 
 	let {
@@ -50,6 +51,7 @@
 
 	async function addTag(tag: TagOut) {
 		await api.photoTags.add(photoId, tag.id);
+		photosChanged([photoId]);   // the side panel or viewer showing it too
 		currentTags = [...currentTags, tag];
 		unverified = unverified.filter(id => id !== tag.id);
 		query = '';
@@ -58,12 +60,14 @@
 
 	async function removeTag(tag: TagOut) {
 		await api.photoTags.remove(photoId, tag.id);
+		photosChanged([photoId]);
 		currentTags = currentTags.filter(t => t.id !== tag.id);
 		unverified = unverified.filter(id => id !== tag.id);
 	}
 
 	async function approveTag(tag: TagOut) {
 		await api.tagReview.decide(tag.id, { approve: [photoId] });
+		photosChanged([photoId]);
 		unverified = unverified.filter(id => id !== tag.id);
 	}
 

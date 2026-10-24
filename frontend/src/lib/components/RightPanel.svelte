@@ -3,6 +3,8 @@
 	import { Info, Tag, X, ChevronRight, Star, MapPin } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { formatBytes, formatShutter, formatAperture } from '$lib/format';
+	import { detailVersion } from '$lib/stores';
+	import { untrack } from 'svelte';
 
 	let { photoId, onClose }: {
 		photoId: number | null;
@@ -18,13 +20,14 @@
 	// response could land after a newer one and show the wrong photo's info.
 	let detailAbort: AbortController | null = null;
 	$effect(() => {
+		void (photoId !== null && $detailVersion[photoId]);   // read again when an action changed it
 		detailAbort?.abort();
 		if (photoId === null) { detail = null; return; }
 		const controller = new AbortController();
 		detailAbort = controller;
 
 		loading = true;
-		detail = null;
+		if (untrack(() => detail?.id) !== photoId) detail = null;   // a re-read of the same photo keeps showing it
 		api.photos.get(photoId, controller.signal)
 			.then(d => {
 				if (controller.signal.aborted) return;

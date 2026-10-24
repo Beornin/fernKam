@@ -8,6 +8,14 @@ export const statusCountStore = writable<string>('');
  * URL, so the grid fetches the redrawn thumbnail instead of reusing the old one. */
 export const thumbVersion = writable<Record<number, number>>({});
 
+/** Bumped per photo when an action (a right-click menu item, a Cull key) changed its tags, rating
+ * or label, so an open side panel or viewer showing it reads it again. */
+export const detailVersion = writable<Record<number, number>>({});
+
+export function photosChanged(ids: number[]): void {
+	detailVersion.update(v => { for (const id of ids) v[id] = (v[id] ?? 0) + 1; return v; });
+}
+
 /** The server's library version (see sync/library.py), updated by the status
  * bar's task poll. It changes when a scan adds, removes, moves or refreshes
  * photos, and views that list photos reload then. null until the first poll. */

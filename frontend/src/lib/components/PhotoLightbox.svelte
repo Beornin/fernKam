@@ -8,6 +8,7 @@ import MiniMap from './MiniMap.svelte';
 import PersonPicker from './PersonPicker.svelte';
 import { scoreBadgeClass } from '$lib/faceConfidence';
 import { formatBytes, formatDuration, formatShutter, formatAperture } from '$lib/format';
+import { detailVersion, photosChanged } from '$lib/stores';
 
 let {
 photoId,
@@ -112,6 +113,22 @@ if (e?.name === 'AbortError' || controller.signal.aborted) return;
 }
 });
 
+// An action elsewhere on the page (a right-click menu item) changed this photo: read its tags,
+// rating and faces again, keeping zoom and the selected face as they are.
+let seenVersion = 0;
+$effect(() => {
+const id = photoId, v = $detailVersion[photoId] ?? 0;
+if (!v || v === seenVersion) return;
+seenVersion = v;
+api.photos.get(id).then(d => {
+if (id !== photoId) return;
+detail = d;
+liveTags = d.tags;
+liveUnverified = d.unverified_tag_ids ?? [];
+liveFaces = d.faces;
+}).catch(() => {});
+});
+
 function handleKey(e: KeyboardEvent) {
 if (e.key === 'Escape') { if (selectedFace) { selectedFace = null; } else { onClose(); } }
 if (e.key === 'ArrowLeft' && !selectedFace) onPrev?.();
@@ -194,6 +211,7 @@ return { left: f.x * scaleX, top: f.y * scaleY, width: f.w * scaleX, height: f.h
 
 async function assignFaceName(face: FaceOut, tagId: number | null) {
 const updated = await api.faces.update(face.id, { person_tag_id: tagId, status: tagId ? 'confirmed' : 'unconfirmed' });
+photosChanged([face.photo_id]);
 // Add person_name from allPersonTags if not included in response
 if (tagId && !updated.person_name) {
 const person = allPersonTags.find(pt => pt.id === tagId);
@@ -238,18 +256,21 @@ try {
 
 async function confirmFace(face: FaceOut) {
 const updated = await api.faces.update(face.id, { status: 'confirmed' });
+photosChanged([face.photo_id]);
 liveFaces = liveFaces.map(f => f.id === updated.id ? updated : f);
 selectedFace = updated;
 }
 
 async function rejectSuggestion(face: FaceOut) {
 const updated = await api.faces.update(face.id, { person_tag_id: null, status: 'unconfirmed' });
+photosChanged([face.photo_id]);
 liveFaces = liveFaces.map(f => f.id === updated.id ? updated : f);
 selectedFace = updated;
 }
 
 async function markNotFace(face: FaceOut) {
 const updated = await api.faces.update(face.id, { status: 'ignored' });
+photosChanged([face.photo_id]);
 liveFaces = liveFaces.map(f => f.id === updated.id ? updated : f);
 if (selectedFace?.id === face.id) selectedFace = null;
 }

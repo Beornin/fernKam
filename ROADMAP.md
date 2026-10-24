@@ -1303,6 +1303,15 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   0.5 s for a 114 MB TIFF per write. End to end on a real photo: the tag reached the file 9 s after
   the edit, the database recorded the write, and the viewer's new File row went from "Writing in a
   few seconds…" to "Up to date".
+- **Every scan geocodes** (`geocode_pending`, shared with the map's Geocode button): photos with
+  GPS and no place name get country / state / city at the end of each scan, offline. The first run
+  filled the 6,718 waiting since mid-August in 4.2 s. The data is reverse_geocoder's bundled
+  GeoNames list (144,564 places of 1,000+ people): the town is the nearest one in that list, so a
+  city neighbourhood that isn't in it comes out as the nearest listed town.
+- **An open side panel or viewer re-reads a photo an action changed** (`detailVersion` store,
+  2026-10-24): a tag removed from the right-click menu or the other panel's tag list still showed
+  until the photo was reopened. Checked in the app: Add / Remove Flickr tag from the menu shows and
+  clears My Flickr in the side panel at once (one re-read each, no loop).
 - **Viewer shows a suggested face's match %** on its box and its chip ("<name> 41%"): the photo
   endpoint built faces with its own copy of the converter, which dropped the score the viewer was
   already built to show; it uses the shared one now. Auto-confirm (strictness 0.95) already takes

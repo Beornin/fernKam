@@ -207,6 +207,18 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                     except Exception as ee:
                         logger.warning("[SCAN] Tag Review model update failed: %s", ee)
 
+                # ── Phase 6: place names for photos with GPS and none yet ────
+                # Offline and quick (a few thousand a second), so every scan
+                # does it instead of waiting for the map's Geocode button.
+                geocoded_n = 0
+                try:
+                    from fernkam.api.routers.geocode import geocode_pending
+                    await task_manager.update_task(task_id, message="Looking up place names…")
+                    geocoded_n = await geocode_pending(bg_db)
+                except Exception as ge:
+                    logger.warning("[SCAN] geocoding failed: %s", ge)
+                    await bg_db.rollback()
+
                 t_total = _time.time() - t_start
                 per_photo_ms = (t_total / max(1, added)) * 1000.0
                 print(
@@ -225,6 +237,8 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                     warnings += f" — {stats['pixels_changed']} edited outside fernKam (refreshed)"
                 if embedded_n:
                     warnings += f" — {embedded_n} added to search"
+                if geocoded_n:
+                    warnings += f" — {geocoded_n} given place names"
                 if stats.get("deletion_skipped"):
                     warnings += f" — removals skipped: {stats['deletion_skipped']}"
                 if stats.get("unreadable_dirs"):

@@ -18,7 +18,7 @@
 	import MapView from '$lib/components/MapView.svelte';
 	import { ChevronLeft, ChevronRight, SlidersHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Clapperboard, Trash2, X, ZoomIn, ZoomOut, Maximize2, Map as MapIcon, Star, Loader } from '@lucide/svelte';
 	import RightPanel from '$lib/components/RightPanel.svelte';
-	import { statusCountStore, libraryVersionStore, thumbVersion } from '$lib/stores';
+	import { statusCountStore, libraryVersionStore, thumbVersion, photosChanged } from '$lib/stores';
 	import { createLightboxNav } from '$lib/lightboxNav.svelte';
 	import { inferTab, readListFilterParams, buildFilterUrl, type ShellTab } from '$lib/shellFilters';
 
@@ -389,7 +389,7 @@
 		finally { cullInfoLoading = false; }
 	}
 
-	function forget(ids: number[]) { for (const id of ids) cullCache.delete(id); }
+	function forget(ids: number[]) { for (const id of ids) cullCache.delete(id); photosChanged(ids); }
 
 	/** The photos a species pick applies to: this one, its burst, or everything not rejected. */
 	function cullScopeIds(): number[] {
@@ -641,6 +641,7 @@
 		flashGridMsg(`Exporting ${ids.length} for Flickr…`);
 		try {
 			const r = await api.cull.export(ids);
+			photosChanged(ids);
 			const lines = [];
 			if (r.saved.length) lines.push(`Saved ${r.saved.length} cop${r.saved.length === 1 ? 'y' : 'ies'} to ${r.folder}:\n${r.saved.slice(0, 8).join('\n')}${r.saved.length > 8 ? '\n…' : ''}`);
 			if (r.tags.length) lines.push(`Tagged ${r.tags.join(' / ')}`);
@@ -658,6 +659,7 @@
 		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
 		try {
 			const r = await api.cull.flickrMark(ids, on);
+			photosChanged(r.photos);
 			flashGridMsg(`${on ? `${r.tags.join(' / ')} added` : 'Flickr tag removed'} — ${r.photos.length} photo${r.photos.length === 1 ? '' : 's'}`);
 		} catch (e) {
 			notify(`Could not mark: ${e instanceof Error ? e.message : e}`);
@@ -691,6 +693,7 @@
 		try {
 			const r = await api.photos.orient(ids, op);
 			thumbVersion.update(v => { for (const id of r.ids) v[id] = (v[id] ?? 0) + 1; return v; });
+			photosChanged(r.ids);
 			if (r.errors.length) notify(`${r.turned} turned; ${r.errors.length} could not be: ${r.errors[0]}`);
 			else flashGridMsg(`${r.turned} ${op.startsWith('flip') ? 'flipped' : 'rotated'}`);
 		} catch (e) {
@@ -791,6 +794,7 @@
 		flashGridMsg(`${label} — ${ids.length} photo${ids.length === 1 ? '' : 's'}`);
 		try {
 			await api.photos.batchEdit(ids, fields);
+			photosChanged(ids);
 		} catch (e) {
 			flashGridMsg(`Failed: ${e}`);
 		}
