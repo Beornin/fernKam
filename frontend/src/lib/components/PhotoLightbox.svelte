@@ -566,6 +566,14 @@ title="Show on map"
 >{detail.latitude?.toFixed(5)}, {detail.longitude?.toFixed(5)}</button>
 </dd>
 </div>
+{#if detail.city || detail.county}
+<div class="flex justify-between gap-3">
+<dt class="text-zinc-500">Place</dt>
+<dd class="text-zinc-200 text-right" title="Town: the nearest listed one. County and state: the boundary the GPS falls in.">
+{[detail.city, detail.county, detail.state].filter(Boolean).join(', ')}
+</dd>
+</div>
+{/if}
 {/if}
 </dl>
 

@@ -1308,6 +1308,13 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   filled the 6,718 waiting since mid-August in 4.2 s. The data is reverse_geocoder's bundled
   GeoNames list (144,564 places of 1,000+ people): the town is the nearest one in that list, so a
   city neighbourhood that isn't in it comes out as the nearest listed town.
+- **County by boundary** (`us_counties.py`, migration 0037 `photos.county`): inside the US the
+  county and state are the Census boundary the GPS falls in (cb_2024 1:500k, 11 MB, downloaded
+  once into data/geo, read with the standard library and numpy), so a point near a line no longer
+  takes the nearest town's county or state. The file is clipped to the shoreline, so 288 beach
+  photos first fell in no county; a point outside every county now takes the one whose boundary is
+  within ~3 km. Backfill: 42,847 photos in 20 s; all but 83 (abroad) in a county. The county joins the state in the research keywords and Darwin
+  Core (DCCounty), ahead of one a caption names, and shows in the viewer's new Place row.
 - **An open side panel or viewer re-reads a photo an action changed** (`detailVersion` store,
   2026-10-24): a tag removed from the right-click menu or the other panel's tag list still showed
   until the photo was reopened. Checked in the app: Add / Remove Flickr tag from the menu shows and

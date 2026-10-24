@@ -48,6 +48,10 @@ export interface PhotoDetail extends PhotoSummary {
   latitude: number | null;
   longitude: number | null;
   altitude: number | null;
+  /** Nearest listed town, and the county / state the GPS falls in (geocode). */
+  city?: string | null;
+  county?: string | null;
+  state?: string | null;
   exif: Record<string, unknown> | null;
   camera: { id: number; make: string | null; model: string | null } | null;
   lens: { id: number; make: string | null; model: string | null } | null;

@@ -1,11 +1,12 @@
-"""Reverse geocoding: GPS -> country / state / city (offline via reverse_geocoder)."""
+"""Reverse geocoding: GPS -> country / state / city (offline via reverse_geocoder) and, in the US,
+county by boundary (us_counties)."""
 from __future__ import annotations
 
 import asyncio
 import logging
 
 from fastapi import APIRouter, Query
-from sqlalchemy import select, text
+from sqlalchemy import false, select, text
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Photo
@@ -30,9 +31,15 @@ def _lookup_batch(coords: list[tuple[float, float]]) -> list[dict]:
 
 
 async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None) -> int:
-    """Fill country / state / city for live photos with GPS and no city yet (every one with GPS when
-    force): the Geocode button, and each library scan for what it brought in. Offline, so a few
-    thousand take a second. progress(done, total) is awaited after each batch. Returns how many."""
+    """Fill country / state / city / county for live photos with GPS not looked up yet (every one
+    with GPS when force): the Geocode button, and each library scan for what it brought in. Offline,
+    so a few thousand take a second. The town is the nearest listed one (reverse_geocoder); inside
+    the US the county and state come from the boundary the point falls in (us_counties), which is
+    right where the nearest town is across a line. progress(done, total) is awaited after each
+    batch. Returns how many."""
+    from fernkam import us_counties
+
+    with_counties = await asyncio.get_event_loop().run_in_executor(None, us_counties.available)
     q = (
         select(Photo.id, Photo.latitude, Photo.longitude)
         .where(Photo.status == 1)
@@ -40,7 +47,7 @@ async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None
         .order_by(Photo.id)
     )
     if not force:
-        q = q.where(Photo.city.is_(None))
+        q = q.where(Photo.city.is_(None) | (Photo.county.is_(None) if with_counties else false()))
     if limit:
         q = q.limit(limit)
 
@@ -51,16 +58,21 @@ async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None
         batch = rows[i:i + BATCH]
         coords = [(float(r.latitude), float(r.longitude)) for r in batch]
         results = await asyncio.get_event_loop().run_in_executor(None, _lookup_batch, coords)
+        counties = (await asyncio.get_event_loop().run_in_executor(None, us_counties.lookup, coords)
+                    if with_counties else [None] * len(batch))
 
         # Single executemany-style call per batch (was one round-trip
-        # per photo — up to 120k individual UPDATEs).
+        # per photo — up to 120k individual UPDATEs). In a county: the US, its
+        # state and county; otherwise the nearest town's, and county "" (looked
+        # up, none) or NULL (boundaries not available yet: try again later).
         params = [
-            {"cc": geo.get("cc", ""), "state": geo.get("admin1", ""),
-             "city": geo.get("name", ""), "id": row.id}
-            for row, geo in zip(batch, results)
+            {"cc": "US" if hit else geo.get("cc", ""), "state": hit[1] if hit else geo.get("admin1", ""),
+             "city": geo.get("name", ""), "county": hit[0] if hit else ("" if with_counties else None),
+             "id": row.id}
+            for row, geo, hit in zip(batch, results, counties)
         ]
         await db.execute(text(
-            "UPDATE photos SET country_code=:cc, state=:state, city=:city WHERE id=:id"
+            "UPDATE photos SET country_code=:cc, state=:state, city=:city, county=:county WHERE id=:id"
         ), params)
         done += len(batch)
         await db.commit()
@@ -75,7 +87,7 @@ async def geocode_stats(db: DB) -> dict:
         SELECT
             COUNT(*) FILTER (WHERE latitude IS NOT NULL)                           AS with_gps,
             COUNT(*) FILTER (WHERE latitude IS NOT NULL AND city IS NOT NULL)      AS geocoded,
-            COUNT(*) FILTER (WHERE latitude IS NOT NULL AND city IS NULL)          AS pending
+            COUNT(*) FILTER (WHERE latitude IS NOT NULL AND (city IS NULL OR county IS NULL)) AS pending
         FROM photos WHERE status = 1
     """))).fetchone()
     return {"with_gps": row.with_gps, "geocoded": row.geocoded, "pending": row.pending}

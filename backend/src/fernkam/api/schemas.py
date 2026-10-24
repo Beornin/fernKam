@@ -89,6 +89,7 @@ class PhotoDetail(PhotoSummary):
     country_code: Optional[str] = None
     state: Optional[str] = None
     city: Optional[str] = None
+    county: Optional[str] = None
     orientation: Optional[int]
     exif: Optional[dict[str, Any]]
     research: Optional[dict[str, Any]] = None   # research words + Darwin Core (Portfolio keywords and tags)

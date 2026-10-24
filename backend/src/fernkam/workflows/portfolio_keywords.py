@@ -214,7 +214,7 @@ async def _research(db, roots: list[str], lib: Path, s, taxa: dict, dry_run: boo
 
     print("\n3. Research words and Darwin Core")
     rows = (await db.execute(text("""
-        SELECT p.id, p.album_path, p.filename, p.title, p.caption, p.state, p.research, c.make, c.model, l.model AS lens
+        SELECT p.id, p.album_path, p.filename, p.title, p.caption, p.state, p.county, p.research, c.make, c.model, l.model AS lens
         FROM photos p LEFT JOIN cameras c ON c.id = p.camera_id LEFT JOIN lenses l ON l.id = p.lens_id
         WHERE p.status = 1 AND (p.album_path = ANY(:a) OR p.album_path LIKE ANY(:like))
         ORDER BY p.album_path, p.filename"""), {"a": roots, "like": [f"{r}/%" if r else "%" for r in roots]})).all()

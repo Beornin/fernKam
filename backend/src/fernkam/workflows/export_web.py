@@ -201,6 +201,8 @@ async def _metadata(db, f: Path, lib: Path, s, taxa: dict, exif: Optional[dict] 
             kw += await _taxonomy(key, folder["latin"], taxa, folder["common"])
     kw += [w for k in kw for w in PLAIN_STATUS.get(k, [])]
     where = places(f"{caption or ''} {row.state or ''}" if row else "", row.album_path if row else "", species)
+    if row and getattr(row, "county", None) and row.county not in where:
+        where.insert(0, row.county)   # the county its GPS falls in (us_counties), ahead of one a caption names
     kw += where
     kw += [n for n in old_latin(caption or "", kw) if await same_species(n, first, taxa)]
     if any(re.search(r"\bcave\b", n, re.I) for n in species):
@@ -237,7 +239,7 @@ def _dwc(first, taxa: dict, where: list[str]) -> dict:
     d = {"TaxonScientificName": binomial, "TaxonVernacularName": common, "TaxonGenus": t.get("genus"),
          "TaxonFamily": t.get("family"), "TaxonOrder": t.get("order"), "TaxonClass": t.get("class"),
          "DCCountry": countries[0] if countries else None, "DCStateProvince": states[0] if states else None,
-         "DCCounty": next((w for w in where if w.endswith(" County")), None)}
+         "DCCounty": next((w for w in where if w.endswith((" County", " Parish", " Borough"))), None)}
     return {k: v for k, v in d.items() if v}
 
 
@@ -245,7 +247,7 @@ async def _original(db, f: Path, lib: Path):
     """The catalogue row for this file, or for the original it was edited from (same folder or its RAW/)."""
     from sqlalchemy import text
 
-    cols = "id, album_path, filename, title, caption, state"
+    cols = "id, album_path, filename, title, caption, state, county"
     rf = f.resolve()
     if rf.is_relative_to(lib):
         album = rf.parent.relative_to(lib).as_posix()
