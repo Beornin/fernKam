@@ -100,7 +100,7 @@ def available() -> bool:
 
 
 def lookup(points: list[tuple[float, float]]) -> list[Optional[tuple[str, str]]]:
-    """(county, state) for each (lat, lon), e.g. ("St. Johns County", "Florida"); None outside every
+    """(county, state) for each (lat, lon), e.g. ("Miami-Dade County", "Florida"); None outside every
     county (offshore, abroad). An even-odd ray test over all of a county's rings handles islands
     and holes. Each point is tried only against counties whose bounding box holds it."""
     out: list[Optional[tuple[str, str]]] = [None] * len(points)
