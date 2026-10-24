@@ -99,10 +99,12 @@ def available() -> bool:
     return bool(_counties())
 
 
-def lookup(points: list[tuple[float, float]]) -> list[Optional[tuple[str, str]]]:
+def lookup(points: list[tuple[float, float]], near_shore: Optional[list[bool]] = None) -> list[Optional[tuple[str, str]]]:
     """(county, state) for each (lat, lon), e.g. ("Miami-Dade County", "Florida"); None outside every
     county (offshore, abroad). An even-odd ray test over all of a county's rings handles islands
-    and holes. Each point is tried only against counties whose bounding box holds it."""
+    and holes. Each point is tried only against counties whose bounding box holds it. near_shore
+    says which points may take a county from just offshore (default all): not one across a border
+    river in Canada or Mexico."""
     out: list[Optional[tuple[str, str]]] = [None] * len(points)
     if not points:
         return out
@@ -126,7 +128,8 @@ def lookup(points: list[tuple[float, float]]) -> list[Optional[tuple[str, str]]]
         for i in idx[inside]:
             out[i] = (county, state)
         found[idx[inside]] = True
-    _nearest_shore(lat, lon, found, out)
+    skip = found if near_shore is None else found | ~np.array(near_shore, dtype=bool)
+    _nearest_shore(lat, lon, skip, out)
     return out
 
 

@@ -1313,7 +1313,7 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   once into data/geo, read with the standard library and numpy), so a point near a line no longer
   takes the nearest town's county or state. The file is clipped to the shoreline, so 288 beach
   photos first fell in no county; a point outside every county now takes the one whose boundary is
-  within ~3 km. Backfill: 42,847 photos in 20 s; all but 83 (abroad) in a county. The county joins the state in the research keywords and Darwin
+  within ~3 km, but only if its nearest town is in the US (not one across a border river). Abroad, the field takes the nearest town's district from the same GeoNames list. Backfill: 42,847 photos in 20 s; all but 2 have a county or district. The county joins the state in the research keywords and Darwin
   Core (DCCounty), ahead of one a caption names, and shows in the viewer's new Place row.
 - **An open side panel or viewer re-reads a photo an action changed** (`detailVersion` store,
   2026-10-24): a tag removed from the right-click menu or the other panel's tag list still showed

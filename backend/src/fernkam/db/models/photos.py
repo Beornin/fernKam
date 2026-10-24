@@ -127,7 +127,7 @@ class Photo(Base):
     country_code: Mapped[Optional[str]] = mapped_column(String(4))
     state: Mapped[Optional[str]] = mapped_column(Text)
     city: Mapped[Optional[str]] = mapped_column(Text)
-    county: Mapped[Optional[str]] = mapped_column(Text)   # "" = looked up, in no US county
+    county: Mapped[Optional[str]] = mapped_column(Text)   # US county by boundary, a district abroad; "" = none
 
     # Camera & lens
     camera_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cameras.id"))

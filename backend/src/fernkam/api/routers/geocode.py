@@ -30,6 +30,17 @@ def _lookup_batch(coords: list[tuple[float, float]]) -> list[dict]:
     return rg.search(coords, mode=1, verbose=False)
 
 
+def _county(geo: dict, hit, with_counties: bool):
+    """The county-level place: in the US the boundary's county; abroad the nearest town's district
+    (GeoNames admin2, e.g. "Cotswold District"); "" when there is none; NULL when the US boundaries
+    aren't available yet, so the next run tries again."""
+    if hit:
+        return hit[0]
+    if geo.get("cc") != "US":
+        return geo.get("admin2") or ""
+    return "" if with_counties else None
+
+
 async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None) -> int:
     """Fill country / state / city / county for live photos with GPS not looked up yet (every one
     with GPS when force): the Geocode button, and each library scan for what it brought in. Offline,
@@ -58,17 +69,16 @@ async def geocode_pending(db, force: bool = False, limit: int = 0, progress=None
         batch = rows[i:i + BATCH]
         coords = [(float(r.latitude), float(r.longitude)) for r in batch]
         results = await asyncio.get_event_loop().run_in_executor(None, _lookup_batch, coords)
-        counties = (await asyncio.get_event_loop().run_in_executor(None, us_counties.lookup, coords)
+        in_us = [geo.get("cc") == "US" for geo in results]   # only these may take a county from offshore
+        counties = (await asyncio.get_event_loop().run_in_executor(None, us_counties.lookup, coords, in_us)
                     if with_counties else [None] * len(batch))
 
         # Single executemany-style call per batch (was one round-trip
         # per photo — up to 120k individual UPDATEs). In a county: the US, its
-        # state and county; otherwise the nearest town's, and county "" (looked
-        # up, none) or NULL (boundaries not available yet: try again later).
+        # state and county; otherwise the nearest town's.
         params = [
             {"cc": "US" if hit else geo.get("cc", ""), "state": hit[1] if hit else geo.get("admin1", ""),
-             "city": geo.get("name", ""), "county": hit[0] if hit else ("" if with_counties else None),
-             "id": row.id}
+             "city": geo.get("name", ""), "county": _county(geo, hit, with_counties), "id": row.id}
             for row, geo, hit in zip(batch, results, counties)
         ]
         await db.execute(text(

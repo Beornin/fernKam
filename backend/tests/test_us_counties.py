@@ -27,6 +27,16 @@ def main() -> None:
     assert got == [("Miami-Dade County", "Florida"), ("Leon County", "Florida"), ("Monroe County", "Florida"),
                    ("Fulton County", "Georgia"), None, None, ("Miami-Dade County", "Florida")], got
     assert us_counties.lookup([]) == []
+    # Windsor, Canada, across the river from Detroit: only a point whose nearest town is in the US
+    # may take a county from just past the boundary.
+    windsor = [(42.3149, -83.0364)]
+    assert us_counties.lookup(windsor, near_shore=[False]) == [None]
+
+    from fernkam.api.routers.geocode import _county
+    assert _county({"cc": "GB", "admin2": "Example District"}, None, True) == "Example District"
+    assert _county({"cc": "GB", "admin2": ""}, None, True) == ""
+    assert _county({"cc": "US", "admin2": "Wayne County"}, ("Leon County", "Florida"), True) == "Leon County"
+    assert _county({"cc": "US"}, None, True) == "" and _county({"cc": "US"}, None, False) is None
     print("ok - counties by boundary; offshore and abroad are in none")
 
 
