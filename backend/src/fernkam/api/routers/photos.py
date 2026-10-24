@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.orm import selectinload
 
+from fernkam import auto_write
 from fernkam.api.deps import DB
 from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate
 from fernkam.db.models.photos import Face, Photo, PhotoTag
@@ -434,6 +435,7 @@ async def add_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
                      {"p": photo_id, "t": tag_id})
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue([photo_id])
 
 
 @router.delete("/{photo_id}/tags/{tag_id}", status_code=204)
@@ -445,6 +447,7 @@ async def remove_photo_tag(photo_id: int, tag_id: int, db: DB) -> None:
         await db.delete(pt)
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue([photo_id])
 
 
 @router.get("/map/points")
@@ -794,6 +797,7 @@ async def batch_edit_photos(payload: BatchEditRequest, db: DB) -> dict:
         update(Photo).where(Photo.id.in_(payload.ids)).values(**updates)
     )
     await db.commit()
+    auto_write.queue(payload.ids)
     return {"updated": len(payload.ids)}
 
 
@@ -812,7 +816,20 @@ async def update_photo(photo_id: int, payload: PhotoUpdate, db: DB) -> PhotoSumm
 
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue([photo_id])
     return PhotoSummary.model_validate(row)
+
+
+@router.get("/{photo_id}/file-sync")
+async def file_sync_state(photo_id: int, db: DB) -> dict:
+    """Whether fernKam's changes to this photo are in its file yet: pending, queued (auto_write
+    writes it within seconds; otherwise DB → Files will) and when the file was last written."""
+    row = (await db.execute(select(Photo.file_sync_dirty, Photo.meta_synced_at)
+                            .where(Photo.id == photo_id))).first()
+    if not row:
+        raise HTTPException(404, "Photo not found")
+    return {"pending": bool(row[0]), "queued": auto_write.is_queued(photo_id),
+            "written_at": row[1].isoformat() if row[1] else None}
 
 
 @router.post("/{photo_id}/reveal", response_model=dict)

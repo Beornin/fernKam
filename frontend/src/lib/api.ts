@@ -442,6 +442,8 @@ export const api = {
         .then(r => okJson<{ written: number; usage_line: string | null; errors: string[] }>(r)),
     // Everything exiftool reads from the file, by group.
     allMetadata: (id: number) => get<{ groups: Record<string, Record<string, string>> }>(`/api/photos/${id}/all-metadata`),
+    /** Whether fernKam's changes are in the file yet: queued = written within seconds, else DB → Files. */
+    fileSync: (id: number) => get<{ pending: boolean; queued: boolean; written_at: string | null }>(`/api/photos/${id}/file-sync`),
     // Rotate or flip without touching pixels (EXIF Orientation; QuickTime Rotation for videos).
     orient: (photo_ids: number[], op: 'left' | 'right' | '180' | 'flip_h' | 'flip_v') =>
       fetch('/api/photos/orient', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_ids, op }) })

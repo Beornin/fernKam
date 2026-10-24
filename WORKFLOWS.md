@@ -488,6 +488,22 @@ about 40% of its size. Never overwrites: a second copy is "name (2).jpg".
 |---|---|---|
 | no | a new copy in `Share/` | yes |
 
+## Hand edits write themselves (auto-write)
+
+**User action:** none. A hand edit to a photo (rating, label, title, caption, a tag added or
+removed in the panel or viewer, a face named, confirmed or deleted, To do or a species tag in
+Cull, the Flickr tag, Export for Flickr, accepting suggested tags, Restore my values) is written
+into its file about 8 seconds after the photo was last touched, one file at a time, exactly as DB →
+Files would (outside edits merged first). The viewer's **File** row shows *Writing in a few
+seconds…*, then *Up to date* with the time. Bulk jobs (Tag Review, Learn all, face auto-confirm,
+Portfolio keywords, tag rename / merge, date inference) and any edit touching more than 50 photos
+stay batch: *Pending: Maintenance › DB → Files*. Nothing is lost if fernKam closes first or a file
+job is running: the photo simply stays pending.
+
+| Database | Files | Disk reads |
+|---|---|---|
+| the photo marked written (as DB → Files) | its XMP, one photo at a time | yes |
+
 ---
 
 ## Maintenance tools

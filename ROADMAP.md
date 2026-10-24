@@ -1296,6 +1296,13 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
 - **Maintenance's "Write N pending" counts only what DB → Files writes** (live still images): it
   showed 48 when all 48 were tagged videos, which the write-back never touches, and the run said
   "No photos to process". One shared filter now (`WRITABLE`); the count reads 0.
+- **Hand edits write themselves** (`auto_write.py`, 2026-10-24), like digiKam without "lazy
+  synchronization", but only for edits to a photo you're working on: written ~8 s after the photo
+  was last touched, one file at a time, through the same code as DB → Files (`write_photos`).
+  Bulk jobs and edits over 50 photos stay batch. Measured on the hard drives: 0.3 s for a 6 MB JPG,
+  0.5 s for a 114 MB TIFF per write. End to end on a real photo: the tag reached the file 9 s after
+  the edit, the database recorded the write, and the viewer's new File row went from "Writing in a
+  few seconds…" to "Up to date".
 - **Viewer shows a suggested face's match %** on its box and its chip ("<name> 41%"): the photo
   endpoint built faces with its own copy of the converter, which dropped the score the viewer was
   already built to show; it uses the shared one now. Auto-confirm (strictness 0.95) already takes

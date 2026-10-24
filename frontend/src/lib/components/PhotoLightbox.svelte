@@ -28,6 +28,17 @@ let detail = $state<PhotoDetail | null>(null);
 let allMeta = $state<Record<string, Record<string, string>> | null>(null);
 let metaFilter = $state('');
 $effect(() => { void photoId; allMeta = null; });
+// Is this photo's file up to date? Checked every few seconds while it's open, so an edit shows
+// "Writing…" and then "Up to date" once auto-write (or DB → Files) has written it.
+let fileSync = $state<{ pending: boolean; queued: boolean; written_at: string | null } | null>(null);
+$effect(() => {
+	const id = photoId;
+	fileSync = null;
+	const check = () => api.photos.fileSync(id).then(s => { if (id === photoId) fileSync = s; }).catch(() => {});
+	check();
+	const timer = setInterval(check, 3000);
+	return () => clearInterval(timer);
+});
 async function toggleAllMeta() {
 	allMeta = allMeta ? null : (await api.photos.allMetadata(photoId)).groups;
 }
@@ -454,6 +465,17 @@ class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
 <dt class="text-zinc-500">Modified</dt>
 <dd class="text-zinc-200 text-right">{fmtDate(detail.modified_at)}</dd>
 </div>
+{#if fileSync && detail.media_type === 'image'}
+<div class="flex justify-between">
+<dt class="text-zinc-500">File</dt>
+<dd class="text-right {fileSync.pending ? 'text-amber-400' : 'text-emerald-400'}"
+	title="Whether fernKam's tags, rating, caption and faces are written into the file itself">
+{fileSync.pending
+	? (fileSync.queued ? 'Writing in a few seconds…' : 'Pending: Maintenance › DB → Files')
+	: fileSync.written_at ? `Up to date · ${fmtDate(fileSync.written_at)}` : 'Up to date'}
+</dd>
+</div>
+{/if}
 <div class="flex justify-between">
 <dt class="text-zinc-500">Size</dt>
 <dd class="text-zinc-200">{formatBytes(detail.file_size)}</dd>

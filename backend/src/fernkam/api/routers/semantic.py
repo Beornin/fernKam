@@ -294,6 +294,8 @@ async def apply_suggested_tags(
         "UPDATE photos SET file_sync_dirty = true WHERE id = ANY(CAST(:pids AS int[]))"
     ), {"pids": photo_ids})
     await db.commit()
+    from fernkam import auto_write
+    auto_write.queue(photo_ids)
     return {"linked": res.rowcount or 0}
 
 

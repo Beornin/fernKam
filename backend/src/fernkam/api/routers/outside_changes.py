@@ -71,6 +71,8 @@ async def restore_fernkam_values(change_id: int, db: DB) -> dict:
         "details = details || CAST(:note AS jsonb) WHERE id = :id"
     ), {"id": change_id, "note": json.dumps({"restored": values})})
     await db.commit()
+    from fernkam import auto_write
+    auto_write.queue([row.photo_id])
     return {"photo_id": row.photo_id, "restored": values}
 
 

@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
+from fernkam import auto_write
 from fernkam.api.deps import DB
 from fernkam.config import BACKEND_DIR, get_settings
 from fernkam.media_types import RAW_EXTENSIONS
@@ -201,6 +202,7 @@ async def set_tag(db: DB, photo_ids: list[int] = Body(...), tag_id: Optional[int
                          {"ids": ids, "t": tag_id})
     await db.execute(text("UPDATE photos SET file_sync_dirty = true WHERE id = ANY(:ids)"), {"ids": ids})
     await db.commit()
+    auto_write.queue(ids)
     return {"photos": ids}
 
 
@@ -368,6 +370,7 @@ async def export_for_flickr(db: DB, photo_ids: list[int] = Body(..., embed=True)
             on_flickr.append(r.filename)
     tags = await _flickr_mark(db, exported, True)
     await db.commit()
+    auto_write.queue([r.id for r in exported])
     return {"folder": str(out), "saved": saved, "skipped": skipped, "on_flickr": on_flickr, "tags": sorted(tags)}
 
 
@@ -414,6 +417,7 @@ async def mark_on_flickr(db: DB, photo_ids: list[int] = Body(...), on: bool = Bo
     rows = (await db.execute(text("SELECT id, album_path FROM photos WHERE id = ANY(:ids)"), {"ids": photo_ids})).all()
     tags = await _flickr_mark(db, rows, on)
     await db.commit()
+    auto_write.queue([r.id for r in rows])
     return {"photos": [r.id for r in rows], "tags": sorted(tags)}
 
 

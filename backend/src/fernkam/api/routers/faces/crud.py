@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from fernkam import auto_write
 from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, FaceUpdate
 from fernkam.db.models.photos import Face, Photo, Tag
@@ -119,6 +120,7 @@ async def batch_assign_faces(
     if photo_ids:
         await db.execute(update(Photo).where(Photo.id.in_(photo_ids)).values(file_sync_dirty=True))
         await db.commit()
+        auto_write.queue(photo_ids)   # a large review batch is left to DB → Files
 
 
 @router.delete("/{face_id}", status_code=204)
@@ -131,6 +133,7 @@ async def delete_face(face_id: UUID, db: DB) -> None:
     await db.delete(row)
     await db.execute(update(Photo).where(Photo.id == photo_id).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue([photo_id])
 
 
 @router.get("/", response_model=list[FaceOut])
@@ -191,6 +194,7 @@ async def update_face(face_id: UUID, payload: FaceUpdate, db: DB) -> FaceOut:
 
     await db.execute(update(Photo).where(Photo.id == row.photo_id).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue([row.photo_id])
 
     if updates.get("status") == "confirmed" and row.person_tag_id:
         import asyncio as _asyncio
@@ -220,3 +224,4 @@ async def batch_delete_faces(
     if photo_ids:
         await db.execute(update(Photo).where(Photo.id.in_(photo_ids)).values(file_sync_dirty=True))
     await db.commit()
+    auto_write.queue(photo_ids)

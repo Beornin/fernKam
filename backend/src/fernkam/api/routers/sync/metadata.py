@@ -139,6 +139,56 @@ async def refresh_metadata_from_files(
             "message": f"Metadata refresh started for {len(rows):,} photos"}
 
 
+async def write_photos(photo_ids: list[int]) -> tuple[int, dict[str, str], int]:
+    """Write these photos' tags, rating, label, title, caption and named faces into their files:
+    (files written, {file: why it failed}, files re-read first). DB → Files runs it per batch,
+    auto_write per photo. Only files exiftool actually wrote are marked synced; a failed one stays
+    "needs sync" and is all the next pending-only pass has to retry."""
+    import asyncio
+    from fernkam.db.session import async_session_factory
+    from fernkam.importers.filesystem import reconcile_outdated
+    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
+
+    async with async_session_factory() as bdb:
+        # Check before writing whether fernKam is out of date: files another program changed
+        # since fernKam last read them are re-read and merged first, so their edits are carried
+        # into the write instead of overwritten.
+        n_reread = await reconcile_outdated(bdb, photo_ids)
+        await bdb.commit()
+
+        photos = (await bdb.execute(
+            select(Photo)
+            .where(Photo.id.in_(photo_ids))
+            .options(
+                selectinload(Photo.photo_tags).selectinload(PhotoTag.tag),
+                selectinload(Photo.faces).selectinload(Face.person_tag),
+            )
+        )).scalars().all()
+
+        payloads: list[dict] = []
+        photo_for_file: dict[str, int] = {}
+        for photo in photos:
+            tags = [pt.tag for pt in photo.photo_tags if pt.tag]
+            named_faces = [
+                f for f in photo.faces
+                if f.x is not None
+                and (f.person_tag is not None or (f.region_name or "").strip())
+            ]
+            p = build_photo_payload(photo, tags, named_faces)
+            if p:
+                payloads.append(p)
+                photo_for_file[p["SourceFile"]] = photo.id
+
+        if not payloads:
+            return 0, {}, n_reread
+
+        written, failed = await asyncio.get_running_loop().run_in_executor(None, write_metadata_batch, payloads)
+        if written:
+            await mark_files_synced(bdb, [(photo_for_file[src], src) for src in written])
+            await bdb.commit()
+        return len(written), failed, n_reread
+
+
 @router.post("/write-metadata")
 async def write_metadata_all(
     db: DB,
@@ -191,64 +241,16 @@ async def write_metadata_all(
 
     async def run_write():
         import time as _time
-        from fernkam.db.session import async_session_factory
-        from fernkam.importers.filesystem import reconcile_outdated
-        from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
 
         t_start = _time.time()
         total = len(photo_ids)
         ok = errors = reread = 0
         failures: list[dict] = []  # first few, for the task report
         sem = asyncio.Semaphore(concurrency)
-        loop = asyncio.get_event_loop()
 
         async def process_batch(batch_ids: list[int]) -> tuple[int, dict[str, str], int]:
             async with sem:
-                async with async_session_factory() as bdb:
-                    # Check before writing whether fernKam is out of date: files
-                    # another program changed since fernKam last read them are
-                    # re-read and merged first, so their edits are carried
-                    # into the write instead of overwritten.
-                    n_reread = await reconcile_outdated(bdb, batch_ids)
-                    await bdb.commit()
-
-                    photos = (await bdb.execute(
-                        select(Photo)
-                        .where(Photo.id.in_(batch_ids))
-                        .options(
-                            selectinload(Photo.photo_tags).selectinload(PhotoTag.tag),
-                            selectinload(Photo.faces).selectinload(Face.person_tag),
-                        )
-                    )).scalars().all()
-
-                    payloads: list[dict] = []
-                    photo_for_file: dict[str, int] = {}
-                    for photo in photos:
-                        tags = [pt.tag for pt in photo.photo_tags if pt.tag]
-                        named_faces = [
-                            f for f in photo.faces
-                            if f.x is not None
-                            and (f.person_tag is not None or (f.region_name or "").strip())
-                        ]
-                        p = build_photo_payload(photo, tags, named_faces)
-                        if p:
-                            payloads.append(p)
-                            photo_for_file[p["SourceFile"]] = photo.id
-
-                    if not payloads:
-                        return 0, {}, n_reread
-
-                    written, failed = await loop.run_in_executor(
-                        None, write_metadata_batch, payloads
-                    )
-                    # Only files exiftool actually wrote are marked synced; a
-                    # failed one stays "needs sync" and is all the next
-                    # pending-only pass has to retry.
-                    if written:
-                        await mark_files_synced(bdb, [(photo_for_file[src], src) for src in written])
-                        await bdb.commit()
-
-                    return len(written), failed, n_reread
+                return await write_photos(batch_ids)
 
         # A batch is at most batch_size photos and about BATCH_BYTES of files, so the files it just
         # wrote are still in the OS cache when they are read back and re-hashed. With 200 large TIFFs
