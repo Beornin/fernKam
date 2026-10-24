@@ -36,7 +36,7 @@ export interface CullFileResult {
   moved_ids?: number[];
   errors?: string[];
 }
-export interface CullExportResult { folder: string; saved: string[]; skipped: string[]; on_flickr: string[] }
+export interface CullExportResult { folder: string; saved: string[]; skipped: string[]; on_flickr: string[]; tags: string[] }
 
 export interface PhotoDetail extends PhotoSummary {
   sha256: string | null;

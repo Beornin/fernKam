@@ -633,7 +633,7 @@
 	}
 
 	/** Export for Web on exactly the pictures clicked or selected: copies in the export folder, to
-	 *  upload to Flickr by hand. Nothing is uploaded. */
+	 *  upload to Flickr by hand, and each one marked as on Flickr. Nothing is uploaded. */
 	async function menuExport() {
 		const m = menu; menu = null;
 		if (!m) return;
@@ -643,6 +643,7 @@
 			const r = await api.cull.export(ids);
 			const lines = [];
 			if (r.saved.length) lines.push(`Saved ${r.saved.length} cop${r.saved.length === 1 ? 'y' : 'ies'} to ${r.folder}:\n${r.saved.slice(0, 8).join('\n')}${r.saved.length > 8 ? '\n…' : ''}`);
+			if (r.tags.length) lines.push(`Tagged ${r.tags.join(' / ')}`);
 			if (r.skipped.length) lines.push(`Not exported:\n${r.skipped.slice(0, 8).join('\n')}`);
 			if (r.on_flickr.length) lines.push(`Already on Flickr: ${r.on_flickr.join(', ')}`);
 			notify(lines.join('\n\n') || 'Nothing to export.');
@@ -657,7 +658,7 @@
 		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
 		try {
 			const r = await api.cull.flickrMark(ids, on);
-			flashGridMsg(`${on ? r.tags.join(' / ') : 'On Flickr cleared'} — ${r.photos.length} photo${r.photos.length === 1 ? '' : 's'}`);
+			flashGridMsg(`${on ? `${r.tags.join(' / ')} added` : 'Flickr tag removed'} — ${r.photos.length} photo${r.photos.length === 1 ? '' : 's'}`);
 		} catch (e) {
 			notify(`Could not mark: ${e instanceof Error ? e.message : e}`);
 		}
@@ -1434,8 +1435,9 @@
 		<button class={menuItem} onclick={menuFile}>File into species folder…</button>
 		<button class={menuItem} onclick={menuEdit}>Edit in Affinity Photo</button>
 		<button class={menuItem} onclick={menuExport}>Export for Flickr (2048 px copy)</button>
-		<button class={menuItem} onclick={() => menuFlickrMark(true)}>Mark as on Flickr</button>
-		<button class={menuItem} onclick={() => menuFlickrMark(false)}>Clear on Flickr</button>
+		<button class={menuItem} onclick={() => menuFlickrMark(true)}
+			title="Your Flickr tag (FLICKR_TAG), or the archive's for its photos (ARCHIVE_FLICKR_TAG)">Add Flickr tag</button>
+		<button class={menuItem} onclick={() => menuFlickrMark(false)}>Remove Flickr tag</button>
 		<button class={menuItem} onclick={menuShare}>Smaller copy for sharing (full size)</button>
 		<div class="my-1 border-t border-zinc-800"></div>
 		<button class={menuItem} onclick={() => menuOrient('left')}>Rotate left</button>

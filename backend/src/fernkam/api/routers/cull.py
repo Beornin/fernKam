@@ -341,7 +341,8 @@ async def open_in_editor(photo_id: int, db: DB) -> dict:
 async def export_for_flickr(db: DB, photo_ids: list[int] = Body(..., embed=True)) -> dict:
     """Export for Web on exactly these pictures: a copy of each, at most EXPORT_MAX_EDGE px, with
     title, tags, rights and Ref (workflows/export_web.py), in the export folder, ready to upload by
-    hand. Nothing is sent anywhere. A NEF or DNG is skipped; so is a picture not on disk."""
+    hand. Nothing is sent anywhere, but each exported picture is marked as on Flickr (the user
+    uploads what they export). A NEF or DNG is skipped; so is a picture not on disk."""
     from fernkam.workflows import export_web
 
     s = get_settings()
@@ -351,7 +352,7 @@ async def export_for_flickr(db: DB, photo_ids: list[int] = Body(..., embed=True)
                              {"ids": photo_ids})).all()
     log = BACKEND_DIR / "data" / "flickr_map.csv"   # what is already on Flickr, if you keep that list
     on_flickr_ids = {row["photo_id"] for row in csv.DictReader(log.open(encoding="utf-8"))} if log.exists() else set()
-    saved, skipped, on_flickr, taxa = [], [], [], {}
+    saved, skipped, on_flickr, taxa, exported = [], [], [], {}, []
     for r in rows:
         src = lib / r.album_path / r.filename
         if src.suffix.lower() not in IMAGES:
@@ -362,9 +363,12 @@ async def export_for_flickr(db: DB, photo_ids: list[int] = Body(..., embed=True)
             continue
         dst, _, _ = await export_web.export_one(db, src, lib, out, s, taxa, s.export_max_edge)
         saved.append(dst.name)
+        exported.append(r)
         if {str(i) for i in await shot_ids(db, [r.id])} & on_flickr_ids:
             on_flickr.append(r.filename)
-    return {"folder": str(out), "saved": saved, "skipped": skipped, "on_flickr": on_flickr}
+    tags = await _flickr_mark(db, exported, True)
+    await db.commit()
+    return {"folder": str(out), "saved": saved, "skipped": skipped, "on_flickr": on_flickr, "tags": sorted(tags)}
 
 
 def _export_dir(s, lib: Path) -> Path:
@@ -376,16 +380,15 @@ def _export_dir(s, lib: Path) -> Path:
     return out
 
 
-@router.post("/flickr-mark")
-async def mark_on_flickr(db: DB, photo_ids: list[int] = Body(...), on: bool = Body(True)) -> dict:
-    """Mark exactly these pictures as on Flickr, or clear it: the FLICKR_TAG fact tag, or
-    ARCHIVE_FLICKR_TAG for the archive's photos. Export for Flickr can't, as it uploads nothing."""
+async def _flickr_mark(db, rows, on: bool) -> set[str]:
+    """The FLICKR_TAG fact tag (ARCHIVE_FLICKR_TAG for the archive's photos) on these photo rows
+    (id, album_path), or off; flagged for DB → Files. Returns the tag names used. Doesn't commit."""
     from fernkam.reference_tags import in_archive
     from fernkam.sync_merge import ensure_tag_path
 
     s, cache, used = get_settings(), {}, set()
     names = sorted({s.flickr_tag, s.archive_flickr_tag or s.flickr_tag})
-    rows = (await db.execute(text("SELECT id, album_path FROM photos WHERE id = ANY(:ids)"), {"ids": photo_ids})).all()
+    ids = [r.id for r in rows]
     if on:
         for r in rows:
             tag = await ensure_tag_path(db, [(in_archive(r.album_path) and s.archive_flickr_tag) or s.flickr_tag], cache)
@@ -398,10 +401,20 @@ async def mark_on_flickr(db: DB, photo_ids: list[int] = Body(...), on: bool = Bo
                          {"n": names})
     else:
         await db.execute(text("""DELETE FROM photo_tags x USING tags t WHERE t.id = x.tag_id AND t.parent_id IS NULL
-                                 AND t.name = ANY(:n) AND x.photo_id = ANY(:ids)"""), {"n": names, "ids": photo_ids})
-    await db.execute(text("UPDATE photos SET file_sync_dirty = true WHERE id = ANY(:ids)"), {"ids": photo_ids})
+                                 AND t.name = ANY(:n) AND x.photo_id = ANY(:ids)"""), {"n": names, "ids": ids})
+        used = set(names)
+    await db.execute(text("UPDATE photos SET file_sync_dirty = true WHERE id = ANY(:ids)"), {"ids": ids})
+    return used
+
+
+@router.post("/flickr-mark")
+async def mark_on_flickr(db: DB, photo_ids: list[int] = Body(...), on: bool = Body(True)) -> dict:
+    """Mark exactly these pictures as on Flickr, or clear it (_flickr_mark). Export for Flickr marks
+    what it exports; this is for uploads made another way, and for taking the mark off."""
+    rows = (await db.execute(text("SELECT id, album_path FROM photos WHERE id = ANY(:ids)"), {"ids": photo_ids})).all()
+    tags = await _flickr_mark(db, rows, on)
     await db.commit()
-    return {"photos": [r.id for r in rows], "tags": sorted(used or names)}
+    return {"photos": [r.id for r in rows], "tags": sorted(tags)}
 
 
 def share_copy(src: Path, dst: Path) -> None:

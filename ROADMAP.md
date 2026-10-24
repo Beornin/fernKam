@@ -1282,10 +1282,11 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   thumbnails were right. The shared RAW reader now returns upright pixels.
 - **Sort by File type**: JPG first, then TIFF, other pictures, RAW and video, by filename within a
   type; keyset paging checked across the type boundaries (119 photos in pages of 7 = one page).
-- **Right-click: Mark as on Flickr / Clear on Flickr** (2026-10-22): the user's or the archive's
+- **Right-click: Add / Remove Flickr tag** (2026-10-22): the user's or the archive's
   Flickr fact tag on exactly the clicked pictures; the archive folder and both tag names now come
   from `.env` (`ARCHIVE_FOLDER`, `FLICKR_TAG`, `ARCHIVE_FLICKR_TAG`), which also sets the Ref prefix.
   Backfill: 4 of the 6 uploads since the last Flickr map matched by their Ref line and are tagged.
+  Export for Flickr now marks what it exports too (the user uploads what they export).
 - **Right-click: Smaller copy for sharing**: full-resolution JPEG at quality 85 in the export
   folder's `Share/`; a 130-photo PureRAW shoot went 1.88 GB → 0.74 GB.
 - **DB → Files no longer sticks on a cut-off write**: 5 of his TIFFs had a `_exiftool_tmp` left

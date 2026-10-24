@@ -458,19 +458,20 @@ tags and exports with that shot.
 one clicked, or the selection): exactly those files, each a JPEG, TIFF or PNG (the PureRAW JPG or
 your edit; a NEF or DNG is skipped and listed). Each gets the Workflows › Export for Web copy in the
 export folder, with its title, tags, rights and Ref, ready to upload to Flickr by hand. **Nothing is
-uploaded.** The result lists the copies, and any picture whose shot is already in
+uploaded**, but each exported picture gets its Flickr tag (below), since what you export is what
+you upload. The result lists the copies, the tag given, and any picture whose shot is already in
 `data/flickr_map.csv` (on Flickr).
 
 | Database | Files | Disk reads |
 |---|---|---|
-| Ref tag given on first export | a new web copy in the export folder | yes |
+| Ref tag given on first export; the Flickr fact tag | a new web copy in the export folder | yes |
 
-## Mark as on Flickr / Clear on Flickr (right-click)
+## Add Flickr tag / Remove Flickr tag (right-click)
 
-**User action:** after uploading, right-click › *Mark as on Flickr* on exactly the pictures you
-uploaded (the one clicked, or the selection). Each gets the `FLICKR_TAG` fact tag, or
-`ARCHIVE_FLICKR_TAG` when it lives under `ARCHIVE_FOLDER`; *Clear on Flickr* takes either off.
-Export for Flickr doesn't do it, since it uploads nothing.
+**User action:** right-click › *Add Flickr tag* on exactly the pictures you uploaded some other way
+(the one clicked, or the selection); Export for Flickr already tags what it exports. Each gets the
+`FLICKR_TAG` fact tag, or `ARCHIVE_FLICKR_TAG` when it lives under `ARCHIVE_FOLDER`; *Remove Flickr
+tag* takes either off, e.g. for an export you didn't upload.
 
 | Database | Files | Disk reads |
 |---|---|---|
