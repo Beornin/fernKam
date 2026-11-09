@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 
-from sqlalchemy import select, tuple_, update
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fernkam.config import get_settings
@@ -713,10 +713,10 @@ _ltree_label = ltree_label
 
 async def _get_or_create_person_tag(db: AsyncSession, name: str) -> int:
     """Return the id of a person Tag with the given name, creating it (under People) if needed."""
-    # Try exact name match with is_person=True first
+    # One person per name, whatever its case ("jane doe" in a file is Jane Doe).
     tag = (await db.execute(
-        select(Tag).where(Tag.name == name, Tag.is_person == True)
-    )).scalar_one_or_none()
+        select(Tag).where(func.lower(Tag.name) == name.strip().lower(), Tag.is_person == True)
+    )).scalars().first()
     if tag:
         return tag.id
 

@@ -6,6 +6,7 @@ by the sub-modules (suggestions, clusters, crud).
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional
@@ -20,13 +21,23 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────── tiny helpers ─────────────────────────────────────
 
+_TWINS = re.compile(r"\btwins\b", re.I)
+TWINS_SQL = Tag.name.op("~*")(r"\mtwins\M")   # the same test in SQL
+
+
+def is_twins(name: Optional[str]) -> bool:
+    """A person tag for a pair ("Twins", the older "… - TWINS") may name two faces in one photo;
+    every other person is one face per photo. One test for every check, by the word."""
+    return bool(name and _TWINS.search(name))
+
+
 async def _already_confirmed_in_photo(
     db, photo_id: int, person_tag_id: int, exclude_face_id=None
 ) -> bool:
     """Return True if *another* confirmed face for person_tag_id exists in photo_id.
     Always returns False for TWINS persons (multiple tagging allowed)."""
     tag = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
-    if tag and "- TWINS" in tag:
+    if is_twins(tag):
         return False
     q = select(Face.id).where(
         Face.photo_id == photo_id,
@@ -382,7 +393,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
         twins_ptids: set = set()
         if all_ptids:
             twins_rows = (await db.execute(
-                select(Tag.id).where(Tag.id.in_(all_ptids)).where(Tag.name.like("%- TWINS%"))
+                select(Tag.id).where(Tag.id.in_(all_ptids)).where(TWINS_SQL)
             )).fetchall()
             twins_ptids = {r[0] for r in twins_rows}
 
@@ -617,9 +628,7 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
         return
 
     tag_name = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
-    is_twins = tag_name is not None and "- TWINS" in tag_name
-
-    if not is_twins:
+    if not is_twins(tag_name):
         ph_rows = (await db.execute(
             select(Face.id, Face.photo_id).where(Face.id.in_(auto_ids))
         )).fetchall()

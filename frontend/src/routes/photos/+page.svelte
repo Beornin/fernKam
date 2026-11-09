@@ -599,6 +599,32 @@
 		await applyToSelection({ color_label: 1 }, 'Rejected (red)');
 	}
 
+	/** Exactly the clicked (or selected) files to the Recycle Bin, after asking: a NEF or JPG of
+	 *  the same shot stays. The same trash as Cull's Del key. */
+	async function menuTrash() {
+		const m = menu; menu = null;
+		if (!m) return;
+		const ids = selectedIds.size ? [...selectedIds] : [m.photo.id];
+		const names = photos.filter(p => ids.includes(p.id)).map(p => p.filename);
+		const what = ids.length === 1 ? (names[0] ?? 'this photo') : `${ids.length} photos`;
+		const list = ids.length > 1 ? `\n\n${names.slice(0, 8).join('\n')}${names.length > 8 ? '\n…' : ''}` : '';
+		if (!(await ask(`Move ${what} to the Recycle Bin?${list}\n\nOnly ${ids.length === 1 ? 'this file' : 'these files'}: another version of the same shot (its NEF or JPG) stays. You can restore from the Recycle Bin.`))) return;
+		const gone = new Set<number>(), failed: string[] = [];
+		for (const id of ids) {
+			try {
+				await api.photos.trash(id);
+				gone.add(id);
+			} catch (e) {
+				failed.push(`${photos.find(p => p.id === id)?.filename ?? id}: ${e instanceof Error ? e.message : e}`);
+			}
+		}
+		photos = photos.filter(p => !gone.has(p.id));
+		selectedIds = new Set([...selectedIds].filter(id => !gone.has(id)));
+		total = Math.max(0, total - gone.size);
+		if (failed.length) notify(`${gone.size} moved to the Recycle Bin; ${failed.length} could not be:\n${failed.slice(0, 5).join('\n')}`);
+		else flashGridMsg(`${gone.size} moved to the Recycle Bin`);
+	}
+
 	async function menuReveal() {
 		const m = menu; menu = null;
 		if (!m) return;
@@ -1455,5 +1481,7 @@
 		<div class="my-1 border-t border-zinc-800"></div>
 		<button class={menuItem} onclick={() => menuFileSync('reread')}>Reread metadata from file</button>
 		<button class={menuItem} onclick={() => menuFileSync('write')}>Write metadata to file</button>
+		<div class="my-1 border-t border-zinc-800"></div>
+		<button class="{menuItem} text-red-400 hover:text-red-300" onclick={menuTrash}>Move to Recycle Bin…</button>
 	</ContextMenu>
 {/if}

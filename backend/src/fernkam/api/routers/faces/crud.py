@@ -13,7 +13,7 @@ from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, FaceUpdate
 from fernkam.db.models.photos import Face, Photo, Tag
 
-from ._helpers import _already_confirmed_in_photo, _make_face_out, _relearn_person_bg
+from ._helpers import _already_confirmed_in_photo, _make_face_out, _relearn_person_bg, is_twins
 
 router = APIRouter()
 
@@ -37,11 +37,10 @@ async def batch_assign_faces(
     confirmed_by = "manual" if status == "confirmed" else None
 
     if status == "confirmed" and person_tag_id is not None:
-        # TWINS bypass: persons named "…- TWINS" may appear multiple times per photo.
+        # TWINS bypass: a twins tag may appear more than once per photo (is_twins).
         tag_name = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
-        is_twins = tag_name is not None and "- TWINS" in tag_name
 
-        if is_twins:
+        if is_twins(tag_name):
             await db.execute(
                 update(Face).where(Face.id.in_(uuids))
                 .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)

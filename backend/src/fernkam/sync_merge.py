@@ -179,7 +179,7 @@ async def load_states(db, photo_ids: "list[int]") -> "dict[int, dict]":
 async def ensure_tag_path(db, parts: "list[str]", cache: "dict[str, Any]"):
     """Find or create the tag for a name-path like ["People", "Jane Doe"],
     creating missing parents. `cache` maps tag keys to Tag rows."""
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from fernkam.db.models.photos import Tag
 
     parent = None
@@ -187,11 +187,18 @@ async def ensure_tag_path(db, parts: "list[str]", cache: "dict[str, Any]"):
         key = tag_key(parts[: i + 1])
         tag = cache.get(key)
         if tag is None:
-            tag = (await db.execute(select(Tag).where(Tag.path == key))).scalar_one_or_none()
+            tag = (await db.execute(select(Tag).where(Tag.path == key))).scalars().first()
+            is_person = parts[0].lower() == "people" and i == len(parts) - 1
+            if tag is None and is_person:
+                # One person per name: a file's "People|Jane Doe" is the person already called
+                # that, wherever their tag sits (a person tag renamed from "Jane" once kept the
+                # path People.Jane, and this made a second "Jane Doe").
+                tag = (await db.execute(select(Tag).where(
+                    Tag.is_person, func.lower(Tag.name) == part.strip().lower()))).scalars().first()
             if tag is None:
                 tag = Tag(
                     name=part, path=key, parent_id=parent.id if parent else None,
-                    is_person=(parts[0].lower() == "people" and i == len(parts) - 1),
+                    is_person=is_person,
                 )
                 db.add(tag)
                 await db.flush()

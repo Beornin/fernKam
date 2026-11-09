@@ -36,16 +36,14 @@ async def list_people(
 
 @router.post("", response_model=PersonOut, status_code=201)
 async def create_person(db: DB, name: str = Body(...), parent_id: Optional[int] = Body(None)) -> PersonOut:
-    import re
-    existing = (await db.execute(
-        select(Tag).where(Tag.name == name, Tag.is_person == True)
-    )).scalar_one_or_none()
+    from fernkam.sync_merge import ltree_label
+    existing = (await db.execute(   # one person per name, whatever its case
+        select(Tag).where(func.lower(Tag.name) == name.strip().lower(), Tag.is_person == True)
+    )).scalars().first()
     if existing:
-        raise HTTPException(409, f"Person '{name}' already exists (id={existing.id})")
+        raise HTTPException(409, f"Person '{existing.name}' already exists (id={existing.id})")
 
-    label = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not label or label[0].isdigit():
-        label = "_" + label
+    label = ltree_label(name)   # the key a file's "People|<name>" keyword looks up
 
     if parent_id:
         parent = (await db.execute(select(Tag).where(Tag.id == parent_id))).scalar_one_or_none()
@@ -78,7 +76,11 @@ async def rename_person(person_id: int, db: DB, name: str = Body(..., embed=True
     )).scalar_one_or_none()
     if not tag:
         raise HTTPException(404, "Person not found")
+    from fernkam.api.routers.tags import _check_rename, _mark_tagged_photos_dirty, _relabel
+    label = await _check_rename(db, tag, name)   # 409 if another person has the name: merge instead
+    await _relabel(db, person_id, label)          # path follows the name, as file reads expect
     await db.execute(update(Tag).where(Tag.id == person_id).values(name=name))
+    await _mark_tagged_photos_dirty(db, person_id)
     await db.commit()
     count = (await db.execute(
         select(func.count()).where(Face.person_tag_id == person_id)
@@ -98,6 +100,17 @@ async def delete_person(person_id: int, db: DB) -> None:
         .values(person_tag_id=None, status="unconfirmed")
     )
     await db.delete(tag)
+    await db.commit()
+
+
+async def ensure_unique_person_names(db) -> None:
+    """The database rule that no two people share a name (migration 0038), once no two do."""
+    await db.execute(text("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT lower(name) FROM tags WHERE is_person GROUP BY 1 HAVING count(*) > 1) THEN
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_tags_person_name ON tags (lower(name)) WHERE is_person;
+            END IF;
+        END $$"""))
     await db.commit()
 
 
@@ -126,16 +139,24 @@ async def merge_person(
         update(Face)
         .where(Face.person_tag_id == person_id)
         .values(person_tag_id=into_id)
-        .returning(Face.id)
+        .returning(Face.photo_id)
     )
-    moved = len(result.fetchall())
+    rows = result.fetchall()
+    moved, face_photos = len(rows), {r[0] for r in rows}
 
     await db.execute(
         text("DELETE FROM person_centroids WHERE person_tag_id = :pid"),
         {"pid": person_id},
     )
-    await db.delete(src)
+    # Photos tagged with person_id keep the person (it used to be deleted with the tag, so a
+    # duplicate's photos lost their person); _merge moves tags and rejections, then deletes src.
+    from fernkam.api.routers.tags import _mark_tagged_photos_dirty, _merge
+    await _mark_tagged_photos_dirty(db, person_id)
+    if face_photos:
+        await db.execute(update(Photo).where(Photo.id.in_(face_photos)).values(file_sync_dirty=True))
+    await _merge(db, person_id, into_id)
     await db.commit()
+    await ensure_unique_person_names(db)
 
     # The docstring above has always promised this; it was never actually
     # wired up — into_id kept its pre-merge centroids, so k-NN matching

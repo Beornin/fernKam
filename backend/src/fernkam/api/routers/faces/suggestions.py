@@ -11,6 +11,7 @@ from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo, Tag
 
 from ._helpers import (
+    is_twins,
     FACE_SENSITIVITY_KEY,
     _auto_confirm_sweep,
     _make_face_out,
@@ -212,9 +213,8 @@ async def person_candidates(
 
     # Conflict: this person already confirmed elsewhere in the same photo (skip for TWINS).
     tag_name = (await db.execute(select(Tag.name).where(Tag.id == person_tag_id))).scalar_one_or_none()
-    is_twins = tag_name is not None and "- TWINS" in tag_name
     confirmed_photos: set = set()
-    if photo_ids and not is_twins:
+    if photo_ids and not is_twins(tag_name):
         conf_rows = (await db.execute(_sql(
             "SELECT photo_id FROM faces WHERE photo_id = ANY(CAST(:pids AS int[])) "
             "AND status = 'confirmed' AND person_tag_id = :ptid"

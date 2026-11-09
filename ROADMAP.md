@@ -1303,6 +1303,19 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   0.5 s for a 114 MB TIFF per write. End to end on a real photo: the tag reached the file 9 s after
   the edit, the database recorded the write, and the viewer's new File row went from "Writing in a
   few seconds…" to "Up to date".
+- **Right-click › Move to Recycle Bin…** in the photo grid (2026-11-09): exactly the clicked or
+  selected files, after a confirmation naming them, through the same trash as Cull's Del key
+  (Windows Recycle Bin, photo marked inactive). Another version of the same shot stays.
+- **One person per name** (2026-10-28, migration 0038): 4 people existed twice. A rename changed a
+  person's name but not their path (renamed from a first name, the tag kept `People.<first>`), so
+  the next file read of `People|<full name>` made a second tag. Now a rename moves the path too
+  (`_relabel`) and refuses a name another person has; file reads, face regions and New person
+  reuse a person by name, any case; Merge moves the duplicate's photo tags as well as its faces
+  (they used to be dropped with the tag); and a unique index on lower(name) for people makes a
+  duplicate impossible. The 4 pairs were merged with every photo and face kept.
+- **A twins tag may name two faces in one photo**: the exception existed but only for names with
+  "- TWINS"; one shared test (`is_twins`, the word "twins") now serves all five checks, so the
+  "Twins" tag counts and no other person does.
 - **Every scan geocodes** (`geocode_pending`, shared with the map's Geocode button): photos with
   GPS and no place name get country / state / city at the end of each scan, offline. The first run
   filled the 6,718 waiting since mid-August in 4.2 s. The data is reverse_geocoder's bundled

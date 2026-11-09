@@ -125,6 +125,9 @@ async def update_tag(
         if latin(name) != latin(tag.name):   # another species: GBIF looks it up again at Learn all
             await db.execute(text("DELETE FROM species_status WHERE tag_id = :t"), {"t": tag_id})
             await db.execute(text("DELETE FROM tag_species WHERE tag_id = :t"), {"t": tag_id})
+        label = await _check_rename(db, tag, name)
+        if parent_id is None:   # the path follows the name (a parent change rebuilds it below)
+            await _relabel(db, tag_id, label)
         tag.name = name
     if is_fact is not None:
         tag.is_fact = is_fact
@@ -134,11 +137,8 @@ async def update_tag(
         parent = (await db.execute(select(Tag).where(Tag.id == parent_id))).scalar_one_or_none()
         if not parent:
             raise HTTPException(404, "Parent tag not found")
-        import re
-        label = re.sub(r"[^A-Za-z0-9_]", "_", name or tag.name)
-        if not label or label[0].isdigit():
-            label = "_" + label
-        await _set_parent(db, tag_id, parent_id, label)
+        from fernkam.sync_merge import ltree_label
+        await _set_parent(db, tag_id, parent_id, ltree_label(name or tag.name))   # the key file reads use
 
     if name is not None or parent_id is not None:
         await _mark_tagged_photos_dirty(db, tag_id)
@@ -162,6 +162,37 @@ async def _set_parent(db, tag_id: int, parent_id: int, label: str) -> None:
             parent_id = CASE WHEN id = :id THEN :parent ELSE parent_id END
         WHERE path <@ (SELECT path FROM me)
     """), {"id": tag_id, "parent": parent_id, "label": label})
+
+
+async def _relabel(db, tag_id: int, label: str) -> None:
+    """Give a tag (and its subtree) a new last path label under the same parent. A renamed tag's
+    path must stay the key a file's keyword for its new name looks up (sync_merge.tag_key), or the
+    next file read makes a second tag of that name."""
+    await db.execute(text("""
+        WITH me AS (SELECT path FROM tags WHERE id = :id),
+             base AS (SELECT subpath(path, 0, nlevel(path) - 1) || CAST(:label AS ltree) AS p FROM me)
+        UPDATE tags SET path = CASE WHEN id = :id THEN (SELECT p FROM base)
+                                    ELSE (SELECT p FROM base) || subpath(path, nlevel((SELECT path FROM me))) END
+        WHERE path <@ (SELECT path FROM me)
+    """), {"id": tag_id, "label": label})
+
+
+async def _check_rename(db, tag: Tag, name: str) -> str:
+    """The new path label for renaming tag to name, or 409: a person's name must be unique (merge
+    the two on the People page instead), and no two tags may share a path."""
+    from sqlalchemy import func
+    from fernkam.sync_merge import ltree_label
+
+    if tag.is_person and (await db.execute(select(Tag.id).where(
+            Tag.is_person, func.lower(Tag.name) == name.strip().lower(), Tag.id != tag.id))).first():
+        raise HTTPException(409, f"A person named '{name}' already exists: merge the two on the People page")
+    label = ltree_label(name)
+    path = str(tag.path)
+    new_path = f"{path.rsplit('.', 1)[0]}.{label}" if "." in path else label
+    if new_path != path and (await db.execute(text("SELECT 1 FROM tags WHERE path = CAST(:p AS ltree)"),
+                                              {"p": new_path})).first():
+        raise HTTPException(409, f"A tag named '{name}' already exists there: merge the two instead")
+    return label
 
 
 async def _merge(db, src_id: int, dst_id: int) -> None:
