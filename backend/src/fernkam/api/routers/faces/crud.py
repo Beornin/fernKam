@@ -8,6 +8,8 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from fernkam.background import spawn
+from fernkam.sql_util import in_ids
 from fernkam import auto_write
 from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, FaceUpdate
@@ -29,7 +31,6 @@ async def batch_assign_faces(
 
     Auto-confirm similar runs in a background task so the request returns immediately.
     """
-    import asyncio as _asyncio
     uuids = [UUID(fid) for fid in face_ids]
 
     # Human-initiated endpoint (review UI batch actions) — same provenance rule as
@@ -42,7 +43,7 @@ async def batch_assign_faces(
 
         if is_twins(tag_name):
             await db.execute(
-                update(Face).where(Face.id.in_(uuids))
+                update(Face).where(in_ids(Face.id, uuids))
                 .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
             )
         else:
@@ -57,7 +58,7 @@ async def batch_assign_faces(
             if affected_photos:
                 ex_rows = (await db.execute(
                     select(Face.photo_id, Face.person_tag_id)
-                    .where(Face.photo_id.in_(affected_photos))
+                    .where(in_ids(Face.photo_id, affected_photos))
                     .where(Face.status == "confirmed")
                     .where(Face.person_tag_id == person_tag_id)
                     .where(Face.id.not_in(uuids))
@@ -88,17 +89,17 @@ async def batch_assign_faces(
                 # instead so approving a cluster actually clears it out; the
                 # first face in each photo still gets confirmed normally.
                 await db.execute(
-                    update(Face).where(Face.id.in_(conflict_ids))
+                    update(Face).where(in_ids(Face.id, conflict_ids))
                     .values(status="ignored", person_tag_id=None, confirmed_by=None)
                 )
             if ok_ids:
                 await db.execute(
-                    update(Face).where(Face.id.in_(ok_ids))
+                    update(Face).where(in_ids(Face.id, ok_ids))
                     .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
                 )
     else:
         await db.execute(
-            update(Face).where(Face.id.in_(uuids))
+            update(Face).where(in_ids(Face.id, uuids))
             .values(person_tag_id=person_tag_id, status=status, confirmed_by=confirmed_by)
         )
     await db.commit()
@@ -108,7 +109,7 @@ async def batch_assign_faces(
         # because it would hammer the DB; the explicit "Batch Assign" sweep handles
         # those. The centroid refresh still runs either way, which is what a freshly
         # labelled cluster needs so its faces immediately improve ranked suggestions.
-        _asyncio.create_task(
+        spawn(
             _relearn_person_bg(person_tag_id, list(uuids), propagate=len(uuids) <= 5),
             name="fernkam-relearn-person",
         )
@@ -117,7 +118,7 @@ async def batch_assign_faces(
         select(Face.photo_id).where(Face.id.in_(uuids)).distinct()
     )).fetchall()]
     if photo_ids:
-        await db.execute(update(Photo).where(Photo.id.in_(photo_ids)).values(file_sync_dirty=True))
+        await db.execute(update(Photo).where(in_ids(Photo.id, photo_ids)).values(file_sync_dirty=True))
         await db.commit()
         auto_write.queue(photo_ids)   # a large review batch is left to DB → Files
 
@@ -196,9 +197,8 @@ async def update_face(face_id: UUID, payload: FaceUpdate, db: DB) -> FaceOut:
     auto_write.queue([row.photo_id])
 
     if updates.get("status") == "confirmed" and row.person_tag_id:
-        import asyncio as _asyncio
 
-        _asyncio.create_task(
+        spawn(
             _relearn_person_bg(row.person_tag_id, [face_id]),
             name="fernkam-relearn-person",
         )
@@ -219,8 +219,8 @@ async def batch_delete_faces(
     photo_ids = [r[0] for r in (await db.execute(
         select(Face.photo_id).where(Face.id.in_(uuids)).distinct()
     )).fetchall()]
-    await db.execute(_delete(Face).where(Face.id.in_(uuids)))
+    await db.execute(_delete(Face).where(in_ids(Face.id, uuids)))
     if photo_ids:
-        await db.execute(update(Photo).where(Photo.id.in_(photo_ids)).values(file_sync_dirty=True))
+        await db.execute(update(Photo).where(in_ids(Photo.id, photo_ids)).values(file_sync_dirty=True))
     await db.commit()
     auto_write.queue(photo_ids)

@@ -158,10 +158,10 @@
 
 		<!-- Full-text -->
 		<div>
-			<label class={labelCls}>Keywords</label>
+			<label for="search-keywords" class={labelCls}>Keywords</label>
 			<div class="relative">
 				<Search size={11} class="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600 pointer-events-none" />
-				<input type="text" placeholder="Filename, caption, tag, camera…"
+				<input id="search-keywords" type="text" placeholder="Filename, caption, tag, camera…"
 					class="w-full pl-6 pr-2 py-1.5 text-xs bg-zinc-800 border border-zinc-700 rounded text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
 					bind:value={query} />
 			</div>
@@ -169,7 +169,7 @@
 
 		<!-- Date range -->
 		<div>
-			<label class={labelCls}>Date taken</label>
+			<span class={labelCls}>Date taken</span>
 			<div class="flex items-center gap-1">
 				<input type="date" bind:value={dateFrom} class={inputCls} />
 				<span class="text-zinc-600 text-xs shrink-0">–</span>
@@ -183,7 +183,7 @@
 
 		<!-- Media type -->
 		<div>
-			<label class={labelCls}>Type</label>
+			<span class={labelCls}>Type</span>
 			<select class={selectCls} bind:value={mediaType}>
 				<option value="">All types</option>
 				<option value="image">Photos only</option>
@@ -193,7 +193,7 @@
 
 		<!-- Rating -->
 		<div>
-			<label class={labelCls}>Rating</label>
+			<span class={labelCls}>Rating</span>
 			<select class={selectCls} bind:value={ratingMin}>
 				<option value={undefined}>Any rating</option>
 				<option value={1}>★ 1+</option>
@@ -206,7 +206,7 @@
 
 		<!-- Color label -->
 		<div>
-			<label class={labelCls}>Color label</label>
+			<span class={labelCls}>Color label</span>
 			<div class="flex flex-wrap gap-1.5 mt-0.5">
 				<button type="button"
 					onclick={() => colorLabel = undefined}
@@ -224,7 +224,7 @@
 
 		<!-- Tag typeahead -->
 		<div>
-			<label class={labelCls}>Tag {tagId ? `· ${selectedTagName}` : ''}</label>
+			<span class={labelCls}>Tag {tagId ? `· ${selectedTagName}` : ''}</span>
 			<div class="relative">
 				<input type="text" placeholder="Search tags…" bind:value={tagSearch} class={inputCls} />
 			</div>
@@ -244,7 +244,7 @@
 
 		<!-- Person typeahead -->
 		<div>
-			<label class={labelCls}>Person {personTagId ? `· ${selectedPersonName}` : ''}</label>
+			<span class={labelCls}>Person {personTagId ? `· ${selectedPersonName}` : ''}</span>
 			<div class="relative">
 				<input type="text" placeholder="Search people…" bind:value={personSearch} class={inputCls} />
 			</div>
@@ -265,7 +265,7 @@
 		<!-- Camera -->
 		{#if cameras.length}
 			<div>
-				<label class={labelCls}>Camera</label>
+				<span class={labelCls}>Camera</span>
 				<select class={selectCls} bind:value={cameraId}>
 					<option value={undefined}>Any camera</option>
 					{#each cameras as cam}
@@ -278,7 +278,7 @@
 		<!-- Lens -->
 		{#if lenses.length}
 			<div>
-				<label class={labelCls}>Lens</label>
+				<span class={labelCls}>Lens</span>
 				<select class={selectCls} bind:value={lensId}>
 					<option value={undefined}>Any lens</option>
 					{#each lenses as l}
@@ -291,7 +291,7 @@
 		<!-- Location / faces -->
 		<div class="flex gap-2">
 			<div class="flex-1">
-				<label class={labelCls}>Location</label>
+				<span class={labelCls}>Location</span>
 				<select class={selectCls} bind:value={hasGps}>
 					<option value="">Any</option>
 					<option value="yes">Has GPS</option>
@@ -299,7 +299,7 @@
 				</select>
 			</div>
 			<div class="flex-1">
-				<label class={labelCls}>Faces</label>
+				<span class={labelCls}>Faces</span>
 				<select class={selectCls} bind:value={hasFaces}>
 					<option value="">Any</option>
 					<option value="yes">Has faces</option>
@@ -324,8 +324,10 @@
 </form>
 
 {#if showSaveModal}
-	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onclick={() => showSaveModal = false}>
-		<div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl w-80 p-5" onclick={(e) => e.stopPropagation()}>
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="presentation"
+		onclick={() => showSaveModal = false} onkeydown={(e) => { if (e.key === 'Escape') showSaveModal = false; }}>
+		<div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl w-80 p-5" role="dialog" aria-modal="true" aria-label="Save as Smart Album" tabindex="-1"
+			onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
 			<h3 class="text-sm font-semibold text-zinc-200 mb-4 flex items-center gap-2">
 				<Bookmark size={14} class="text-amber-400" /> Save as Smart Album
 			</h3>

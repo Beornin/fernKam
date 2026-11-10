@@ -129,7 +129,7 @@ async def set_cover(stack_id: int, db: DB, photo_id: int = Body(..., embed=True)
 async def sync_stack_tags(stack_id: int, db: DB) -> dict:
     """Union tags/rating/color-label/face-regions across all members, write to every member."""
     from fernkam.importers.filesystem import reconcile_outdated
-    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
+    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, tag_names_for, write_metadata_batch
 
     stack = (await db.execute(select(PhotoStack).where(PhotoStack.id == stack_id))).scalar_one_or_none()
     if not stack:
@@ -175,6 +175,7 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
 
     payloads = []
     written: list[tuple[int, str]] = []
+    names = await tag_names_for(db, list(tags_by_id.values()))
     for m in members:
         # Apply the union in-DB first so build_photo_payload sees merged state.
         m.rating = union_rating
@@ -191,7 +192,7 @@ async def sync_stack_tags(stack_id: int, db: DB) -> dict:
             f for f in m.faces
             if f.x is not None and (f.person_tag is not None or (f.region_name or "").strip())
         ]
-        p = build_photo_payload(m, list(tags_by_id.values()), named_faces)
+        p = build_photo_payload(m, list(tags_by_id.values()), named_faces, names)
         if p:
             payloads.append(p)
             written.append((m.id, p["SourceFile"]))

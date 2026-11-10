@@ -14,6 +14,7 @@ import time
 from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fernkam.sql_util import in_ids
 from fernkam.config import get_settings
 from fernkam.db.models.photos import Face, Photo, PhotoTag, Tag
 from fernkam.media_types import ALL_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, media_type_for  # noqa: F401 (re-exported for existing importers)
@@ -359,7 +360,7 @@ async def scan_library(
     if photo_added_callback and left_prep:
         # Filed out of AA_RAW/AB_TO_SORT/AC_SORTED: detect the faces skipped there.
         for photo_id in (await db.execute(select(Photo.id).where(
-                Photo.id.in_(left_prep), Photo.faces_scanned_at.is_(None),
+                in_ids(Photo.id, left_prep), Photo.faces_scanned_at.is_(None),
                 Photo.media_type == "image"))).scalars().all():
             try:
                 await photo_added_callback(photo_id)
@@ -958,7 +959,7 @@ async def reconcile_outdated(db: AsyncSession, photo_ids: list[int]) -> int:
     rows = (await db.execute(
         select(Photo.id, Photo.album_path, Photo.filename, Photo.file_modified_at_sync,
                Photo.synced_meta.is_(None).label("no_base"))
-        .where(Photo.id.in_(photo_ids))
+        .where(in_ids(Photo.id, photo_ids))
     )).all()
     from fernkam.thumbnails import photo_disk_path
 

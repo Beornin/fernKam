@@ -15,6 +15,7 @@ from typing import Any, Optional
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fernkam.sql_util import in_ids
 from fernkam.db.models.photos import Photo, PhotoStack
 from fernkam.services.photo_query import in_album
 from fernkam.media_types import is_raw
@@ -63,6 +64,34 @@ def _pick_cover(raw_photo: Any, derivatives: list[Any]) -> Any:
         derivatives,
         key=lambda p: (p.rating or 0, p.file_size or 0),
     )
+
+
+async def refresh_stacks(db: AsyncSession, stack_ids: Optional[list[int]] = None) -> dict:
+    """Bring stacks in step with their live photos: the member count, a cover that is still live
+    (the best derivative, else the RAW), and no stack left with nothing in it. Trashing a photo
+    leaves its stack wrong until the next full Detect stacks, so the trash paths call this for the
+    stacks they touched. stack_ids None = every stack. Commits."""
+    where = "" if stack_ids is None else "AND s.id = ANY(:ids)"
+    p = {} if stack_ids is None else {"ids": list(stack_ids)}
+    if stack_ids is not None and not stack_ids:
+        return {"counts": 0, "covers": 0, "removed": 0}
+    live = "p.stack_id = s.id AND p.status = 1"
+    counts = await db.execute(text(f"""
+        UPDATE photo_stacks s SET member_count = (SELECT count(*) FROM photos p WHERE {live}), updated_at = now()
+        WHERE s.member_count <> (SELECT count(*) FROM photos p WHERE {live}) {where}"""), p)
+    covers = await db.execute(text(f"""
+        UPDATE photo_stacks s SET cover_photo_id = (
+            SELECT p.id FROM photos p WHERE {live}
+            ORDER BY (p.stack_role = 'derivative') DESC, p.rating DESC, p.file_size DESC NULLS LAST, p.id LIMIT 1)
+        WHERE EXISTS (SELECT 1 FROM photos p WHERE {live})
+          AND NOT EXISTS (SELECT 1 FROM photos c WHERE c.id = s.cover_photo_id AND c.status = 1) {where}"""), p)
+    empty = f"NOT EXISTS (SELECT 1 FROM photos p WHERE {live}) {where}"
+    await db.execute(text(f"""
+        UPDATE photos SET stack_id = NULL, stack_role = NULL
+        WHERE stack_id IN (SELECT s.id FROM photo_stacks s WHERE {empty})"""), p)
+    removed = await db.execute(text(f"DELETE FROM photo_stacks s WHERE {empty}"), p)
+    await db.commit()
+    return {"counts": counts.rowcount, "covers": covers.rowcount, "removed": removed.rowcount}
 
 
 async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> dict:
@@ -172,7 +201,7 @@ async def detect_stacks(db: AsyncSession, album_path: Optional[str] = None) -> d
     # won't be misidentified as stale even though they weren't in that snapshot.
     stale_ids = [s.id for s in all_stacks if (s.album_path, s.stem_key) not in seen_stack_keys]
     if stale_ids:
-        await db.execute(update(Photo).where(Photo.stack_id.in_(stale_ids)).values(stack_id=None, stack_role=None))
+        await db.execute(update(Photo).where(in_ids(Photo.stack_id, stale_ids)).values(stack_id=None, stack_role=None))
         for s in all_stacks:
             if s.id in stale_ids:
                 await db.delete(s)

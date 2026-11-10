@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.orm import selectinload
 
+from fernkam.background import spawn
+from fernkam.sql_util import in_ids
 from fernkam import auto_write
 from fernkam.api.deps import DB
 from fernkam.api.schemas import BatchDetectResult, FaceOut, PhotoDetail, PhotoPage, PhotoSummary, PhotoUpdate
@@ -400,7 +402,7 @@ async def infer_dates_apply(payload: InferDatesApplyRequest, db: DB) -> dict:
 
     rows = (await db.execute(
         select(Photo.id, Photo.filename, Photo.album_path)
-        .where(Photo.id.in_(payload.ids))
+        .where(in_ids(Photo.id, payload.ids))
         .where(Photo.taken_at.is_(None))
         .where(Photo.status == 1)
     )).fetchall()
@@ -772,6 +774,9 @@ async def trash_photo(photo_id: int, db: DB) -> dict:
 
     await db.execute(update(Photo).where(Photo.id == photo_id).values(status=0))
     await db.commit()
+    if row.stack_id:   # its stack's count and cover must not keep counting it
+        from fernkam.services.stacks import refresh_stacks
+        await refresh_stacks(db, [row.stack_id])
     return {"ok": True, "filename": row.filename}
 
 
@@ -794,7 +799,7 @@ async def batch_edit_photos(payload: BatchEditRequest, db: DB) -> dict:
 
     updates["file_sync_dirty"] = True
     await db.execute(
-        update(Photo).where(Photo.id.in_(payload.ids)).values(**updates)
+        update(Photo).where(in_ids(Photo.id, payload.ids)).values(**updates)
     )
     await db.commit()
     auto_write.queue(payload.ids)
@@ -918,7 +923,7 @@ async def orient(req: OrientRequest, db: DB) -> dict:
     if et is None:
         raise HTTPException(500, "exiftool is not available")
     rows = (await db.execute(select(Photo.id, Photo.album_path, Photo.filename, Photo.media_type, Photo.orientation)
-                             .where(Photo.id.in_(req.photo_ids), Photo.status == 1))).all()
+                             .where(in_ids(Photo.id, req.photo_ids), Photo.status == 1))).all()
     loop = asyncio.get_running_loop()
     done, redo, errors = [], [], []
     for r in rows:
@@ -945,7 +950,7 @@ async def orient(req: OrientRequest, db: DB) -> dict:
         await _forget_pixel_derived_data(db, redo, outside=False)
     await db.commit()
     if redo:
-        asyncio.create_task(_redo_after_turn(redo), name="fernkam-reorient")
+        spawn(_redo_after_turn(redo), name="fernkam-reorient")
     return {"turned": len(done), "ids": done, "errors": errors}
 
 
@@ -1101,7 +1106,7 @@ async def edit_file_fields(req: FileFieldsEdit, db: DB) -> dict:
     if et is None:
         raise HTTPException(500, "exiftool is not available")
     rows = (await db.execute(select(Photo.id, Photo.album_path, Photo.filename)
-                             .where(Photo.id.in_(req.photo_ids), Photo.status == 1))).all()
+                             .where(in_ids(Photo.id, req.photo_ids), Photo.status == 1))).all()
     loop = asyncio.get_running_loop()
     done, errors = [], []
     for r in rows:

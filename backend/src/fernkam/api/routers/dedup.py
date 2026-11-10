@@ -10,6 +10,8 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from sqlalchemy import select, text, update as sa_update
 
+from fernkam.background import spawn
+from fernkam.sql_util import in_ids
 from fernkam.api.deps import DB
 from fernkam.config import get_settings
 from fernkam.db.models.photos import Photo, Tag
@@ -115,7 +117,7 @@ async def compute_missing_hashes(
         except Exception as exc:
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started"}
 
 
@@ -173,7 +175,7 @@ async def list_duplicate_groups(
         photo_rows = (await db.execute(
             select(Photo.sha256, Photo.id, Photo.filename, Photo.album_path,
                    Photo.taken_at, Photo.file_size, Photo.media_type)
-            .where(Photo.sha256.in_(shas))
+            .where(in_ids(Photo.sha256, shas))
             .where(Photo.status == 1)
             .order_by(Photo.sha256, Photo.imported_at.asc())
         )).fetchall()
@@ -278,7 +280,7 @@ async def _compute_auto_clean_plan(db) -> dict:
             Photo.file_size, Photo.media_type, Photo.rating, Photo.color_label,
             Photo.title, Photo.caption, Photo.stack_id,
         )
-        .where(Photo.sha256.in_(shas))
+        .where(in_ids(Photo.sha256, shas))
         .where(Photo.status == 1)
         .order_by(Photo.sha256, Photo.imported_at.asc())
     )).fetchall()
@@ -447,7 +449,7 @@ async def auto_clean_apply() -> dict:
                         upd["caption"] = merge["caption"]
                     if upd:
                         await bg_db.execute(
-                            sa_update(Photo).where(Photo.id.in_(keep_ids)).values(**upd)
+                            sa_update(Photo).where(in_ids(Photo.id, keep_ids)).values(**upd)
                         )
                         merged_photos += len(keep_ids)
 
@@ -471,6 +473,7 @@ async def auto_clean_apply() -> dict:
 
                 # ── Phase 2: trash each redundant copy ──
                 loop = asyncio.get_event_loop()
+                touched_stacks: set[int] = set()
                 for group in groups:
                     for cand in group["delete"]:
                         row = (await bg_db.execute(
@@ -489,6 +492,8 @@ async def auto_clean_apply() -> dict:
                             await bg_db.commit()
                             deleted += 1
                             freed_bytes += row.file_size or 0
+                            if row.stack_id:
+                                touched_stacks.add(row.stack_id)
                         except Exception as exc:
                             logger.warning("auto-clean trash failed for %s: %s", src, exc)
                             errors += 1
@@ -499,6 +504,10 @@ async def auto_clean_apply() -> dict:
                                 message=f"Cleaned {deleted}/{total} ({errors} errors)…",
                                 progress={"done": deleted + errors, "total": total},
                             )
+
+                if touched_stacks:
+                    from fernkam.services.stacks import refresh_stacks
+                    await refresh_stacks(bg_db, list(touched_stacks))
 
                 await task_manager.update_task(
                     task_id, status="completed",
@@ -514,5 +523,5 @@ async def auto_clean_apply() -> dict:
             logger.exception("auto-clean task failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started"}

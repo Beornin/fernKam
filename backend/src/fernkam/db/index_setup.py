@@ -132,15 +132,12 @@ async def ensure_indexes(engine: AsyncEngine) -> None:
         # role is now filled by ix_photo_tags_tag_id above.)
         await conn.execute(text("DROP INDEX IF EXISTS ix_photo_tags_photo_tag"))
 
-    # ── Partial HNSW for unconfirmed faces (clustering inner loop) ──
-    # Must be outside a transaction block; wrap separately and swallow errors.
+    # The partial HNSW index for status = 'unconfirmed' was never used (0 scans, 48 MB): clustering
+    # reads unconfirmed faces by status, and the sweeps ask for IN ('unconfirmed', 'suggested'), which
+    # a partial index on one status can't serve. Migration 0039 drops it; this keeps it from coming back.
     try:
         async with engine.connect() as conn:
             ac = await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await ac.execute(text("""
-                CREATE INDEX IF NOT EXISTS ix_faces_emb_unconfirmed_hnsw
-                ON faces USING hnsw (embedding_v vector_cosine_ops)
-                WHERE status = 'unconfirmed' AND embedding_v IS NOT NULL
-            """))
+            await ac.execute(text("DROP INDEX IF EXISTS ix_faces_emb_unconfirmed_hnsw"))
     except Exception as exc:
-        print(f"[index_setup] partial HNSW index skipped: {exc}", flush=True)
+        print(f"[index_setup] unused index cleanup skipped: {exc}", flush=True)

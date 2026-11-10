@@ -37,6 +37,7 @@
 	// debounced separately — without this, dragging back and forth across a
 	// bucket threshold (150/200/300px) re-requests every visible thumbnail on
 	// each crossing instead of once after the user settles on a size.
+	// svelte-ignore state_referenced_locally (starts at the current size; the effect below follows it)
 	let debouncedThumbSize = $state(thumbSize);
 	let thumbDebounceTimer: ReturnType<typeof setTimeout>;
 	$effect(() => {

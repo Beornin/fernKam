@@ -20,6 +20,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text
 
+from fernkam.background import spawn
 from fernkam import camera_tags, embed_index, embed_models, photo_context, species_range, species_status, tag_learning, vision_check
 from fernkam.api.deps import DB
 
@@ -378,7 +379,7 @@ async def check_tag(
             logger.exception("vision check failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc)[:500])
 
-    asyncio.create_task(run(), name=f"fernkam-vision-{task_id}")
+    spawn(run(), name=f"fernkam-vision-{task_id}")
     return {"task_id": task_id, "queued": len(ids), "message": "running"}
 
 
@@ -466,7 +467,7 @@ async def install_text_tower(key: str) -> dict:
             logger.exception("text tower download failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc)[:500])
 
-    asyncio.create_task(run(), name=f"fernkam-text-{key}")
+    spawn(run(), name=f"fernkam-text-{key}")
     return {"task_id": task_id}
 
 
@@ -554,7 +555,7 @@ async def train_all(db: DB, check: bool = Body(False, embed=True)) -> dict:
             logger.exception("tag learning task failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run(), name=f"fernkam-tag-learning-{task_id}")
+    spawn(_run(), name=f"fernkam-tag-learning-{task_id}")
     return {"task_id": task_id, "tags": len(tag_ids), "message": "running"}
 
 

@@ -1303,6 +1303,43 @@ once a photo had been sorted by hand into its folder, and edits saved loose in A
   0.5 s for a 114 MB TIFF per write. End to end on a real photo: the tag reached the file 9 s after
   the edit, the database recorded the write, and the viewer's new File row went from "Writing in a
   few seconds…" to "Up to date".
+- **Audit pass** (2026-11-10, measured on the 122k-photo library; migration 0039, `background.py`,
+  `sql_util.py`):
+  - *Bugs.* The Reference tag crashed the photo list (41,654 descendant ids sent as query
+    parameters; asyncpg allows 32,767): the tag filter is now a subquery, and 30 other
+    list-expanding `IN` clauses (bulk face review, batch edit, dedup, scan) send one array
+    (`in_ids`). Trashing a photo left its stack's count and cover stale (6 wrong, 4 empty stacks,
+    repaired): `refresh_stacks` runs on both trash paths. 33 background jobs (scan, write-back,
+    learning...) were started without keeping a reference, which Python may drop mid-run: `spawn()`
+    keeps them and logs a crash. Logs split a traceback into a row per line, and stored what the
+    Python handler already had a second time: stderr lines are grouped into one record and the
+    duplicate dropped; the list sends a preview and `GET /api/logs/{id}` the whole row (98 KB, not
+    5.6 MB).
+  - *Indexes.* Tags had none on path or parent (1.1 million full scans; 3 ms -> 0.03 ms), unique
+    path now. Partial indexes on live photos make the whole-library sorts by import date,
+    filename and rating 8 ms (were 83-141), the live count and album tree 20 ms (were 114), the
+    never-synced count 6 ms (was 70). Dropped the never-used unconfirmed-face HNSW index (48 MB) and
+    stopped start-up recreating it. +25 MB of indexes.
+  - *Endpoints.* The album tree printed every folder to the console on every request and built
+    itself quadratically: 570 ms -> ~60 ms, identical output on all 3,792 folders. RAW health ran its
+    scan twice: 3.0 s -> 1.1 s. The Models panel (polled every 4 s) asked the vision server for its
+    model list each time: cached 10 s, and the vector counts are one query: 970 -> 330 ms.
+  - *Viewer.* A TIFF or RAW showed a spinner until the server finished converting it (0.5-2.4 s).
+    It shows the cached large preview at once (0.3 s) and swaps in the full image; face boxes wait
+    for the full image. Face crops (442 MB) are deferred, so face lists, People and a photo's
+    detail stop reading them.
+  - *Files.* The keyword path written into a file now uses tag names ("Cope's Gray Treefrog (...)")
+    instead of ltree labels ("Cope_s_Gray_Treefrog__..."): for the 41,952 tags whose label is exactly
+    their name's sanitized form; every tag reads back to itself. Tags renamed since keep their label.
+  - *Safety.* A foreign Host header (DNS rebinding, which lets a web page read the library) is
+    refused; same-origin writes were already checked. The Cull search the linter flagged as SQL
+    injection is not (a constant is interpolated; the typed text is a bound parameter).
+  - *Polish.* Frontend checker warnings 34 -> 1 (unrelated Node types): form captions, rows that
+    were click-only now reachable by keyboard (`activate`), and the two deliberate initial-value
+    captures marked. `tests/run_all.py` runs all 37 test files without pytest.
+  - *Left on purpose.* `faces.embedding` (160 MB) is the source the start-up backfill reads, so it
+    stays; the whole-library "File type" sort (240 ms) would need a stored column; the
+    `shared_buffers`-style Postgres settings are the server's, not the app's (see the audit notes).
 - **Right-click › Move to Recycle Bin…** in the photo grid (2026-11-09): exactly the clicked or
   selected files, after a confirmation naming them, through the same trash as Cull's Del key
   (Windows Recycle Bin, photo marked inactive). Another version of the same shot stays.

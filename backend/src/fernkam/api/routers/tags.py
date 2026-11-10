@@ -77,6 +77,8 @@ async def create_tag(
         label = "_" + label
     path = parent_path + label
 
+    if (await db.execute(text("SELECT 1 FROM tags WHERE path = CAST(:p AS ltree)"), {"p": path})).first():
+        raise HTTPException(409, f"A tag named '{name}' already exists there")   # tag paths are unique
     result = await db.execute(
         text("INSERT INTO tags (name, path, parent_id, is_person) VALUES (:name, CAST(:path AS ltree), :parent_id, :is_person) RETURNING id"),
         {"name": name, "path": path, "parent_id": parent_id, "is_person": is_person},

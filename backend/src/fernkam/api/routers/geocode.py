@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, Query
 from sqlalchemy import false, select, text
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Photo
 
@@ -130,7 +131,7 @@ async def run_geocoding(
             logger.exception("geocode task failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started"}
 
 

@@ -120,17 +120,12 @@ SORT_OPTIONS = {
 DEFAULT_SORT = SORT_OPTIONS["taken_at_desc"]
 
 
-async def _tag_subtree_ids(db: AsyncSession, tag_id: int) -> list[int]:
-    """Return the tag id plus all descendant ids (ltree subtree)."""
-    tag = (await db.execute(select(Tag).where(Tag.id == tag_id))).scalar_one_or_none()
-    if not tag:
-        return []
-    # Parameterized (not f-string interpolated) — tag.path is derived from a
-    # user-supplied tag name, so a raw string-interpolated query here would be
-    # SQL-injectable via a crafted tag name.
-    path_cond = text("path <@ CAST(:tpath AS ltree)").bindparams(bindparam("tpath", tag.path))
-    rows = await db.execute(select(Tag.id).where(path_cond))
-    return [r[0] for r in rows]
+def _tag_subtree(tag_id: int):
+    """The tag and every tag below it, as a subquery: Postgres joins it, so a tag with tens of
+    thousands of descendants (Reference has 41,000) isn't sent as that many query parameters,
+    which asyncpg refuses past 32,767."""
+    return select(Tag.id).where(text("tags.path <@ (SELECT t0.path FROM tags t0 WHERE t0.id = :subtree_id)")
+                                .bindparams(bindparam("subtree_id", tag_id)))
 
 
 def _search_clause(search: str):
@@ -176,27 +171,20 @@ async def build_photo_query(f: PhotoFilters, db: AsyncSession) -> Select:
         q = q.where(in_album(Photo.album_path, f.album_path))
 
     if f.tag_id is not None:
-        ids = await _tag_subtree_ids(db, f.tag_id)
-        if ids:
-            via_tags = select(PhotoTag.photo_id).where(PhotoTag.tag_id.in_(ids))
-            via_faces = select(Face.photo_id).where(
-                Face.person_tag_id.in_(ids),
-                Face.status.in_(["confirmed", "suggested"]),
-            )
-            q = q.where(Photo.id.in_(union(via_tags, via_faces)))
-        else:
-            q = q.where(text("false"))
+        subtree = _tag_subtree(f.tag_id)
+        via_tags = select(PhotoTag.photo_id).where(PhotoTag.tag_id.in_(subtree))
+        via_faces = select(Face.photo_id).where(
+            Face.person_tag_id.in_(_tag_subtree(f.tag_id)),
+            Face.status.in_(["confirmed", "suggested"]),
+        )
+        q = q.where(Photo.id.in_(union(via_tags, via_faces)))
 
     if f.person_tag_id is not None:
-        ids = await _tag_subtree_ids(db, f.person_tag_id)
-        if ids:
-            via_faces = select(Face.photo_id).where(
-                Face.person_tag_id.in_(ids),
-                Face.status.in_(["confirmed", "suggested"]),
-            )
-            q = q.where(Photo.id.in_(via_faces))
-        else:
-            q = q.where(text("false"))
+        via_faces = select(Face.photo_id).where(
+            Face.person_tag_id.in_(_tag_subtree(f.person_tag_id)),
+            Face.status.in_(["confirmed", "suggested"]),
+        )
+        q = q.where(Photo.id.in_(via_faces))
 
     if f.rating_min is not None:
         q = q.where(Photo.rating >= f.rating_min)

@@ -580,7 +580,37 @@ def write_file_metadata(
 
 # ═══════════════════════════ BATCH HELPERS ═══════════════════════════════════
 
-def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
+def hierarchical_names(path: str, names: dict[str, str]) -> str:
+    """A tag's keyword path for the file, "Wildlife/Frogs/Cope's Gray Treefrog (...)", from its
+    ancestors' names instead of the database's ltree labels ("Cope_s_Gray_Treefrog__..."), so
+    digiKam, Lightroom and Windows show the real names. A level keeps its label unless the name
+    reads back to exactly that label (sync_merge.tag_key), and a name holding the separators "/" or
+    "|" always keeps it: reading the file then gives the same tag, never a second one."""
+    from fernkam.sync_merge import ltree_label
+
+    labels = path.split(".")
+    out = []
+    for i, label in enumerate(labels):
+        name = (names.get(".".join(labels[: i + 1])) or "").strip()
+        out.append(name if name and "/" not in name and "|" not in name and ltree_label(name) == label else label)
+    return "/".join(out)
+
+
+async def tag_names_for(db, tags: list) -> dict[str, str]:
+    """{ltree path: name} for each level of these tags' paths: what hierarchical_names needs."""
+    from sqlalchemy import text
+
+    prefixes: set[str] = set()
+    for t in tags:
+        labels = str(t.path).split(".")
+        prefixes.update(".".join(labels[: i + 1]) for i in range(len(labels)))
+    if not prefixes:
+        return {}
+    rows = await db.execute(text("SELECT path::text, name FROM tags WHERE path::text = ANY(:p)"), {"p": sorted(prefixes)})
+    return {r[0]: r[1] for r in rows}
+
+
+def build_photo_payload(photo, tags: list, faces: list, tag_names: Optional[dict[str, str]] = None) -> Optional[dict]:
     """Build an exiftool JSON payload dict for one photo.
 
     Returns None if the source file does not exist.
@@ -596,7 +626,8 @@ def build_photo_payload(photo, tags: list, faces: list) -> Optional[dict]:
     payload: dict = {"SourceFile": str(src)}
 
     tag_names = [t.name for t in tags]
-    tag_paths = [str(t.path).replace(".", "/") for t in tags]
+    tag_paths = [hierarchical_names(str(t.path), tag_names) if tag_names is not None else str(t.path).replace(".", "/")
+                 for t in tags]
 
     # Merge confirmed person names into Subject/HierarchicalSubject (DigiKam style)
     for f in faces:

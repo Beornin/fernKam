@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.orm import undefer
 
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
@@ -125,7 +126,7 @@ async def serve_face_crop(face_id: UUID, db: DB, size: int = Query(120, ge=40, l
     bounding box, since upscaling the small cached crop would just look soft.
     """
     row = (await db.execute(
-        select(Face).where(Face.id == face_id)
+        select(Face).where(Face.id == face_id).options(undefer(Face.crop_data))
     )).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Face not found")

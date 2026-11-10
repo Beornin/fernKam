@@ -80,9 +80,19 @@
 		return () => { if (pollHandle) clearTimeout(pollHandle); };
 	});
 
+	// The list carries only the start of a long traceback; opening a row reads the whole of it.
+	let full = $state<Record<number, string>>({});
+
 	function toggle(id: number) {
 		const next = new Set(expanded);
-		if (next.has(id)) next.delete(id); else next.add(id);
+		if (next.has(id)) {
+			next.delete(id);
+		} else {
+			next.add(id);
+			if (items.find(i => i.id === id)?.exc_truncated && !(id in full)) {
+				api.logs.get(id).then(r => { full = { ...full, [id]: r.exc_info ?? '' }; }).catch(() => {});
+			}
+		}
 		expanded = next;
 	}
 
@@ -250,7 +260,8 @@
 								{#if it.exc_info}
 									<div class="mt-2">
 										<div class="text-zinc-500 text-[11px] mb-1">Exception</div>
-										<pre class="bg-zinc-950 border border-zinc-800 rounded p-2 text-[11px] text-red-300 overflow-x-auto whitespace-pre-wrap">{it.exc_info}</pre>
+										<pre class="bg-zinc-950 border border-zinc-800 rounded p-2 text-[11px] text-red-300 overflow-x-auto whitespace-pre-wrap">{full[it.id] ?? it.exc_info}{#if it.exc_truncated && !(it.id in full)}
+…{/if}</pre>
 									</div>
 								{/if}
 							</td>

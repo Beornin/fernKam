@@ -1,4 +1,5 @@
 ﻿<script lang="ts">
+	import { activate } from '$lib/a11y';
 	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type PersonOut, type FaceOut } from '$lib/api';
 	import { Plus, Search, Trash2, Pencil, Check, X, User, ExternalLink, EyeOff, Layers, ArrowUpDown, ArrowUp, ArrowDown, Merge, Scissors } from '@lucide/svelte';
@@ -352,6 +353,7 @@
 						class="group flex items-center gap-1 px-2 py-0.5 rounded mx-1 cursor-pointer transition-colors
 							{selectedPerson?.id === person.id ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-zinc-800'}" 
 						onclick={() => selectPerson(person)}
+						role="button" tabindex="0" onkeydown={(e) => activate(e, () => selectPerson(person))}
 					>
 						{#if renamingId === person.id}
 							<input
@@ -390,6 +392,7 @@
 				<div
 					class="flex items-center gap-2 px-2 py-1.5 rounded mx-1 cursor-pointer transition-colors hover:bg-zinc-800"
 					onclick={() => goto('/review')}
+					role="button" tabindex="0" onkeydown={(e) => activate(e, () => goto('/review'))}
 				>
 					<div class="w-6 h-6 rounded-full bg-violet-600/20 flex items-center justify-center text-violet-400 shrink-0">
 						<Layers size={14} />
@@ -404,6 +407,7 @@
 					class="flex items-center gap-2 px-2 py-1.5 rounded mx-1 cursor-pointer transition-colors
 						{showIgnored ? 'bg-amber-500/15' : 'hover:bg-zinc-800'}"
 					onclick={selectIgnored}
+					role="button" tabindex="0" onkeydown={(e) => activate(e, selectIgnored)}
 				>
 					<div class="w-6 h-6 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-500 shrink-0">
 						<EyeOff size={14} />
@@ -570,9 +574,12 @@
 				{:else}
 					<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax({thumbSize}px, 1fr))">
 						{#each faces as face (face.id)}
+							<!-- svelte-ignore a11y_no_noninteractive_tabindex (a tab stop only while splitting, when it is a button) -->
 							<div
 								class="group relative aspect-square bg-zinc-900 rounded overflow-hidden {splitMode ? 'cursor-pointer' : ''} {splitMode && splitSelected.has(face.id) ? 'ring-2 ring-amber-400' : ''}"
 								onclick={() => splitMode && toggleSplitFace(face.id)}
+								role={splitMode ? 'button' : undefined} tabindex={splitMode ? 0 : undefined}
+								onkeydown={(e) => splitMode && activate(e, () => toggleSplitFace(face.id))}
 							>
 								<img
 									src="/media/face/{face.id}?size=200"

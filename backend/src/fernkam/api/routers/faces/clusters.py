@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from sqlalchemy import select, update
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Tag
 
@@ -46,7 +47,6 @@ async def rebuild_clusters(
     threshold/cluster-size table they come from. Pass min_blur=0 and
     cluster_thresh=0.72 to reproduce the old behaviour.
     """
-    import asyncio
     from fernkam.task_manager import task_manager
     from fernkam.db.session import async_session_factory as _session_factory
 
@@ -71,7 +71,7 @@ async def rebuild_clusters(
             except Exception as exc:  # noqa: BLE001
                 await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started", "threshold": thresh,
             "min_blur": min_blur, "min_det": min_det, "min_size": min_size, "k": k}
 
@@ -241,7 +241,6 @@ async def auto_assign_clusters(
     top-person avg similarity >= min_score AND agreement fraction >= min_agreement.
     Returns a task_id to poll for progress.
     """
-    import asyncio as _asyncio
     from collections import defaultdict as _dd
     from sqlalchemy import text as _sql
     from fernkam.task_manager import task_manager
@@ -393,5 +392,5 @@ async def auto_assign_clusters(
             _log.getLogger(__name__).warning("cluster auto-assign error: %s", exc)
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    _asyncio.create_task(_run(), name="fernkam-cluster-auto-assign")
+    spawn(_run(), name="fernkam-cluster-auto-assign")
     return {"task_id": task_id, "status": "started", "threshold": min_score, "dry_run": dry_run}

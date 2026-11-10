@@ -54,6 +54,21 @@ let imgRenderedW = $state(0);
 let imgRenderedH = $state(0);
 let imgNaturalW = $state(0);
 let imgNaturalH = $state(0);
+// The large cached preview shows at once; the full-resolution image (a TIFF or RAW is converted to
+// JPEG on the server: half a second or more) replaces it when it has loaded. Face boxes are in
+// full-resolution pixels, so they wait for it.
+let fullLoadedId = $state<number | null>(null);
+let previewFailed = $state(false);
+$effect(() => {
+const d = detail;
+fullLoadedId = null;
+previewFailed = false;
+if (!d || d.media_type === 'video') return;
+const im = new Image();
+im.onload = () => { fullLoadedId = d.id; };
+im.src = api.media.original(d.id);
+return () => { im.onload = null; im.src = ''; };
+});
 let showFaceBoxes = $state(true);
 let showMetadata = $state(true);
 let showClipping = $state(true);
@@ -382,6 +397,7 @@ onclick={onNext}
 {/if}
 
 <!-- Image area with face overlays -->
+<!-- svelte-ignore a11y_no_static_element_interactions (a pan and zoom surface: the keyboard has + - and the arrow keys) -->
 <div
 class="flex-1 flex items-center justify-center p-8 min-w-0 overflow-hidden relative"
 onwheel={handleWheel}
@@ -396,6 +412,7 @@ style="cursor: {zoom > 1 ? 'grab' : 'default'}; {isPanning ? 'cursor: grabbing;'
 {:else if detail}
 {#if detail.media_type === 'video'}
 <div class="flex items-center justify-center w-full h-full">
+<!-- svelte-ignore a11y_media_has_caption (his and family videos have no captions) -->
 <video
 src={api.media.video(detail.id)}
 controls
@@ -409,7 +426,8 @@ class="rounded shadow-2xl"
 <div class="relative inline-flex" style="transform: scale({zoom}) translate({panX}px, {panY}px); transition: transform 0.1s ease-out;">
 <img
 bind:this={imgEl}
-src={api.media.original(detail.id)}
+src={fullLoadedId === detail.id || previewFailed ? api.media.original(detail.id) : `/media/thumbnail/${detail.id}?size=xl`}
+onerror={() => { previewFailed = true; }}
 alt={detail.filename}
 class="max-h-[calc(100vh-4rem)] max-w-full object-contain rounded shadow-2xl block"
 onload={onImgLoad}
@@ -423,7 +441,7 @@ draggable={false}
 </div>
 {/if}
 <!-- Face bounding boxes (relative to image) -->
-{#if showFaceBoxes && imgNaturalW > 0 && imgNaturalH > 0}
+{#if showFaceBoxes && imgNaturalW > 0 && imgNaturalH > 0 && (fullLoadedId === detail.id || previewFailed)}
 {#each liveFaces as face (face.id)}
 {@const rect = faceRect(face)}
 {#if rect}
@@ -461,7 +479,7 @@ title={face.person_name ?? face.status + (face.score ? ` (${face.score.toFixed(2
 <button onclick={() => updateRating(n)}>
 <Star
 size={18}
-class="{detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'}"
+class={detail.rating >= n ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'}
 />
 </button>
 {/each}

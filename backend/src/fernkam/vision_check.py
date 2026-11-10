@@ -22,6 +22,7 @@ import base64
 import io
 import logging
 import math
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -97,14 +98,28 @@ def pick_model(models: list[dict], wanted: str) -> Optional[str]:
     return names[0] if names else None
 
 
+# The Models panel polls this every 4 s while it is open, and each call asks the vision server for
+# its model list over HTTP (~240 ms; a server that is down costs a connect timeout). A model pulled
+# or a server started shows up within the TTL; changing the URL or model in settings is a new key.
+_STATUS_TTL_S = 10.0
+_DOWN_TTL_S = 3.0
+_status_cache: dict[tuple, tuple[float, dict]] = {}
+
+
 async def status(db) -> dict:
     url, wanted = await _base_settings(db)
+    key = (url, wanted)
+    hit = _status_cache.get(key)
+    if hit and time.monotonic() - hit[0] < (_STATUS_TTL_S if hit[1]["reachable"] else _DOWN_TTL_S):
+        return dict(hit[1])
     try:
         models = await list_models(url)
+        result = {"url": url, "reachable": True, "models": models, "model": pick_model(models, wanted),
+                  "api": "openai" if _openai(url) else "ollama"}
     except (httpx.HTTPError, ValueError) as exc:
-        return {"url": url, "reachable": False, "error": str(exc)[:200], "models": [], "model": None}
-    return {"url": url, "reachable": True, "models": models, "model": pick_model(models, wanted),
-            "api": "openai" if _openai(url) else "ollama"}
+        result = {"url": url, "reachable": False, "error": str(exc)[:200], "models": [], "model": None}
+    _status_cache[key] = (time.monotonic(), result)
+    return dict(result)
 
 
 def question(path: str) -> str:

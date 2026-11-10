@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter
 from sqlalchemy import func, select, update
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo
 from fernkam.thumbnails import thumb_cache_path
@@ -149,7 +150,7 @@ async def backfill_thumbnails(db: DB) -> dict:
             progress={"done": total, "total": total, "ok": ok, "errors": errors},
         )
 
-    asyncio.create_task(run_backfill(), name=f"fernkam-backfill-thumbs-{task_id}")
+    spawn(run_backfill(), name=f"fernkam-backfill-thumbs-{task_id}")
     return {"task_id": task_id, "queued": len(rows), "message": "running"}
 
 
@@ -243,5 +244,5 @@ async def backfill_crops(db: DB) -> dict:
             progress={"done": total, "total": total, "ok": ok, "errors": errors},
         )
 
-    asyncio.create_task(run_backfill(), name=f"fernkam-backfill-crops-{task_id}")
+    spawn(run_backfill(), name=f"fernkam-backfill-crops-{task_id}")
     return {"task_id": task_id, "queued": len(rows), "message": "running"}

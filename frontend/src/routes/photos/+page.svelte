@@ -1290,6 +1290,7 @@
 	<!-- Image area. Click/double-click zoom has a keyboard equivalent (F, fit/1:1),
 	     handled window-wide like every Cull key. -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		bind:this={reviewScroll}
 		role="application"

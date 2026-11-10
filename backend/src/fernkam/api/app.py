@@ -31,6 +31,7 @@ for _p in _CUDA_PATHS:
 # Install native stderr capture BEFORE importing cv2/onnxruntime/insightface so
 # their cached FD-2 reference is the piped one. Keeps OpenCV/ffmpeg warnings out
 # of nowhere and into the app_logs table.
+from fernkam.background import spawn
 from fernkam import stderr_capture as _stderr_capture
 _stderr_capture.install()
 
@@ -136,8 +137,7 @@ async def lifespan(app: FastAPI):
         _ls.install_python_handler(
             min_level=getattr(logging, os.getenv("FERNKAM_LOG_DB_LEVEL", "WARNING").upper(), logging.WARNING)
         )
-        import asyncio as __asyncio
-        __asyncio.create_task(_ls.retention_loop(), name="fernkam-logs-retention")
+        spawn(_ls.retention_loop(), name="fernkam-logs-retention")
     except Exception as _e:
         print(f"[app_logs] setup failed: {_e}", flush=True)
 
@@ -204,8 +204,7 @@ async def lifespan(app: FastAPI):
         from fernkam.config import get_settings as _gs2
         if _gs2().watch_library:
             from fernkam import library_watch
-            import asyncio as _aio
-            _aio.create_task(library_watch.watch_library(), name="fernkam-library-watch")
+            spawn(library_watch.watch_library(), name="fernkam-library-watch")
     except Exception as _e:
         print(f"[watch] failed to start: {_e}", flush=True)
 
@@ -222,7 +221,7 @@ async def lifespan(app: FastAPI):
             print(f"[face] Model pre-warm failed: {e}", flush=True)
     # Schedule task but don't wait for it
     try:
-        _asyncio.create_task(_warm_face_model(), name="fernkam-warmup-face")
+        spawn(_warm_face_model(), name="fernkam-warmup-face")
     except Exception as e:
         print(f"[face] Failed to schedule pre-warm: {e}", flush=True)
 
@@ -316,6 +315,36 @@ def _origin_allowed(origin: str, host_header: str) -> bool:
     # Same origin as the address we were reached on (LAN access with
     # --host 0.0.0.0), unless that address is a foreign domain rebound to us.
     return parts.netloc == host_header and _is_local_host(parts.hostname)
+
+
+def _host_allowed(host_header: str) -> bool:
+    """Whether the Host a request arrived under is this machine: an IP, localhost, the PC's own name,
+    or a name listed in CORS_ORIGINS."""
+    from urllib.parse import urlsplit
+    name = urlsplit("//" + host_header).hostname if host_header else None
+    if not name:
+        return True   # HTTP/1.0 without a Host
+    if _is_local_host(name):
+        return True
+    return name in {urlsplit(o).hostname for o in _extra_origins()}
+
+
+@app.middleware("http")
+async def reject_foreign_hosts(request, call_next):
+    """403 a request that reached this server under a name that isn't this machine.
+
+    A web page can make its own domain resolve to 127.0.0.1 ("DNS rebinding") and then read
+    anything on this server, GETs included, because to the browser it is the page's own origin. Such
+    a request still carries the page's domain as Host, which is never ours. (The cross-site check
+    below stops writes by Origin; this stops reads.)
+    """
+    if not _host_allowed(request.headers.get("host", "")):
+        from fastapi.responses import JSONResponse
+        logging.getLogger("fernkam.request").warning(
+            "Blocked request for foreign host %s %s", request.headers.get("host"), request.url.path)
+        return JSONResponse(status_code=403, content={
+            "detail": "This server answers only to this machine's own address. Add the name to CORS_ORIGINS if it is yours."})
+    return await call_next(request)
 
 
 @app.middleware("http")

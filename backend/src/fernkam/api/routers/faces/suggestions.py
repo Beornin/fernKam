@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Query
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo, Tag
 
@@ -264,7 +265,6 @@ async def auto_confirm_all_faces(
     Pass `since=<ISO datetime>` to run an incremental sweep covering only faces
     added after that point (e.g. after a fresh scan batch).
     """
-    import asyncio
     from datetime import datetime
     from fernkam.task_manager import task_manager
     from fernkam.db.session import async_session_factory as _session_factory
@@ -322,7 +322,7 @@ async def auto_confirm_all_faces(
             except Exception as exc:  # noqa: BLE001
                 await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started"}
 
 
@@ -414,7 +414,6 @@ async def auto_confirm_incremental(db: DB) -> dict:
     then only processes faces created after that timestamp. Falls back to a full
     sweep if no prior run exists.
     """
-    import asyncio
     from datetime import datetime
     from sqlalchemy import text as _sql
     from fernkam.task_manager import task_manager
@@ -456,7 +455,7 @@ async def auto_confirm_incremental(db: DB) -> dict:
             except Exception as exc:
                 await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started", "since": since_dt.isoformat() if since_dt else None}
 
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { activate } from '$lib/a11y';
 	import { ask, notify } from '$lib/dialog.svelte';
 	import { api, type SavedSearchOut, type PhotoSummary } from '$lib/api';
 	import { Bookmark, Plus, Pencil, Trash2, Play, X, Check, Pin, Search } from '@lucide/svelte';
@@ -133,6 +134,7 @@
 						class="group flex items-center gap-1 px-2 py-1 rounded mx-1 cursor-pointer transition-colors
 							{selectedSearch?.id === ss.id ? 'bg-amber-500/15 text-amber-300' : 'hover:bg-zinc-800'}"
 						onclick={() => runSearch(ss)}
+						role="button" tabindex="0" onkeydown={(e) => activate(e, () => runSearch(ss))}
 					>
 						{#if renamingId === ss.id}
 							<input type="text" bind:value={renameVal}

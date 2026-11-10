@@ -5,12 +5,14 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from fernkam.api.deps import DB
 
 router = APIRouter()
+
+_PREVIEW = 1200   # characters of a traceback in the list
 
 
 _LEVEL_MAP = {
@@ -69,11 +71,14 @@ async def list_logs(
             "level_name": r.level_name,
             "source": r.source,
             "logger_name": r.logger_name,
-            "message": r.message,
+            "message": r.message[:2000],
             "file": r.file,
             "line": r.line,
             "func": r.func,
-            "exc_info": r.exc_info,
+            # A list of 200 rows carried 5.6 MB of traceback text: the first lines here, all of it
+            # from GET /api/logs/{id} when a row is opened.
+            "exc_info": (r.exc_info[:_PREVIEW] if r.exc_info else None),
+            "exc_truncated": bool(r.exc_info and len(r.exc_info) > _PREVIEW),
             "fingerprint": r.fingerprint,
             "occurrences": r.occurrences,
             "last_seen_at": r.last_seen_at.isoformat(),
@@ -81,6 +86,16 @@ async def list_logs(
         for r in rows
     ]
     return {"items": items, "limit": limit, "offset": offset}
+
+
+@router.get("/{log_id:int}")
+async def get_log(log_id: int, db: DB) -> dict:
+    """One row with its whole message and traceback."""
+    r = (await db.execute(text(
+        "SELECT id, message, exc_info FROM app_logs WHERE id = :i"), {"i": log_id})).first()
+    if not r:
+        raise HTTPException(404, "Log row not found")
+    return {"id": r.id, "message": r.message, "exc_info": r.exc_info}
 
 
 @router.get("/count")

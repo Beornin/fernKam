@@ -59,11 +59,92 @@ def _guess_level(line: str) -> tuple[int, str]:
     return logging.INFO, "INFO"
 
 
-def _read_loop() -> None:
-    """Read lines from the pipe, tee to original stderr, enqueue to sink."""
-    from fernkam import logs_sink  # local import to avoid cycle on early import
+# A line that continues the record before it: a traceback ("Traceback...", indented frames, the
+# closing "SomeError: message"), a chained-exception note, or SQLAlchemy's "(Background on...)".
+_CONTINUATION_RE = re.compile(
+    r"^(?:\s|Traceback \(|During handling of|The above exception|\(Background on this error"
+    r"|[\w.]+(?:Error|Exception|Exit|Interrupt|Warning)\b)")
+# A Python logging line ("ERROR [fernkam.error] ...", uvicorn's "ERROR:  ..."): a traceback that follows
+# one belongs to it; a traceback after any other line starts its own record.
+_LOGGER_HEAD_RE = re.compile(r"^(?:DEBUG|INFO|WARNI(?:NG)?|ERROR|CRITI(?:CAL)?)\b")
+# What the Python logging handler already stores (with its own traceback): its terminal copy
+# ("WARNI [fernkam.x] ...", "ERROR [fernkam.error] ...") would only be a duplicate row.
+_PYTHON_LOGGED_RE = re.compile(r"^(?:WARNI|WARNING|ERROR|CRITI|CRITICAL)\s+\[fernkam[\w.]*\]")
+_GROUP_IDLE_S = 0.25      # a record with nothing more coming for this long is complete
+_GROUP_MAX_CHARS = 20_000
 
+
+class _Grouper:
+    """Joins a traceback's lines into the one record they are, instead of one row per line."""
+
+    def __init__(self, emit) -> None:
+        self._emit = emit
+        self._lines: list[str] = []
+        self._chars = 0
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+
+    def feed(self, line: str) -> None:
+        with self._lock:
+            if self._lines and self._chars < _GROUP_MAX_CHARS and self._continues(line):
+                self._lines.append(line)
+                self._chars += len(line)
+            else:
+                self._flush_locked()
+                self._lines, self._chars = [line], len(line)
+            if self._timer:
+                self._timer.cancel()
+            self._timer = threading.Timer(_GROUP_IDLE_S, self.flush)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _continues(self, line: str) -> bool:
+        if line.startswith("Traceback ("):
+            in_traceback = any(l.startswith("Traceback (") for l in self._lines)   # a chained exception
+            return in_traceback or (len(self._lines) == 1 and bool(_LOGGER_HEAD_RE.match(self._lines[0])))
+        return bool(_CONTINUATION_RE.match(line))
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        lines, self._lines, self._chars = self._lines, [], 0
+        if lines:
+            try:
+                self._emit(lines)
+            except Exception:
+                pass
+
+
+def _emit_group(lines: list[str]) -> None:
+    from fernkam import logs_sink
+
+    head = lines[0]
+    if _STDERR_BLOCKLIST.search(head) or _PYTHON_LOGGED_RE.match(head):
+        return
+    level, level_name = _guess_level(head)
+    detail = "\n".join(lines[1:]) or None
+    if level < logging.ERROR and any(l.startswith("Traceback (most recent call last)") for l in lines):
+        level, level_name = logging.ERROR, "ERROR"
+    logs_sink.enqueue_record({
+        "ts": datetime.now(timezone.utc),
+        "level": level,
+        "level_name": level_name,
+        "source": "stderr",
+        "logger_name": None,
+        "message": head[:4096],
+        "file": None,
+        "line": None,
+        "func": None,
+        "exc_info": detail[:_GROUP_MAX_CHARS] if detail else None,
+    })
+
+
+def _read_loop() -> None:
+    """Read lines from the pipe, tee to original stderr, group them into records, enqueue to sink."""
     assert _pipe_read_fd is not None and _orig_stderr_fd is not None
+    grouper = _Grouper(_emit_group)
     buf = b""
     while True:
         try:
@@ -87,25 +168,7 @@ def _read_loop() -> None:
                 continue
             if not line.strip():
                 continue
-            if _STDERR_BLOCKLIST.search(line):
-                continue
-            level, level_name = _guess_level(line)
-            # Only forward if it looks meaningful (skip our own debug noise).
-            try:
-                logs_sink.enqueue_record({
-                    "ts": datetime.now(timezone.utc),
-                    "level": level,
-                    "level_name": level_name,
-                    "source": "stderr",
-                    "logger_name": None,
-                    "message": line[:4096],
-                    "file": None,
-                    "line": None,
-                    "func": None,
-                    "exc_info": None,
-                })
-            except Exception:
-                pass
+            grouper.feed(line)
 
 
 def install() -> None:

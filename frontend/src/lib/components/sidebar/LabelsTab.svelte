@@ -34,7 +34,7 @@
 	</div>
 
 	<div>
-		<label class="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1.5">Rating (and above)</label>
+		<span class="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1.5">Rating (and above)</span>
 		<div class="flex items-center gap-1">
 			{#each [1, 2, 3, 4, 5] as n}
 				<button
@@ -49,7 +49,7 @@
 	</div>
 
 	<div>
-		<label class="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1.5">Color label</label>
+		<span class="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1.5">Color label</span>
 		<div class="flex flex-wrap gap-2">
 			{#each COLOR_LABELS as cl}
 				<button

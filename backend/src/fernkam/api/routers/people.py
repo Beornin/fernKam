@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import selectinload
 
+from fernkam.sql_util import in_ids
 from fernkam.api.deps import DB
 from fernkam.api.schemas import FaceOut, PersonOut
 from fernkam.db.models.photos import Face, Photo, Tag
@@ -60,6 +61,8 @@ async def create_person(db: DB, name: str = Body(...), parent_id: Optional[int] 
         else:
             path = label
 
+    if (await db.execute(text("SELECT 1 FROM tags WHERE path = CAST(:p AS ltree)"), {"p": path})).first():
+        raise HTTPException(409, f"A tag already has the path {path}: pick another name")
     result = await db.execute(
         text("INSERT INTO tags (name, path, is_person, parent_id) VALUES (:name, CAST(:path AS ltree), :is_person, :parent_id) RETURNING id"),
         {"name": name, "path": path, "is_person": True, "parent_id": parent_id},
@@ -153,7 +156,7 @@ async def merge_person(
     from fernkam.api.routers.tags import _mark_tagged_photos_dirty, _merge
     await _mark_tagged_photos_dirty(db, person_id)
     if face_photos:
-        await db.execute(update(Photo).where(Photo.id.in_(face_photos)).values(file_sync_dirty=True))
+        await db.execute(update(Photo).where(in_ids(Photo.id, face_photos)).values(file_sync_dirty=True))
     await _merge(db, person_id, into_id)
     await db.commit()
     await ensure_unique_person_names(db)
@@ -220,7 +223,7 @@ async def split_person(
         target_name = new_name
 
     await db.execute(
-        update(Face).where(Face.id.in_(uuids)).values(person_tag_id=target_id, status="confirmed")
+        update(Face).where(in_ids(Face.id, uuids)).values(person_tag_id=target_id, status="confirmed")
     )
     await db.commit()
 

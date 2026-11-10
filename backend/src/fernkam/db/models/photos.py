@@ -273,8 +273,10 @@ class Face(Base):
         nullable=True,
     )
 
-    # Cached face crop (webp bytes)
-    crop_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    # Cached face crop (webp bytes, ~5 KB x 82k faces = 442 MB). Deferred: only /media/face reads it
+    # (it asks for it with undefer), so face lists, the people pages and a photo's detail no longer
+    # drag every face's crop out of storage with the rest of the row.
+    crop_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, deferred=True)
 
     # InsightFace detection confidence (0.0-1.0); stored at scan time
     det_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 4), nullable=True)

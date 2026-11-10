@@ -17,6 +17,7 @@
 		onMutate?: (faceId: string, action: 'reassigned' | 'deleted' | 'unconfirmed') => void;
 	} = $props();
 
+	// svelte-ignore state_referenced_locally (the face to open on; stepping prev/next moves it)
 	let index = $state(startIndex);
 	let face = $derived(faces[index] ?? null);
 	let pickerOpen = $state(false);

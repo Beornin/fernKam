@@ -13,6 +13,7 @@ from typing import Optional
 
 from sqlalchemy import select, update
 
+from fernkam.sql_util import in_ids
 from fernkam.api.schemas import FaceOut
 from fernkam.db.models.photos import Face, Tag
 
@@ -366,7 +367,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
     # ── 5. Persist: ignored ──
     if auto_ignore:
         await db.execute(
-            update(Face).where(Face.id.in_(auto_ignore))
+            update(Face).where(in_ids(Face.id, auto_ignore))
             .values(status="ignored", person_tag_id=None)
         )
 
@@ -402,7 +403,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
         if affected_photos:
             ex_rows = (await db.execute(
                 select(Face.photo_id, Face.person_tag_id)
-                .where(Face.photo_id.in_(affected_photos))
+                .where(in_ids(Face.photo_id, affected_photos))
                 .where(Face.status == "confirmed")
                 .where(Face.person_tag_id.is_not(None))
                 .where(Face.person_tag_id.not_in(twins_ptids) if twins_ptids else True)
@@ -421,14 +422,14 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
 
         if reset_ids:
             await db.execute(
-                update(Face).where(Face.id.in_(reset_ids))
+                update(Face).where(in_ids(Face.id, reset_ids))
                 .values(status="unconfirmed", person_tag_id=None)
             )
 
         for ptid in set(clean.values()):
             ids = [fid for fid, p in clean.items() if p == ptid]
             await db.execute(
-                update(Face).where(Face.id.in_(ids))
+                update(Face).where(in_ids(Face.id, ids))
                 .values(person_tag_id=ptid, status="confirmed", confirmed_by="auto")
             )
 
@@ -440,7 +441,7 @@ async def _auto_confirm_sweep(db, since_dt: Optional[datetime] = None) -> dict:
         for ptid in {u["ptid"] for u in to_suggest}:
             ids = [u["id"] for u in to_suggest if u["ptid"] == ptid]
             await db.execute(
-                update(Face).where(Face.id.in_(ids))
+                update(Face).where(in_ids(Face.id, ids))
                 .values(person_tag_id=ptid, status="suggested")
             )
 
@@ -638,7 +639,7 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
         if affected_photos:
             ex_rows = (await db.execute(
                 select(Face.photo_id)
-                .where(Face.photo_id.in_(affected_photos))
+                .where(in_ids(Face.photo_id, affected_photos))
                 .where(Face.status == "confirmed")
                 .where(Face.person_tag_id == person_tag_id)
                 .where(Face.id.not_in(auto_ids))
@@ -656,7 +657,7 @@ async def _auto_confirm_similar(db, person_tag_id: int, seed_face_ids: list) -> 
 
     if auto_ids:
         await db.execute(
-            update(Face).where(Face.id.in_(auto_ids))
+            update(Face).where(in_ids(Face.id, auto_ids))
             .values(person_tag_id=person_tag_id, status="confirmed", confirmed_by="auto")
         )
         await db.commit()

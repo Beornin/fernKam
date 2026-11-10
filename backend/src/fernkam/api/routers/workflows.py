@@ -18,6 +18,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text as _sql
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -188,7 +189,7 @@ async def run_remove_nonkeep_raw(req: RemoveNonKeepRawRequest) -> dict:
         "workflow_remove_nonkeep_raw",
         f"{'Preview: ' if req.dry_run else ''}Remove non-keep RAW: {req.starting_folder}",
     )
-    asyncio.create_task(
+    spawn(
         _run_in_thread(task_id, remove_nonkeep_raw.run,
                        starting_folder=req.starting_folder,
                        dry_run=req.dry_run),
@@ -204,7 +205,7 @@ async def run_move_raws_to_folders(req: MoveRawsToFoldersRequest) -> dict:
 
     desc = f"{'Preview: ' if req.dry_run else ''}Move stray RAWs: {req.starting_folder or 'full library'}"
     task_id = await task_manager.create_task("workflow_move_raws", desc)
-    asyncio.create_task(
+    spawn(
         _run_in_thread(task_id, move_raws_to_folders.run,
                        starting_folder=req.starting_folder,
                        dry_run=req.dry_run),
@@ -228,7 +229,7 @@ def _start(task_id: str, fn, dry_run: bool, scan: Optional[str] = "", **kwargs) 
             except TaskConflict:
                 pass  # the library watcher picks the changes up
 
-    asyncio.create_task(go(), name=f"fernkam-workflow-{task_id}")
+    spawn(go(), name=f"fernkam-workflow-{task_id}")
 
 
 @router.post("/run/sync-stack-tags")
@@ -238,7 +239,7 @@ async def run_sync_stack_tags(req: SyncStackTagsRequest) -> dict:
 
     desc = f"{'Preview: ' if req.dry_run else ''}Sync stack tags: {req.album_path or 'full library'}"
     task_id = await task_manager.create_task("workflow_sync_stack_tags", desc)
-    asyncio.create_task(
+    spawn(
         _run_in_thread(task_id, sync_stack_tags.run,
                        album_path=req.album_path,
                        dry_run=req.dry_run),
@@ -263,7 +264,7 @@ async def run_export_web(req: ExportWebRequest) -> dict:
         raise HTTPException(400, "Longest side must be a number of pixels")
     task_id = await task_manager.create_task(
         "workflow_export_web", f"{'Preview: ' if req.dry_run else ''}Export for web: {src}")
-    asyncio.create_task(
+    spawn(
         _run_in_thread(task_id, export_web.run, path=str(src), out_dir=(req.out_dir or "").strip() or None,
                        max_edge=int(edge) if edge else None, remove_gps=bool((req.remove_gps or "").strip()),
                        dry_run=req.dry_run),
@@ -285,7 +286,7 @@ async def run_portfolio_keywords(req: PortfolioKeywordsRequest) -> dict:
         raise HTTPException(400, "Pick one or more folders, or set PORTFOLIO_FOLDERS for the usual ones")
     task_id = await task_manager.create_task(
         "workflow_portfolio_keywords", f"{'Preview: ' if req.dry_run else ''}Portfolio keywords and tags: {'; '.join(paths)}")
-    asyncio.create_task(
+    spawn(
         _run_in_thread(task_id, portfolio_keywords.run, paths=paths, dry_run=req.dry_run),
         name=f"fernkam-workflow-{task_id}",
     )
@@ -378,50 +379,40 @@ async def raw_health(db: DB, album_path: Optional[str] = None) -> dict:
     where = "AND p.album_path LIKE :ap" if album_path else ""
     params = {"ap": f"{album_path}%"} if album_path else {}
 
-    rows = (await db.execute(_sql(f"""
-        WITH f AS (
+    # One pass: the filename/folder parsing (regexps over every live photo) is done once and shared
+    # by the counts and the sample list; it used to run twice, in two statements, about 2 s together.
+    row = (await db.execute(_sql(f"""
+        WITH f AS MATERIALIZED (
             SELECT p.id, p.album_path, p.filename, p.stack_id,
-                   lower(regexp_replace(p.filename, '\.[^.]+$', '')) AS stem,
-                   lower(regexp_replace(p.filename, '^.*\.', '')) AS ext,
+                   lower(regexp_replace(p.filename, '\\.[^.]+$', '')) AS stem,
+                   lower(regexp_replace(p.filename, '^.*\\.', '')) AS ext,
                    regexp_replace(trim(both '/' from p.album_path), '/RAW$', '', 'i') AS base_album
             FROM photos p WHERE p.status = 1 {where}
         ),
-        raws AS (SELECT * FROM f WHERE ext IN ('nef','cr2','cr3','arw','orf','raf','rw2','pef','srw','dng')),
-        pics AS (SELECT * FROM f WHERE ext IN ('jpg','jpeg','tif','tiff','png','heic','webp'))
+        raws AS MATERIALIZED (SELECT * FROM f WHERE ext IN ('nef','cr2','cr3','arw','orf','raf','rw2','pef','srw','dng')),
+        pics AS MATERIALIZED (SELECT * FROM f WHERE ext IN ('jpg','jpeg','tif','tiff','png','heic','webp')),
+        orphans AS MATERIALIZED (
+            SELECT r.id, r.album_path, r.filename FROM raws r
+            WHERE NOT EXISTS (SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem))
         SELECT
           (SELECT COUNT(*) FROM raws) AS raw_total,
-          (SELECT COUNT(*) FROM raws r WHERE NOT EXISTS (
-              SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)) AS orphan_raw,
+          (SELECT COUNT(*) FROM orphans) AS orphan_raw,
           (SELECT COUNT(*) FROM raws r WHERE r.stack_id IS NULL AND EXISTS (
               SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)) AS unstacked_pairs,
-          (SELECT COUNT(*) FROM pics q WHERE q.album_path ILIKE '%%/RAW' AND NOT EXISTS (
-              SELECT 1 FROM raws r WHERE r.base_album = q.base_album AND r.stem = q.stem)) AS lone_pics
+          (SELECT COUNT(*) FROM pics q WHERE q.album_path ILIKE '%/RAW' AND NOT EXISTS (
+              SELECT 1 FROM raws r WHERE r.base_album = q.base_album AND r.stem = q.stem)) AS lone_pics,
+          (SELECT COALESCE(json_agg(json_build_object('id', s.id, 'album_path', s.album_path, 'filename', s.filename)
+                                    ORDER BY s.album_path, s.filename), '[]'::json)
+             FROM (SELECT * FROM orphans ORDER BY album_path, filename LIMIT 25) s) AS samples
     """), params)).first()
-
-    samples = (await db.execute(_sql(f"""
-        WITH f AS (
-            SELECT p.id, p.album_path, p.filename,
-                   lower(regexp_replace(p.filename, '\.[^.]+$', '')) AS stem,
-                   lower(regexp_replace(p.filename, '^.*\.', '')) AS ext,
-                   regexp_replace(trim(both '/' from p.album_path), '/RAW$', '', 'i') AS base_album
-            FROM photos p WHERE p.status = 1 {where}
-        ),
-        raws AS (SELECT * FROM f WHERE ext IN ('nef','cr2','cr3','arw','orf','raf','rw2','pef','srw','dng')),
-        pics AS (SELECT * FROM f WHERE ext IN ('jpg','jpeg','tif','tiff','png','heic','webp'))
-        SELECT r.id, r.album_path, r.filename FROM raws r
-        WHERE NOT EXISTS (SELECT 1 FROM pics q WHERE q.base_album = r.base_album AND q.stem = r.stem)
-        ORDER BY r.album_path, r.filename LIMIT 25
-    """), params)).fetchall()
 
     return {
         "album_path": album_path,
-        "raw_total": int(row_or(rows, 0)),
-        "orphan_raw": int(row_or(rows, 1)),
-        "unstacked_pairs": int(row_or(rows, 2)),
-        "lone_pics": int(row_or(rows, 3)),
-        "orphan_samples": [
-            {"id": s[0], "album_path": s[1], "filename": s[2]} for s in samples
-        ],
+        "raw_total": int(row_or(row, 0)),
+        "orphan_raw": int(row_or(row, 1)),
+        "unstacked_pairs": int(row_or(row, 2)),
+        "lone_pics": int(row_or(row, 3)),
+        "orphan_samples": row.samples if row is not None else [],
     }
 
 

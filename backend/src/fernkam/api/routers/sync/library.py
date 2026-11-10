@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Photo
 from fernkam.services.photo_query import in_album
@@ -265,7 +266,7 @@ async def start_library_scan(custom_path: Optional[str] = None, label: Optional[
                 await task_manager.update_task(task_id, status="failed", message=f"Error: {e}")
     
     # Start background task (named so lifespan can cancel selectively)
-    asyncio.create_task(run_scan(), name=f"fernkam-scan-{task_id}")
+    spawn(run_scan(), name=f"fernkam-scan-{task_id}")
     return task_id
 
 
@@ -327,7 +328,7 @@ async def backfill_video_duration(db: DB) -> dict:
             logging.getLogger(__name__).exception("backfill_video_duration failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return {"task_id": task_id, "status": "started", "total": total}
 
 
@@ -435,7 +436,7 @@ async def scan_faces(db: DB, request: ScanFacesRequest) -> dict:
                 logger.error("scan_faces error: %s", e, exc_info=True)
                 await task_manager.update_task(task_id, status="failed", message=f"Error: {e}")
 
-    asyncio.create_task(run_face_scan(), name=f"fernkam-scan-faces-{task_id}")
+    spawn(run_face_scan(), name=f"fernkam-scan-faces-{task_id}")
     return {"task_id": task_id, "queued": len(photo_ids), "message": "running"}
 
 
@@ -451,7 +452,6 @@ async def db_stats() -> dict:
 @router.post("/vacuum-analyze")
 async def vacuum_analyze() -> dict:
     """Run VACUUM (ANALYZE) over the whole database. Runs in background — can take a while on large tables."""
-    import asyncio
     from fernkam.task_manager import task_manager
     from fernkam.db.session import get_async_engine
     from fernkam.db.maintenance import run_vacuum_analyze as _run_vacuum
@@ -466,14 +466,13 @@ async def vacuum_analyze() -> dict:
             logger.error("vacuum_analyze failed: %s", exc, exc_info=True)
             await task_manager.update_task(task_id, status="failed", message=f"Error: {exc}")
 
-    asyncio.create_task(_run(), name=f"fernkam-vacuum-{task_id}")
+    spawn(_run(), name=f"fernkam-vacuum-{task_id}")
     return {"task_id": task_id, "status": "running"}
 
 
 @router.post("/reindex")
 async def reindex() -> dict:
     """REINDEX CONCURRENTLY every index, smallest first. Runs in background."""
-    import asyncio
     import time
     from fernkam.task_manager import fmt_eta, task_manager
     from fernkam.db.session import get_async_engine
@@ -500,7 +499,7 @@ async def reindex() -> dict:
             logger.error("reindex failed: %s", exc, exc_info=True)
             await task_manager.update_task(task_id, status="failed", message=f"Error: {exc}")
 
-    asyncio.create_task(_run(), name=f"fernkam-reindex-{task_id}")
+    spawn(_run(), name=f"fernkam-reindex-{task_id}")
     return {"task_id": task_id, "status": "running"}
 
 

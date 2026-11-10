@@ -8,6 +8,8 @@ from fastapi import APIRouter, Body
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from fernkam.background import spawn
+from fernkam.sql_util import in_ids
 from fernkam.api.deps import DB
 from fernkam.db.models.photos import Face, Photo, PhotoTag
 from fernkam.services.photo_query import in_album
@@ -38,7 +40,7 @@ async def refresh_metadata_from_files(
 
     q = select(Photo.id, Photo.album_path, Photo.filename, Photo.file_modified_at_sync).where(Photo.status == 1)
     if photo_ids:
-        q = q.where(Photo.id.in_(photo_ids))
+        q = q.where(in_ids(Photo.id, photo_ids))
     elif album_path:
         q = q.where(in_album(Photo.album_path, album_path))
     q = q.order_by(Photo.id.asc())
@@ -134,7 +136,7 @@ async def refresh_metadata_from_files(
             progress={"done": total, "total": total, "ok": ok, "errors": errors, "skipped": skipped},
         )
 
-    asyncio.create_task(run_refresh(), name=f"fernkam-refresh-meta-{task_id}")
+    spawn(run_refresh(), name=f"fernkam-refresh-meta-{task_id}")
     return {"status": "running", "task_id": task_id, "queued": len(rows),
             "message": f"Metadata refresh started for {len(rows):,} photos"}
 
@@ -147,7 +149,7 @@ async def write_photos(photo_ids: list[int]) -> tuple[int, dict[str, str], int]:
     import asyncio
     from fernkam.db.session import async_session_factory
     from fernkam.importers.filesystem import reconcile_outdated
-    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, write_metadata_batch
+    from fernkam.metadata_sync import build_photo_payload, mark_files_synced, tag_names_for, write_metadata_batch
 
     async with async_session_factory() as bdb:
         # Check before writing whether fernKam is out of date: files another program changed
@@ -158,13 +160,14 @@ async def write_photos(photo_ids: list[int]) -> tuple[int, dict[str, str], int]:
 
         photos = (await bdb.execute(
             select(Photo)
-            .where(Photo.id.in_(photo_ids))
+            .where(in_ids(Photo.id, photo_ids))
             .options(
                 selectinload(Photo.photo_tags).selectinload(PhotoTag.tag),
                 selectinload(Photo.faces).selectinload(Face.person_tag),
             )
         )).scalars().all()
 
+        names = await tag_names_for(bdb, [pt.tag for ph in photos for pt in ph.photo_tags if pt.tag])
         payloads: list[dict] = []
         photo_for_file: dict[str, int] = {}
         for photo in photos:
@@ -174,7 +177,7 @@ async def write_photos(photo_ids: list[int]) -> tuple[int, dict[str, str], int]:
                 if f.x is not None
                 and (f.person_tag is not None or (f.region_name or "").strip())
             ]
-            p = build_photo_payload(photo, tags, named_faces)
+            p = build_photo_payload(photo, tags, named_faces, names)
             if p:
                 payloads.append(p)
                 photo_for_file[p["SourceFile"]] = photo.id
@@ -221,7 +224,7 @@ async def write_metadata_all(
 
     q = select(Photo.id, Photo.file_size).where(*WRITABLE).order_by(Photo.id.asc())
     if photo_ids:
-        q = q.where(Photo.id.in_(photo_ids))
+        q = q.where(in_ids(Photo.id, photo_ids))
     elif dirty_only:
         q = q.where(Photo.file_sync_dirty == True)  # noqa: E712
     if album_path:
@@ -330,7 +333,7 @@ async def write_metadata_all(
             },
         )
 
-    asyncio.create_task(run_write(), name=f"fernkam-write-metadata-{task_id}")
+    spawn(run_write(), name=f"fernkam-write-metadata-{task_id}")
     return {
         "task_id": task_id,
         "queued": len(photo_ids),

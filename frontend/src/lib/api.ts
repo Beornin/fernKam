@@ -748,6 +748,7 @@ export const api = {
       get<{ items: LogEntry[]; limit: number; offset: number }>('/api/logs', params),
     count: (params?: { level?: string; source?: string; q?: string; since?: string; before?: string }) =>
       get<{ count: number }>('/api/logs/count', params),
+    get: (id: number) => get<{ id: number; message: string; exc_info: string | null }>(`/api/logs/${id}`),
     levels: () => get<{ levels: Array<{ level_name: string; count: number }> }>('/api/logs/levels'),
     sources: () => get<{ sources: Array<{ source: string; count: number }> }>('/api/logs/sources'),
     clear: (params?: { level?: string; before?: string }) => {
@@ -832,6 +833,8 @@ export interface LogEntry {
   line: number | null;
   func: string | null;
   exc_info: string | null;
+  /** The list sends only the start of a long traceback; api.logs.get has all of it. */
+  exc_truncated?: boolean;
   fingerprint: string;
   occurrences: number;
   last_seen_at: string;

@@ -21,6 +21,7 @@ from typing import Optional
 import numpy as np
 from sqlalchemy import text
 
+from fernkam.background import spawn
 from fernkam import embed_models as em
 
 logger = logging.getLogger(__name__)
@@ -77,10 +78,11 @@ async def indexed_counts(db) -> dict[str, int]:
     """Photos (in the library) with a vector, per space."""
     counts = {"clip": int((await db.execute(text(
         "SELECT count(*) FROM photos WHERE status = 1 AND embedding_v IS NOT NULL"))).scalar_one())}
+    per_model = {r[0]: int(r[1]) for r in (await db.execute(text(   # every model in one pass
+        "SELECT e.model, count(*) FROM photo_embeddings e JOIN photos p ON p.id = e.photo_id "
+        "WHERE p.status = 1 GROUP BY e.model"))).all()}
     for key in em.MODELS:
-        counts[key] = int((await db.execute(text(
-            f"SELECT count(*) FROM photo_embeddings e JOIN photos p ON p.id = e.photo_id "
-            f"WHERE e.model = '{key}' AND p.status = 1"))).scalar_one())
+        counts[key] = per_model.get(key, 0)
     return counts
 
 
@@ -290,7 +292,7 @@ async def start_install(key: str, index: bool = True) -> str:
             # cancel or a failure. A cancelled run used to keep its ~20 GB.
             em.release(key)
 
-    asyncio.create_task(run(), name=f"fernkam-model-{key}-{task_id}")
+    spawn(run(), name=f"fernkam-model-{key}-{task_id}")
     return task_id
 
 

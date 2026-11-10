@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import text as _sql
 
+from fernkam.background import spawn
 from fernkam.api.deps import DB
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ async def embed_photos(db: DB, limit: Optional[int] = Query(None, ge=1)) -> dict
             logger.exception("embed task failed")
             await task_manager.update_task(task_id, status="failed", message=str(exc))
 
-    asyncio.create_task(_run(), name=f"fernkam-embed-{task_id}")
+    spawn(_run(), name=f"fernkam-embed-{task_id}")
     return {"task_id": task_id, "queued": len(rows), "message": "running"}
 
 
